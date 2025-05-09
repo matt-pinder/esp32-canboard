@@ -12,11 +12,12 @@
 ![esp32-canboard-bottom](docs/esp32-canboard-bottom.jpg)
 
 ## Pinout
-PCB HousingJAE MX23A18NF1
-Mating PlugJAE MX23A18SF1
+PCB Housing JAE MX23A18NF1
+
+Mating Plug JAE MX23A18SF1
 
 |Pin|Function|Additional Information|
-|---|---|---|---|
+|---|---|---|
 |1|12v Power Input||
 |2|5v Sensor Supply|Thermal Fuse @ 500ma|
 |3|5v Sensor Supply|Thermal Fuse @ 500ma|
