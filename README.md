@@ -3,10 +3,11 @@
 * MCP2562T CAN Transceiver (up to 1Mbps)
 * 10x 5v Tolerant Inputs - Pressure Sensors, NTCs, etc
 * 2x 5v Outputs - Fused at 500mA (Thermal Reset)
-* Optional pull-up resistors via fused 5v rail for each input (TH 6.3mm)
 * USB-C for programming, with JTAG support for debugging
 * ESD Protection on both USB and CAN
 * JAE Automotive Connector (PCB Socket: MX23A18NF1, Cable Plug: MX23A18SF1)
+* Optional pull-up resistors via fused 5v rail for each input (TH 6.3mm)
+* Optional 120ohm CAN terminating resistor
 * Small PCB Footprint - 40mm x 60mm
 
 ## Schematic
