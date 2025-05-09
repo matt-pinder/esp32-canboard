@@ -1,11 +1,12 @@
 # ESP32-CANBoard
 * ESP32-S3 Dual Core SoC
-* 1x MCP2562T CAN Transceiver (up to 1Mbps)
+* MCP2562T CAN Transceiver (up to 1Mbps)
 * 10x 0-5v Tolerant Inputs - Pressure Sensors, NTCs, etc
-* Optional pull up resistors to 5v for each input (TH 6.3mm)
 * 2x 5v Outputs - For powering sensors, fused at 500mA (Thermal Reset)
+* Optional pull up resistors to 5v for each input (TH 6.3mm)
 * USB-C for programming, with JTAG support for debugging
 * ESD protection on both USB and CAN
+* JAE Automotice Connector (PCB: MX23A18NF1, Plug: MX23A18SF1)
 
 ## Schematic
 [View PDF](docs/esp32-canboard-schematic.pdf)
@@ -18,9 +19,6 @@
 ![esp32-canboard-bottom](docs/esp32-canboard-bottom.png)
 
 ## Pinout
-PCB Housing: JAE MX23A18NF1
-Mating Plug: JAE MX23A18SF1
-
 |Pin|Function|Additional Information|
 |---|---|---|
 |1|12v Power Input||
