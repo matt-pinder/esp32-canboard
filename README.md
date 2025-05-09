@@ -1,19 +1,19 @@
-## ESP32-CANBoard
+# ESP32-CANBoard
 
 
-# Schematic
-[View PDF](/docs/esp32-canboard-schematic.pdf)
+## Schematic
+[View PDF](docs/esp32-canboard-schematic.pdf)
 
-# Images
-![iso](/docs/esp32-canboard-iso.jpg)
+## Images
+![esp32-canboard-iso.jpg](docs/esp32-canboard-iso.jpg)
 
-![top](/docs/esp32-canboard-top.jpg)
+![esp32-canboard-top.jpg](docs/esp32-canboard-top.jpg)
 
-![PCB1](/docs/esp32-canboard-bottom.jpg)
+![esp32-canboard-bottom](docs/esp32-canboard-bottom.jpg)
 
-# Pinout
-|PCB Housing|JAE MX23A18NF1|
-|Mating Plug|JAE MX23A18SF1|
+## Pinout
+PCB HousingJAE MX23A18NF1
+Mating PlugJAE MX23A18SF1
 
 |Pin|Function|Additional Information|
 |---|---|---|---|
