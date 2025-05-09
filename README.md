@@ -6,7 +6,8 @@
 * Optional pull up resistors to 5v for each input (TH 6.3mm)
 * USB-C for programming, with JTAG support for debugging
 * ESD protection on both USB and CAN
-* JAE Automotice Connector (PCB: MX23A18NF1, Plug: MX23A18SF1)
+* JAE Automotive Connector (PCB: MX23A18NF1, Plug: MX23A18SF1)
+* Small Footprint - 40mm x 60mm
 
 ## Schematic
 [View PDF](docs/esp32-canboard-schematic.pdf)
