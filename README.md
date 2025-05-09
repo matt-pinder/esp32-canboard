@@ -23,7 +23,7 @@
 ## Pinout
 |Pin|Function|Additional Information|
 |---|---|---|
-|1|12v Power Input||
+|1|12v Supply||
 |2|5v Sensor Supply|500ma Thermal Fuse|
 |3|5v Sensor Supply|500ma Thermal Fuse|
 |4|Input 6||
