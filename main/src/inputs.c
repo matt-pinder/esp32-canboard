@@ -96,7 +96,7 @@ uint16_t getAdcScaledMillivolts(adc_channel_t channel){
     }
 
     float v_input_mv;
-    v_input_mv = voltage * 1.47;
+    v_input_mv = voltage * 1.47; // Scale to 0-5v based on R1 = 4K7 and R2 = 10K
 
     return (int)v_input_mv;
 }
