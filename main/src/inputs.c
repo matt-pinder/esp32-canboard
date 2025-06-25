@@ -1,7 +1,6 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
-#include "driver/adc.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -96,7 +95,7 @@ uint16_t getAdcScaledMillivolts(adc_channel_t channel){
     }
 
     float v_input_mv;
-    v_input_mv = voltage * 1.47; // Scale to 0-5v based on R1 = 4K7 and R2 = 10K
+    v_input_mv = voltage * 1.47; // Scale to 0-5v based on R1 = 4K7 and R2 = 10K (* 1.47)
 
     return (int)v_input_mv;
 }

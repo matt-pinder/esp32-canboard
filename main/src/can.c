@@ -48,6 +48,7 @@ void canTransmit(void *arg)
         
         // Base Message
         tx_msg[0].data[0] = (int8_t) getCpuTemperature(); // CPU Temperature (-128C > +127C)
+        tx_msg[0].data[1] = 0x00; // Unused / Spare
         tx_msg[0].data[2] = scaled_voltages[0] & 0xFF; // Analog Input 1
         tx_msg[0].data[3] = (scaled_voltages[0] >> 8) & 0xFF;
         tx_msg[0].data[4] = scaled_voltages[1]; // Analog Input 2
@@ -78,7 +79,7 @@ void canTransmit(void *arg)
         tx_msg[2].data[5] = (scaled_voltages[9] >> 8) & 0xFF;
         twai_transmit(&tx_msg[2], pdMS_TO_TICKS(1000));
         
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(80)); // 10Hz
     }
     vTaskDelete(NULL);
 }
