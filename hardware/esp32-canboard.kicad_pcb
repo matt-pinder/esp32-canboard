@@ -23210,8 +23210,8 @@
 			(justify left bottom mirror)
 		)
 	)
-	(gr_text "INPUT6"
-		(at 100.396 101.612857 -90)
+	(gr_text "INPUT10"
+		(at 100.396 102.089048 270)
 		(layer "B.SilkS")
 		(uuid "6911c0df-0db4-474d-a229-3930a2e571fa")
 		(effects
@@ -23223,8 +23223,8 @@
 			(justify left bottom mirror)
 		)
 	)
-	(gr_text "INPUT9"
-		(at 110.596 101.612857 -90)
+	(gr_text "INPUT7"
+		(at 110.596 101.612857 270)
 		(layer "B.SilkS")
 		(uuid "7a399094-23b9-4cd5-bcb7-e71c44af3e6e")
 		(effects
@@ -23249,8 +23249,8 @@
 			(justify bottom mirror)
 		)
 	)
-	(gr_text "INPUT10"
-		(at 113.996 102.089048 -90)
+	(gr_text "INPUT6"
+		(at 113.996 101.612857 270)
 		(layer "B.SilkS")
 		(uuid "a1becbe6-2375-4d05-952b-785bd67a108d")
 		(effects
@@ -23262,8 +23262,8 @@
 			(justify left bottom mirror)
 		)
 	)
-	(gr_text "INPUT7"
-		(at 103.796 101.612857 -90)
+	(gr_text "INPUT9"
+		(at 103.796 101.612857 270)
 		(layer "B.SilkS")
 		(uuid "acc31633-0350-4650-9812-b2f7b034f00f")
 		(effects
