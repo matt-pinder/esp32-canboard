@@ -101,9 +101,11 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, ntc_sensor_mod
     float A, B, C;
     switch (model) {
         case BOSCH_0280130039:
-            A = 1.129148e-3f; B = 2.341250e-4f; C = 8.767410e-8f; break;
+            //A = 1.129148e-3f; B = 2.341250e-4f; C = 8.767410e-8f; break;
+            A = 1.4051e-3f; B = 2.3696e-4f; C = 1.0199e-7f; break;
         case BOSCH_0280130026:
-            A = 1.132430e-3f; B = 2.351000e-4f; C = 8.775468e-8f; break;
+            //A = 1.132430e-3f; B = 2.351000e-4f; C = 8.775468e-8f; break;
+            A = 1.4051e-3f; B = 2.3696e-4f; C = 1.0199e-7f; break;
         default:
             return (int8_t)-128;
     }
