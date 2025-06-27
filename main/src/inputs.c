@@ -44,7 +44,7 @@ int8_t getCpuTemperature(void){
     float cpuTemp = -128;
     esp_err_t err = temperature_sensor_get_celsius(tempSensor_handle, &cpuTemp);
     if (err != ESP_OK) return -128;
-    return (int)cpuTemp;
+    return (int8_t)cpuTemp;
 }
 
 void initAdcChannels(void){
@@ -86,13 +86,13 @@ uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, fl
     float pressure = p_min + (relative_voltage / voltage_span) * pressure_span;
 
     if (pressure < 0.0f) pressure = 0.0f; 
-    return (uint16_t)(pressure * 10.0f + 0.5f);
+    return (uint16_t)(pressure * 10.0f + 0.5f); // Scale for .x precision
 }
 
 int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, ntc_sensor_model_t model)
 {
     if (v_mv <= 0 || v_mv >= v_ref_mv || r_pullup <= 0.0f || v_ref_mv <= 0)
-        return -128;
+        return (int8_t)-128;
 
     float v_ntc = v_mv / 1000.0f;
     float v_ref = v_ref_mv / 1000.0f;
@@ -105,7 +105,7 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, ntc_sensor_mod
         case BOSCH_0280130026:
             A = 1.132430e-3f; B = 2.351000e-4f; C = 8.775468e-8f; break;
         default:
-            return -128;
+            return (int8_t)-128;
     }
 
     float ln_r = logf(r_ntc);
@@ -138,7 +138,10 @@ uint16_t getScaledMillivolts(adc_channel_t channel){
     }
 
     float v_input_mv;
-    v_input_mv = voltage * 1.47; // Scale to 0-5v based on R1 = 4K7 and R2 = 10K (* 1.47)
+    v_input_mv = voltage * 1.47; 
+    
+    // Scale to original voltage input based on divider of R1 = 4K7 and R2 = 10K (* 1.47).
+    // Compensation for offset of pullup voltage is built into the NTC function.
 
     return (int)v_input_mv;
 }
