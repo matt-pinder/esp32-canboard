@@ -47,9 +47,9 @@ void canTransmit(void *arg)
         }
 
         // Charge Cooler Inlet Pressure
-        scaled_pressures[0] = (getSensorPressure(scaled_voltages[0], 500, 4500, 0, 600) * 10); // Kpa
+        scaled_pressures[0] = getSensorPressure(scaled_voltages[0], 500, 4500, 0, 600); // Kpa
         // Exhaust Back Pressure
-        scaled_pressures[1] = (getSensorPressure(scaled_voltages[1], 500, 4500, 0, 150) * 10); // PSI
+        scaled_pressures[1] = getSensorPressure(scaled_voltages[1], 500, 4500, 0, 150); // PSI
         
         // Base Message
         tx_msg[0].data[0] = (int8_t) getCpuTemperature(); // CPU Temperature (-128C > +127C)

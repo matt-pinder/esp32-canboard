@@ -86,7 +86,7 @@ uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, fl
     float pressure = p_min + (relative_voltage / voltage_span) * pressure_span;
 
     if (pressure < 0.0f) pressure = 0.0f; 
-    return (uint16_t)(pressure * 10.0f + 0.5f); // Scale for .x precision
+    return (uint16_t)(pressure * 100.0f);
 }
 
 int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv)
@@ -143,12 +143,10 @@ uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled){
         return 0;
     }
 
+    // Scale to original voltage input based on divider of R1 = 4K7 and R2 = 10K (* 1.47) if TRUE.
+    // Compensation for offset of pullup voltage is built into the NTC function.
     float v_input_mv;
-    
     v_input_mv = (scaled) ? voltage * 1.47 : voltage; 
     
-    // Scale to original voltage input based on divider of R1 = 4K7 and R2 = 10K (* 1.47).
-    // Compensation for offset of pullup voltage is built into the NTC function.
-
     return (int)v_input_mv;
 }
