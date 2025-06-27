@@ -27,4 +27,4 @@ extern uint16_t scaled_pressures[2];
 
 int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, ntc_sensor_model_t model);
 uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, float p_max);
-uint16_t getScaledMillivolts(adc_channel_t channel);
+uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled);

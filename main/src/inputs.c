@@ -115,7 +115,7 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, ntc_sensor_mod
     return (int8_t)(temp_k - 273.15f);
 }
 
-uint16_t getScaledMillivolts(adc_channel_t channel){
+uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled){
     if(channel < ADC_CHANNEL_START || channel > ADC_CHANNEL_END){
         ESP_LOGE(adc_log, "Requested ADC Channel %d Out of Range!", channel);
         return 0;
@@ -140,7 +140,8 @@ uint16_t getScaledMillivolts(adc_channel_t channel){
     }
 
     float v_input_mv;
-    v_input_mv = voltage * 1.47; 
+    
+    v_input_mv = (scaled) ? voltage * 1.47 : voltage; 
     
     // Scale to original voltage input based on divider of R1 = 4K7 and R2 = 10K (* 1.47).
     // Compensation for offset of pullup voltage is built into the NTC function.
