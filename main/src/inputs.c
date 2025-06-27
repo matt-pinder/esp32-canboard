@@ -9,6 +9,9 @@
 #include "driver/temperature_sensor.h"
 #include "inc/inputs.h"
 
+#include <math.h>
+#include <stdint.h>
+
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 static adc_cali_handle_t cali_handles[ADC_CHANNEL_END + 1] = {NULL};
 
@@ -70,7 +73,38 @@ void initAdcChannels(void){
     }
 }
 
-uint16_t getAdcScaledMillivolts(adc_channel_t channel){
+int getSensorTemperature(int v_mv, float r_pullup, ntc_sensor_model_t model)
+{
+    if (v_mv <= 0 || v_mv >= 5000 || r_pullup <= 0.0)
+        return -128;
+
+    float v_ntc = v_mv / 1000.0f;
+    float r_ntc = (r_pullup * v_ntc) / (5.0f - v_ntc);
+
+    float A, B, C;
+    switch (model) {
+        case BOSCH_0280130039: // Air Temperature
+            A = 1.129148e-3f;
+            B = 2.341250e-4f;
+            C = 8.767410e-8f;
+            break;
+        case BOSCH_0280130026: // Fluid Temperature
+            A = 1.132430e-3f;
+            B = 2.351000e-4f;
+            C = 8.775468e-8f;
+            break;
+        default:
+            return -128;
+    }
+
+    float ln_r = logf(r_ntc);
+    float temp_k = 1.0f / (A + B * ln_r + C * ln_r * ln_r * ln_r);
+    float temp_c = temp_k - 273.15f;
+
+    return (int)temp_c;
+}
+
+uint16_t getScaledMillivolts(adc_channel_t channel){
     if(channel < ADC_CHANNEL_START || channel > ADC_CHANNEL_END){
         ESP_LOGE(adc_log, "Requested ADC Channel %d Out of Range!", channel);
         return 0;

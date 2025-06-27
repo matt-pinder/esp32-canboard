@@ -35,23 +35,23 @@ void canTransmit(void *arg)
     ESP_LOGI(can_log, "CAN Transmit Task Started");
 
     // Setup CAN Packets
-    twai_message_t tx_msg[2];
-    for(size_t i = 0; i <= 2; ++i){
+    twai_message_t tx_msg[3];
+    for(size_t i = 0; i <= 3; ++i){
         tx_msg[i] = init_twai_message(CAN_BASEID + i);
     }
 
     while(1){
 
         for(int i = 0; i <= 9; i++){
-           scaled_voltages[i] = getAdcScaledMillivolts(i);
+           scaled_voltages[i] = getScaledMillivolts(i);
         }
         
         // Base Message
         tx_msg[0].data[0] = (int8_t) getCpuTemperature(); // CPU Temperature (-128C > +127C)
         tx_msg[0].data[1] = 0x00; // Unused / Spare
-        tx_msg[0].data[2] = scaled_voltages[0] & 0xFF; // Analog Input 1
+        tx_msg[0].data[2] = scaled_voltages[0] & 0xFF; // Analog Input 1 - Charge Cooler Inlet Pressure
         tx_msg[0].data[3] = (scaled_voltages[0] >> 8) & 0xFF;
-        tx_msg[0].data[4] = scaled_voltages[1]; // Analog Input 2
+        tx_msg[0].data[4] = scaled_voltages[1]; // Analog Input 2 - Exhaust Back Pressure
         tx_msg[0].data[5] = (scaled_voltages[1] >> 8) & 0xFF;
         tx_msg[0].data[6] = scaled_voltages[2]; // Analog Input 3
         tx_msg[0].data[7] = (scaled_voltages[2] >> 8) & 0xFF;
@@ -71,14 +71,22 @@ void canTransmit(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
 
         // BASE + 2
-        tx_msg[2].data[0] = scaled_voltages[7]; // Analog Input 8
+        tx_msg[2].data[0] = scaled_voltages[7]; // Analog Input 8 - Charge Cooler Inlet Air Temperature
         tx_msg[2].data[1] = (scaled_voltages[7] >> 8) & 0xFF; 
-        tx_msg[2].data[2] = scaled_voltages[8]; // Analog Input 9
+        tx_msg[2].data[2] = scaled_voltages[8]; // Analog Input 9 - Charge Cooler Water Temperature
         tx_msg[2].data[3] = (scaled_voltages[8] >> 8) & 0xFF;
-        tx_msg[2].data[4] = scaled_voltages[9]; // Analog Input 10
+        tx_msg[2].data[4] = scaled_voltages[9]; // Analog Input 10 - Air Temperature
         tx_msg[2].data[5] = (scaled_voltages[9] >> 8) & 0xFF;
         twai_transmit(&tx_msg[2], pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(10));
         
+        // BASE + 3
+        tx_msg[3].data[0] = (int8_t) getSensorTemperature(getAdcScaledMillivolts(8), 2400, BOSCH_0280130026); // Charge Cooler Water Temperature
+        tx_msg[3].data[1] = (int8_t) getSensorTemperature(getAdcScaledMillivolts(9), 2400, BOSCH_0280130039); // Air Temperature
+
+        twai_transmit(&tx_msg[3], pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(10));
+
         vTaskDelay(pdMS_TO_TICKS(80)); // 10Hz
     }
     vTaskDelete(NULL);
