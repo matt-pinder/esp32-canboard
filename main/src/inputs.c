@@ -85,7 +85,7 @@ uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, fl
 
     float pressure = p_min + (relative_voltage / voltage_span) * pressure_span;
 
-    if (pressure < 0.0f) pressure = 0.0f; 
+    if(pressure < 0.0f) pressure = 0.0f; 
     return (uint16_t)(pressure * 100.0f);
 }
 
@@ -112,7 +112,8 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv)
             int16_t t2 = ntc_table[i + 1].temp_c;
 
             float frac = (float)(r_ntc - r2) / (r1 - r2);
-            return (int8_t)(t2 + frac * (t1 - t2));
+            int8_t temp = (int8_t)(t2 + frac * (t1 - t2));
+            return (temp <= 127) ? temp : 127;
         }
     }
 
