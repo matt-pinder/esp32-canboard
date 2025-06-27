@@ -89,30 +89,34 @@ uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, fl
     return (uint16_t)(pressure * 10.0f + 0.5f); // Scale for .x precision
 }
 
-int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, ntc_sensor_model_t model)
+int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv)
 {
-    if (v_mv <= 0 || v_mv >= v_ref_mv || r_pullup <= 0.0f || v_ref_mv <= 0)
+    if (v_mv <= 0 || v_mv >= v_ref_mv || r_pullup <= 0 || v_ref_mv <= 0)
         return (int8_t)-128;
 
     float v_ntc = v_mv / 1000.0f;
     float v_ref = v_ref_mv / 1000.0f;
-    float r_ntc = (r_pullup * v_ntc) / (v_ref - v_ntc);
+    float r_ntc_f = (r_pullup * v_ntc) / (v_ref - v_ntc);
+    int32_t r_ntc = (int32_t)(r_ntc_f + 0.5f);
 
-    float A, B, C;
-    switch (model) {
-        case BOSCH_0280130039:
-            //A = 1.129148e-3f; B = 2.341250e-4f; C = 8.767410e-8f; break;
-            A = 1.4051e-3f; B = 2.3696e-4f; C = 1.0199e-7f; break;
-        case BOSCH_0280130026:
-            //A = 1.132430e-3f; B = 2.351000e-4f; C = 8.775468e-8f; break;
-            A = 1.4051e-3f; B = 2.3696e-4f; C = 1.0199e-7f; break;
-        default:
-            return (int8_t)-128;
+    if (r_ntc >= ntc_table[0].resistance) return ntc_table[0].temp_c;
+    if (r_ntc <= ntc_table[sizeof(ntc_table) / sizeof(ntc_table[0]) - 1].resistance)
+        return ntc_table[sizeof(ntc_table) / sizeof(ntc_table[0]) - 1].temp_c;
+
+    for (int i = 0; i < sizeof(ntc_table) / sizeof(ntc_table[0]) - 1; i++) {
+        int32_t r1 = ntc_table[i].resistance;
+        int32_t r2 = ntc_table[i + 1].resistance;
+
+        if (r_ntc <= r1 && r_ntc > r2) {
+            int16_t t1 = ntc_table[i].temp_c;
+            int16_t t2 = ntc_table[i + 1].temp_c;
+
+            float frac = (float)(r_ntc - r2) / (r1 - r2);
+            return (int8_t)(t2 + frac * (t1 - t2));
+        }
     }
 
-    float ln_r = logf(r_ntc);
-    float temp_k = 1.0f / (A + B * ln_r + C * ln_r * ln_r * ln_r);
-    return (int8_t)(temp_k - 273.15f);
+    return (int8_t)-128;
 }
 
 uint16_t getScaledMillivolts(adc_channel_t channel){
