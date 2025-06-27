@@ -86,8 +86,8 @@ void canTransmit(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
         
         // BASE + 3
-        tx_msg[3].data[0] = (int8_t) getSensorTemperature(scaled_voltages[8], 2400, BOSCH_0280130026); // Charge Cooler Water Temperature
-        tx_msg[3].data[1] = (int8_t) getSensorTemperature(scaled_voltages[9], 2400, BOSCH_0280130039); // Air Temperature
+        tx_msg[3].data[0] = getSensorTemperature(scaled_voltages[8], 2400, PULLUP_VREF_MV, BOSCH_0280130026); // Charge Cooler Water Temperature
+        tx_msg[3].data[1] = getSensorTemperature(scaled_voltages[9], 2400, PULLUP_VREF_MV, BOSCH_0280130039); // Air Temperature
         tx_msg[3].data[2] = 0x00; // Charge Cooler Inlet Temperature
         tx_msg[3].data[3] = scaled_pressures[0]; // Charge Cooler Inlet Pressure (kPa)
         tx_msg[3].data[4] = (scaled_pressures[0] >> 8) & 0xFF;
