@@ -27,7 +27,7 @@ void app_main(void)
 
     initAdcChannels();
     for(int i = 0; i <= 9; i++){
-        ESP_LOGI(adc_log, "ADC %u, GPIO %u: %u mV", i, i+1, getAdcScaledMillivolts(i));
+        ESP_LOGI(adc_log, "ADC %u, GPIO %u: %u mV", i, i+1, getScaledMillivolts(i));
     }
 
     if(twai_driver_install_v2(&can_config, &t_can_config, &f_config, &twai_can) == ESP_OK){

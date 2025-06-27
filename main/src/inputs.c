@@ -19,6 +19,7 @@ static temperature_sensor_handle_t tempSensor_handle = NULL;
 static bool tempSensor_initialized = false;
 
 uint16_t scaled_voltages[10];
+uint16_t scaled_pressures[2];
 
 esp_err_t initCpuTempSensor(void){
     if(tempSensor_initialized) return ESP_OK;
@@ -71,6 +72,21 @@ void initAdcChannels(void){
             ESP_LOGW(adc_log, "Failed to Create Calibration for ADC Channel: %d (%s)", ch, esp_err_to_name(ret));
         }
     }
+}
+
+uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, float p_max)
+{
+    if (v_mv < v_min_mv) v_mv = v_min_mv;
+    if (v_mv > v_max_mv) v_mv = v_max_mv;
+
+    float voltage_span = v_max_mv - v_min_mv;
+    float pressure_span = p_max - p_min;
+    float relative_voltage = v_mv - v_min_mv;
+
+    float pressure = p_min + (relative_voltage / voltage_span) * pressure_span;
+
+    if (pressure < 0.0f) pressure = 0.0f; 
+    return (uint16_t)(pressure * 10.0f + 0.5f);
 }
 
 int getSensorTemperature(int v_mv, float r_pullup, ntc_sensor_model_t model)

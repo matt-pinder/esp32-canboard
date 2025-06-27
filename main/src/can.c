@@ -45,6 +45,11 @@ void canTransmit(void *arg)
         for(int i = 0; i <= 9; i++){
            scaled_voltages[i] = getScaledMillivolts(i);
         }
+
+        // Charge Cooler Inlet Pressure
+        scaled_pressures[0] = getSensorPressure(scaled_voltages[0], 0.5, 4.5, 0, 3500); // Kpa
+        // Exhaust Back Pressure
+        scaled_pressures[1] = getSensorPressure(scaled_voltages[1], 0.5, 4.5, 0, 150); // PSI
         
         // Base Message
         tx_msg[0].data[0] = (int8_t) getCpuTemperature(); // CPU Temperature (-128C > +127C)
@@ -71,7 +76,7 @@ void canTransmit(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
 
         // BASE + 2
-        tx_msg[2].data[0] = scaled_voltages[7]; // Analog Input 8 - Charge Cooler Inlet Air Temperature
+        tx_msg[2].data[0] = scaled_voltages[7]; // Analog Input 8 - Charge Cooler Inlet Temperature
         tx_msg[2].data[1] = (scaled_voltages[7] >> 8) & 0xFF; 
         tx_msg[2].data[2] = scaled_voltages[8]; // Analog Input 9 - Charge Cooler Water Temperature
         tx_msg[2].data[3] = (scaled_voltages[8] >> 8) & 0xFF;
@@ -81,11 +86,14 @@ void canTransmit(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
         
         // BASE + 3
-        tx_msg[3].data[0] = (int8_t) getSensorTemperature(getAdcScaledMillivolts(8), 2400, BOSCH_0280130026); // Charge Cooler Water Temperature
-        tx_msg[3].data[1] = (int8_t) getSensorTemperature(getAdcScaledMillivolts(9), 2400, BOSCH_0280130039); // Air Temperature
-
+        tx_msg[3].data[0] = (int8_t) getSensorTemperature(scaled_voltages[8], 2400, BOSCH_0280130026); // Charge Cooler Water Temperature
+        tx_msg[3].data[1] = (int8_t) getSensorTemperature(scaled_voltages[9], 2400, BOSCH_0280130039); // Air Temperature
+        tx_msg[3].data[2] = 0x00; // Charge Cooler Inlet Temperature
+        tx_msg[3].data[3] = scaled_pressures[0]; // Charge Cooler Inlet Pressure (kPa)
+        tx_msg[3].data[4] = (scaled_pressures[0] >> 8) & 0xFF;
+        tx_msg[3].data[5] = scaled_pressures[1]; // Exhaust Back Pressure (PSI)
+        tx_msg[3].data[6] = (scaled_pressures[1] >> 8) & 0xFF;
         twai_transmit(&tx_msg[3], pdMS_TO_TICKS(1000));
-        vTaskDelay(pdMS_TO_TICKS(10));
 
         vTaskDelay(pdMS_TO_TICKS(80)); // 10Hz
     }
