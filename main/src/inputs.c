@@ -19,7 +19,7 @@ static temperature_sensor_handle_t tempSensor_handle = NULL;
 static bool tempSensor_initialized = false;
 
 uint16_t scaled_voltages[10];
-uint16_t scaled_pressures[2];
+uint16_t scaled_pressures[4];
 
 esp_err_t initCpuTempSensor(void){
     if(tempSensor_initialized) return ESP_OK;

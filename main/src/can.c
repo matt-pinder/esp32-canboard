@@ -35,8 +35,8 @@ void canTransmit(void *arg)
     ESP_LOGI(can_log, "CAN Transmit Task Started");
 
     // Setup CAN Packets
-    twai_message_t tx_msg[3];
-    for(size_t i = 0; i <= 3; ++i){
+    twai_message_t tx_msg[4];
+    for(size_t i = 0; i <= 4; ++i){
         tx_msg[i] = init_twai_message(CAN_BASEID + i);
     }
 
@@ -47,24 +47,29 @@ void canTransmit(void *arg)
         }
 
         // Charge Cooler Inlet Pressure
-        scaled_pressures[0] = getSensorPressure(scaled_voltages[0], 500, 4500, 0, 600); // Kpa
-        // Exhaust Back Pressure
-        scaled_pressures[1] = getSensorPressure(scaled_voltages[1], 500, 4500, 0, 150); // PSI
+        //scaled_pressures[0] = getSensorPressure(scaled_voltages[0], 500, 4500, 0, 600); // kPa
+        scaled_pressures[0] = getSensorPressure(scaled_voltages[0], 498, 4539, 50, 256); // kPa
+        // Exhaust Back Pressure (0-30psi)
+        scaled_pressures[1] = getSensorPressure(scaled_voltages[1], 500, 4500, 0, 30); // Psi
+        // Crank Case Pressure (Bosch MAP 0261230119)
+        scaled_pressures[2] = getSensorPressure(scaled_voltages[2], 400, 4650, 20, 300); // kPa
+        // Turbo Regulator Oil Pressure (0-150psi)
+        scaled_pressures[3] = getSensorPressure(scaled_voltages[3], 500, 4500, 0, 150); // Psi
         
         // Base Message
         tx_msg[0].data[0] = (int8_t) getCpuTemperature(); // CPU Temperature (-128C > +127C)
         tx_msg[0].data[1] = 0x00; // Unused / Spare
-        tx_msg[0].data[2] = scaled_voltages[0] & 0xFF; // Analog Input 1 - Charge Cooler Inlet Pressure
+        tx_msg[0].data[2] = scaled_voltages[0] & 0xFF; // Analog Input 1 - Charge Cooler Inlet Pressure (BMW TMAP 13627843531)
         tx_msg[0].data[3] = (scaled_voltages[0] >> 8) & 0xFF;
-        tx_msg[0].data[4] = scaled_voltages[1]; // Analog Input 2 - Exhaust Back Pressure
+        tx_msg[0].data[4] = scaled_voltages[1]; // Analog Input 2 - Exhaust Back Pressure (0-30 Psi)
         tx_msg[0].data[5] = (scaled_voltages[1] >> 8) & 0xFF;
-        tx_msg[0].data[6] = scaled_voltages[2]; // Analog Input 3
+        tx_msg[0].data[6] = scaled_voltages[2]; // Analog Input 3 - Crank Case Pressure (Bosch MAP 0261230119)
         tx_msg[0].data[7] = (scaled_voltages[2] >> 8) & 0xFF;
         twai_transmit(&tx_msg[0], pdMS_TO_TICKS(1000));
         vTaskDelay(pdMS_TO_TICKS(10));
 
         // BASE + 1
-        tx_msg[1].data[0] = scaled_voltages[3]; // Analog Input 4
+        tx_msg[1].data[0] = scaled_voltages[3]; // Analog Input 4 - Turbo Regulator Oil Pressure (0-150 Psi)
         tx_msg[1].data[1] = (scaled_voltages[3] >> 8) & 0xFF;; 
         tx_msg[1].data[2] = scaled_voltages[4]; // Analog Input 5
         tx_msg[1].data[3] = (scaled_voltages[4] >> 8) & 0xFF;;
@@ -76,23 +81,31 @@ void canTransmit(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
 
         // BASE + 2
-        tx_msg[2].data[0] = scaled_voltages[7]; // Analog Input 8 - Charge Cooler Inlet Temperature
+        tx_msg[2].data[0] = scaled_voltages[7]; // Analog Input 8 - Charge Cooler Inlet Temperature (BMW TMAP 13627843531)
         tx_msg[2].data[1] = (scaled_voltages[7] >> 8) & 0xFF; 
-        tx_msg[2].data[2] = scaled_voltages[8]; // Analog Input 9 - Charge Cooler Water Temperature
+        tx_msg[2].data[2] = scaled_voltages[8]; // Analog Input 9 - Charge Cooler Water Temperature (Bosch 0280130026)
         tx_msg[2].data[3] = (scaled_voltages[8] >> 8) & 0xFF;
-        tx_msg[2].data[4] = scaled_voltages[9]; // Analog Input 10 - Air Temperature
+        tx_msg[2].data[4] = scaled_voltages[9]; // Analog Input 10 - Air Temperature (Bosch 0280130039)
         tx_msg[2].data[5] = (scaled_voltages[9] >> 8) & 0xFF;
         twai_transmit(&tx_msg[2], pdMS_TO_TICKS(1000));
         vTaskDelay(pdMS_TO_TICKS(10));
         
         // BASE + 3
-        tx_msg[3].data[0] = getSensorTemperature(scaled_voltages[8], 2400, PULLUP_VREF_MV); // Charge Cooler Water Temperature
-        tx_msg[3].data[1] = getSensorTemperature(scaled_voltages[9], 2400, PULLUP_VREF_MV); // Air Temperature
-        tx_msg[3].data[2] = 0x00; // Charge Cooler Inlet Temperature
+        tx_msg[3].data[0] = getSensorTemperature(scaled_voltages[8], 2400, PULLUP_VREF_MV); // Charge Cooler Water Temperature (C)
+        tx_msg[3].data[1] = getSensorTemperature(scaled_voltages[9], 2400, PULLUP_VREF_MV); // Air Temperature (C)
+        tx_msg[3].data[2] = 0x00; // Charge Cooler Inlet Temperature (C)
         tx_msg[3].data[3] = scaled_pressures[0]; // Charge Cooler Inlet Pressure (kPa)
         tx_msg[3].data[4] = (scaled_pressures[0] >> 8) & 0xFF;
-        tx_msg[3].data[5] = scaled_pressures[1]; // Exhaust Back Pressure (PSI)
+        tx_msg[3].data[5] = scaled_pressures[1]; // Exhaust Back Pressure (Psi)
         tx_msg[3].data[6] = (scaled_pressures[1] >> 8) & 0xFF;
+        twai_transmit(&tx_msg[3], pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(10));
+
+        // BASE + 4
+        tx_msg[4].data[0] = scaled_pressures[2]; // Crank Case Pressure (kPa)
+        tx_msg[4].data[1] = (scaled_pressures[2] >> 8) & 0xFF;
+        tx_msg[4].data[2] = scaled_pressures[3]; // Turbo Regulator Oil Pressure (Psi)
+        tx_msg[4].data[3] = (scaled_pressures[3] >> 8) & 0xFF;
         twai_transmit(&tx_msg[3], pdMS_TO_TICKS(1000));
 
         vTaskDelay(pdMS_TO_TICKS(80)); // 10Hz

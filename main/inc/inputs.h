@@ -23,7 +23,7 @@ int8_t getCpuTemperature(void);
 void initAdcChannels(void);
 
 extern uint16_t scaled_voltages[10];
-extern uint16_t scaled_pressures[2];
+extern uint16_t scaled_pressures[4];
 
 int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv);
 uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, float p_max);
