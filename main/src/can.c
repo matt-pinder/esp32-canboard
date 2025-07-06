@@ -70,13 +70,13 @@ void canTransmit(void *arg)
 
         // BASE + 1
         tx_msg[1].data[0] = scaled_voltages[3]; // Analog Input 4 - Turbo Regulator Oil Pressure (0-150 Psi)
-        tx_msg[1].data[1] = (scaled_voltages[3] >> 8) & 0xFF;; 
+        tx_msg[1].data[1] = (scaled_voltages[3] >> 8) & 0xFF;
         tx_msg[1].data[2] = scaled_voltages[4]; // Analog Input 5
-        tx_msg[1].data[3] = (scaled_voltages[4] >> 8) & 0xFF;;
+        tx_msg[1].data[3] = (scaled_voltages[4] >> 8) & 0xFF;
         tx_msg[1].data[4] = scaled_voltages[5]; // Analog Input 6
-        tx_msg[1].data[5] = (scaled_voltages[5] >> 8) & 0xFF;;
+        tx_msg[1].data[5] = (scaled_voltages[5] >> 8) & 0xFF;
         tx_msg[1].data[6] = scaled_voltages[6]; // Analog Input 7
-        tx_msg[1].data[7] = (scaled_voltages[6] >> 8) & 0xFF;;
+        tx_msg[1].data[7] = (scaled_voltages[6] >> 8) & 0xFF;
         twai_transmit(&tx_msg[1], pdMS_TO_TICKS(1000));
         vTaskDelay(pdMS_TO_TICKS(10));
 
@@ -106,7 +106,7 @@ void canTransmit(void *arg)
         tx_msg[4].data[1] = (scaled_pressures[2] >> 8) & 0xFF;
         tx_msg[4].data[2] = scaled_pressures[3]; // Turbo Regulator Oil Pressure (Psi)
         tx_msg[4].data[3] = (scaled_pressures[3] >> 8) & 0xFF;
-        twai_transmit(&tx_msg[3], pdMS_TO_TICKS(1000));
+        twai_transmit(&tx_msg[4], pdMS_TO_TICKS(1000));
 
         vTaskDelay(pdMS_TO_TICKS(80)); // 10Hz
     }
