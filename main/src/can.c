@@ -43,11 +43,17 @@ void canTransmit(void *arg)
     while(1){
 
         for(int i = 0; i <= 9; i++){
-           scaled_voltages[i] = getScaledMillivolts(i, true);
+            switch(i){
+                case 2: // Low Pass Filter - Crank Case Pressure
+                    scaled_voltages[i] = getScaledMillivolts(i, true, true);
+                    break;
+                default:
+                    scaled_voltages[i] = getScaledMillivolts(i, true, false);
+                    break;
+            }           
         }
 
         // Charge Cooler Inlet Pressure
-        //scaled_pressures[0] = getSensorPressure(scaled_voltages[0], 500, 4500, 0, 600); // kPa
         scaled_pressures[0] = (scaled_voltages[0] > 0) ? getSensorPressure(scaled_voltages[0], 498, 4539, 50, 256) : 0; // kPa
         // Exhaust Back Pressure (0-30psi)
         scaled_pressures[1] = (scaled_voltages[1] > 0) ? getSensorPressure(scaled_voltages[1], 500, 4500, 0, 30) : 0; // Psi

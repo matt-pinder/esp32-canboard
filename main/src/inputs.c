@@ -120,34 +120,40 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv)
     return (int8_t)-128;
 }
 
-uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled){
-    if(channel < ADC_CHANNEL_START || channel > ADC_CHANNEL_END){
+uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, bool use_filter) {
+    static float filtered_mv[NUM_ADC_CHANNELS] = {0};
+    const float alpha = 0.1f; // Filter Coefficient
+
+    if (channel < ADC_CHANNEL_START || channel > ADC_CHANNEL_END) {
         ESP_LOGE(adc_log, "Requested ADC Channel %d Out of Range!", channel);
         return 0;
     }
 
-    if(cali_handles[channel] == NULL){
+    if (cali_handles[channel] == NULL) {
         ESP_LOGE(adc_log, "No Calibration Handle for ADC Channel: %d", channel);
         return 0;
     }
 
     int raw, voltage = 0;
     esp_err_t err = adc_oneshot_read(adc_handle, channel, &raw);
-    if(err != ESP_OK){
+    if (err != ESP_OK) {
         ESP_LOGE(adc_log, "ADC Read Failed on Channel: %d (%s)", channel, esp_err_to_name(err));
         return 0;
     }
 
     err = adc_cali_raw_to_voltage(cali_handles[channel], raw, &voltage);
-    if(err != ESP_OK){
+    if (err != ESP_OK) {
         ESP_LOGE(adc_log, "Voltage Conversion Failed for ADC Channel: %d (%s)", channel, esp_err_to_name(err));
         return 0;
     }
 
-    // Scale to original voltage input based on divider of R1 = 4K7 and R2 = 10K (* 1.47) if TRUE.
-    // Compensation for offset of pullup voltage is built into the NTC function.
-    float v_input_mv;
-    v_input_mv = (scaled) ? voltage * 1.47 : voltage; 
-    
-    return (int)v_input_mv;
+    float v_input_mv = (scaled) ? voltage * 1.47f : (float)voltage;
+
+    if (use_filter) {
+        int index = channel - ADC_CHANNEL_START;
+        filtered_mv[index] = alpha * v_input_mv + (1.0f - alpha) * filtered_mv[index];
+        v_input_mv = filtered_mv[index];
+    }
+
+    return (uint16_t)(v_input_mv);
 }

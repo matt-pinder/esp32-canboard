@@ -8,6 +8,7 @@
 #define ADC_UNIT ADC_UNIT_1
 #define ADC_CHANNEL_START ADC_CHANNEL_0
 #define ADC_CHANNEL_END ADC_CHANNEL_9
+#define NUM_ADC_CHANNELS (ADC_CHANNEL_END - ADC_CHANNEL_START + 1)
 #define PULLUP_VREF_MV 5025
 
 static const char *adc_log = "adc";
@@ -27,7 +28,7 @@ extern uint16_t scaled_pressures[4];
 
 int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv);
 uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, float p_max);
-uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled);
+uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, bool use_filter);
 
 static const ntc_point_t ntc_table[] = {
     { -40, 45313 }, { -30, 26114 }, { -20, 15462 }, { -10,  9397 },
