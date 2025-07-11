@@ -24,26 +24,43 @@ twai_general_config_t can_config = { .controller_id = 0, .mode = TWAI_MODE_NORMA
                                    .clkout_io = TWAI_IO_UNUSED, .bus_off_io = TWAI_IO_UNUSED, .tx_queue_len = 64, .rx_queue_len = 64,
                                    .alerts_enabled = TWAI_ALERT_NONE, .clkout_divider = 0 };
              
+/**
+ * @brief Initializes a TWAI message with the given identifier and 8 data bytes.
+ *        All data bytes are initially set to 0.
+ *
+ * @param id The identifier of the message.
+ *
+ * @return The initialized TWAI message.
+ */
 twai_message_t init_twai_message(uint32_t id) {
     twai_message_t msg = { .identifier = id, .data_length_code = 8 };
     memset(msg.data, 0, sizeof(msg.data));
     return msg;
 }
 
+/**
+ * @brief The CAN transmit task.
+ *
+ * This task is responsible for transmitting data on the CAN bus. It reads the
+ * ADC values from the inputs, scales them, and transmits them as a CAN message.
+ *
+ * The task uses the twai driver to send the messages, and the adc driver to read
+ * the ADC values.
+ *
+ */
 void canTransmit(void *arg)
 {
     ESP_LOGI(can_log, "CAN Transmit Task Started");
 
     // Setup CAN Packets
     twai_message_t tx_msg[4];
-    for(size_t i = 0; i <= 4; ++i){
+    for (size_t i = 0; i <= 4; ++i) {
         tx_msg[i] = init_twai_message(CAN_BASEID + i);
     }
 
-    while(1){
-
-        for(int i = 0; i <= 9; i++){
-            switch(i){
+    while(1) {
+        for (int i = 0; i <= 9; i++) {
+            switch(i) {
                 case 2: // Low Pass Filter - Crank Case Pressure
                     scaled_voltages[i] = getScaledMillivolts(i, true, true);
                     break;

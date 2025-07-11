@@ -26,7 +26,7 @@ void app_main(void)
     ESP_LOGI(adc_log, "Current CPU Temperature: %u°C", getCpuTemperature());
 
     initAdcChannels();
-    for(int i = 0; i <= 9; i++){
+    for(int i = 0; i <= 9; i++){ // Display voltage readings on initial startup.
         ESP_LOGI(adc_log, "ADC %u, GPIO %u: %u mV", i, i+1, getScaledMillivolts(i, false, false));
         ESP_LOGI(adc_log, "ADC %u, GPIO %u: %u mV (Scaled 0-5v)", i, i+1, getScaledMillivolts(i, true, false));
     }
