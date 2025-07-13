@@ -71,7 +71,8 @@ void canTransmit(void *arg)
         }
 
         // Charge Cooler Inlet Pressure
-        scaled_pressures[0] = (scaled_voltages[0] > 0) ? getSensorPressure(scaled_voltages[0], 498, 4539, 50, 256) : 0; // kPa
+        //scaled_pressures[0] = (scaled_voltages[0] > 0) ? getSensorPressure(scaled_voltages[0], 498, 4539, 50, 356) : 0; // kPa
+        scaled_pressures[0] = (scaled_voltages[0] > 0) ? (uint16_t)(-2.502 * (scaled_voltages[0]/1000) * (scaled_voltages[0]/1000) + 72.145 * (scaled_voltages[0]/1000) + 30.300) : 0; // kPa
         // Exhaust Back Pressure (0-30psi)
         scaled_pressures[1] = (scaled_voltages[1] > 0) ? getSensorPressure(scaled_voltages[1], 500, 4500, 0, 30) : 0; // Psi
         // Crank Case Pressure (Bosch MAP 0261230119)
