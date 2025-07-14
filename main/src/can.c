@@ -78,7 +78,7 @@ void canTransmit(void *arg)
         // Crank Case Pressure (Bosch MAP 0261230119)
         scaled_pressures[2] = (scaled_voltages[2] > 0) ? getSensorPressure(scaled_voltages[2], 400, 4650, 20, 300) : 0; // kPa
         // Turbo Regulator Oil Pressure (0-150psi / 0-10bar)
-        scaled_pressures[3] = (scaled_voltages[3] > 0) ? getSensorPressure(scaled_voltages[3], 500, 4500, 0, 10) : 0; // Bar
+        scaled_pressures[3] = (scaled_voltages[3] > 0) ? getSensorPressure(scaled_voltages[3], 500, 4500, 0, 6.89) : 0; // Bar
         
         // Base Message
         tx_msg[0].data[0] = (int8_t) getCpuTemperature(); // CPU Temperature (-128C > +127C)
