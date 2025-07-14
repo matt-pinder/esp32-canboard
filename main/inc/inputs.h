@@ -1,5 +1,6 @@
 #pragma once
 
+#include "freertos/semphr.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -10,6 +11,7 @@
 #define ADC_CHANNEL_END ADC_CHANNEL_9
 #define NUM_ADC_CHANNELS (ADC_CHANNEL_END - ADC_CHANNEL_START + 1)
 #define PULLUP_VREF_MV 5025
+#define FILTER_DEPTH 5
 
 static const char *adc_log = "adc";
 
@@ -23,12 +25,18 @@ int8_t getCpuTemperature(void);
 
 void initAdcChannels(void);
 
-extern uint16_t scaled_voltages[10];
-extern uint16_t scaled_pressures[4];
+extern SemaphoreHandle_t filtered_voltages_mutex;
+extern SemaphoreHandle_t scaled_pressures_mutex;
+
+extern volatile uint16_t scaled_pressures[4];
+extern volatile uint16_t filtered_voltages[NUM_ADC_CHANNELS];
 
 int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv);
 uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, float p_max);
-uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, bool use_filter);
+uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled);
+uint16_t medianFilterHelper(uint16_t *samples, int count);
+void adcProcess(void *arg);
+void pressureProcess(void *arg);
 
 static const ntc_point_t ntc_table[] = {
     { -40, 45313 }, { -30, 26114 }, { -20, 15462 }, { -10,  9397 },

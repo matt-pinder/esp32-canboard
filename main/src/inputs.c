@@ -6,6 +6,10 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_log.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+
 #include "driver/temperature_sensor.h"
 #include "inc/inputs.h"
 
@@ -18,8 +22,11 @@ static adc_cali_handle_t cali_handles[ADC_CHANNEL_END + 1] = {NULL};
 static temperature_sensor_handle_t tempSensor_handle = NULL;
 static bool tempSensor_initialized = false;
 
-uint16_t scaled_voltages[10];
-uint16_t scaled_pressures[4];
+SemaphoreHandle_t filtered_voltages_mutex;
+SemaphoreHandle_t scaled_pressures_mutex;
+
+volatile uint16_t scaled_pressures[4];
+volatile uint16_t filtered_voltages[NUM_ADC_CHANNELS];
 
 /**
  * @brief Initializes the CPU temperature sensor.
@@ -191,19 +198,12 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv)
  * @brief Gets the scaled millivolts from the given ADC channel.
  *
  * If the 'scaled' parameter is true, the voltage is scaled to the range of 0 to 5000 mV.
- * If the 'use_filter' parameter is true, the voltage is filtered using a single pole IIR filter
- * with a coefficient of 0.1. The filtered value is then returned. Otherwise, the raw voltage
- * is returned.
  *
  * @param channel The ADC channel to read from
  * @param scaled Whether to scale the voltage to the range of 0 to 5000 mV
- * @param use_filter Whether to apply the filter to the voltage
- * @return The scaled and optionally filtered voltage in millivolts
+ * @return The scaled voltage in millivolts
  */
-uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, bool use_filter) {
-    static float filtered_mv[NUM_ADC_CHANNELS] = {0};
-    const float alpha = 0.1f; // Filter Coefficient
-
+uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled) {
     if (channel < ADC_CHANNEL_START || channel > ADC_CHANNEL_END) {
         ESP_LOGE(adc_log, "Requested ADC Channel %d Out of Range!", channel);
         return 0;
@@ -229,11 +229,80 @@ uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, bool use_filter
 
     float v_input_mv = (scaled) ? voltage * 1.47f : (float)voltage;
 
-    if (use_filter) {
-        int index = channel - ADC_CHANNEL_START;
-        filtered_mv[index] = alpha * v_input_mv + (1.0f - alpha) * filtered_mv[index];
-        v_input_mv = filtered_mv[index];
-    }
-
     return (uint16_t)(v_input_mv);
+}
+
+/**
+ * @brief A helper function for median filtering.
+ *
+ * This function takes an array of uint16_t samples and the number of samples
+ * as input, and returns the median value of the samples. The median is
+ * calculated by sorting the samples in ascending order and returning the
+ * middle value.
+ *
+ * @param samples The array of uint16_t samples
+ * @param count The number of samples
+ * @return The median value of the samples
+ */
+uint16_t medianFilterHelper(uint16_t *samples, int count) {
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (samples[j] < samples[i]) {
+                uint16_t tmp = samples[i];
+                samples[i] = samples[j];
+                samples[j] = tmp;
+            }
+        }
+    }
+    return samples[count / 2];
+}
+
+/**
+ * @brief Processes the ADC values in the background.
+ *
+ * This function runs in its own task and continuously reads the ADC values
+ * from all channels. It applies a median filter to the samples and stores the
+ * filtered values in the filtered_voltages array.
+ */
+void adcProcess(void *arg) {
+    ESP_LOGI(adc_log, "ADC Processing Task Started");
+    uint16_t samples[FILTER_DEPTH];
+    while (1) {
+        for (int ch = ADC_CHANNEL_START; ch <= ADC_CHANNEL_END; ch++) {
+            for (int i = 0; i < FILTER_DEPTH; i++) {
+                samples[i] = getScaledMillivolts(ch, true); 
+                vTaskDelay(pdMS_TO_TICKS(2)); 
+            }
+
+            uint16_t filtered = medianFilterHelper(samples, FILTER_DEPTH);
+            if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+                filtered_voltages[ch] = filtered;
+                xSemaphoreGive(filtered_voltages_mutex);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    vTaskDelete(NULL);
+}
+
+void pressureProcess(void *arg) {
+    ESP_LOGI(adc_log, "Pressure Sensor Processing Task Started");
+    while (1) {
+        if (xSemaphoreTake(scaled_pressures_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+
+            // Charge Cooler Inlet Pressure
+            //scaled_pressures[0] = (scaled_voltages[0] > 0) ? getSensorPressure(scaled_voltages[0], 498, 4539, 50, 356) : 0; // kPa
+            scaled_pressures[0] = (filtered_voltages[0] > 0) ? (uint16_t)((-2.502 * (filtered_voltages[0]) * (filtered_voltages[0]) + 72.145 * (filtered_voltages[0]) + 30.300) * 100.0f) : 0; // kPa
+            // Exhaust Back Pressure (0-30psi)
+            scaled_pressures[1] = (filtered_voltages[1] > 0) ? getSensorPressure(filtered_voltages[1], 500, 4500, 0, 30) : 0; // Psi
+            // Crank Case Pressure (Bosch MAP 0261230119)
+            scaled_pressures[2] = (filtered_voltages[2] > 0) ? getSensorPressure(filtered_voltages[2], 400, 4650, 20, 300) : 0; // kPa
+            // Turbo Regulator Oil Pressure (0-150psi / 0-10bar)
+            scaled_pressures[3] = (filtered_voltages[3] > 0) ? getSensorPressure(filtered_voltages[3], 500, 4500, 0, 6.89) : 0; // Bar
+
+            xSemaphoreGive(scaled_pressures_mutex);
+        }
+        vTaskDelay(pdMS_TO_TICKS(30));
+    }
+    vTaskDelete(NULL);
 }
