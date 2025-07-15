@@ -38,11 +38,11 @@ void app_main(void)
             ESP_LOGI(can_log, "TWAI Driver Started!");
         } else {
             ESP_LOGI(can_log, "Failed to Start TWAI Driver!");
-            return;
+            abort();
         }
     } else {
         ESP_LOGI(can_log, "Failed to Install TWAI Driver!");
-        return;
+        abort();
     }
 
     filtered_voltages_mutex = xSemaphoreCreateMutex();

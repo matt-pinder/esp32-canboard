@@ -39,15 +39,14 @@ twai_message_t init_twai_message(uint32_t id) {
     return msg;
 }
 
+
 /**
  * @brief The CAN transmit task.
  *
- * This task is responsible for transmitting data on the CAN bus. It reads the
- * ADC values from the inputs, scales them, and transmits them as a CAN message.
- *
- * The task uses the twai driver to send the messages, and the adc driver to read
- * the ADC values.
- *
+ * This task is responsible for transmitting CAN messages to the bus. It
+ * periodically reads the filtered and scaled ADC values and constructs
+ * the CAN messages accordingly. The messages are then transmitted using
+ * the TWAI driver.
  */
 void canTransmit(void *arg)
 {
@@ -77,7 +76,7 @@ void canTransmit(void *arg)
         tx_msg[0].data[1] = 0x00; // Unused / Spare
         tx_msg[0].data[2] = voltages_copy[0] & 0xFF; // Analog Input 1 - Charge Cooler Inlet Pressure (BMW TMAP 13627843531)
         tx_msg[0].data[3] = (voltages_copy[0] >> 8) & 0xFF;
-        tx_msg[0].data[4] = voltages_copy[1]; // Analog Input 2 - Exhaust Back Pressure (0-30 Psi)
+        tx_msg[0].data[4] = voltages_copy[1]; // Analog Input 2 - Exhaust Back Pressure
         tx_msg[0].data[5] = (voltages_copy[1] >> 8) & 0xFF;
         tx_msg[0].data[6] = voltages_copy[2]; // Analog Input 3 - Crank Case Pressure (Bosch MAP 0261230119)
         tx_msg[0].data[7] = (voltages_copy[2] >> 8) & 0xFF;
@@ -85,7 +84,7 @@ void canTransmit(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
 
         // BASE + 1
-        tx_msg[1].data[0] = voltages_copy[3]; // Analog Input 4 - Turbo Regulator Oil Pressure (0-150 Psi)
+        tx_msg[1].data[0] = voltages_copy[3]; // Analog Input 4 - Turbo Regulator Oil Pressure
         tx_msg[1].data[1] = (voltages_copy[3] >> 8) & 0xFF;
         tx_msg[1].data[2] = voltages_copy[4]; // Analog Input 5
         tx_msg[1].data[3] = (voltages_copy[4] >> 8) & 0xFF;

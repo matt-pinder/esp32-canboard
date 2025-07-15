@@ -285,20 +285,26 @@ void adcProcess(void *arg) {
     vTaskDelete(NULL);
 }
 
+/**
+ * @brief The pressure sensor processing task.
+ *
+ * This task is responsible for processing the raw ADC values from the pressure
+ * sensors. It reads the filtered ADC values from the filtered_voltages array and
+ * calculates the pressure values using the getSensorPressure function. The
+ * calculated pressure values are then stored in the scaled_pressures array. The
+ * task runs in an infinite loop and continuously updates the scaled_pressures
+ * array.
+ */
 void pressureProcess(void *arg) {
     ESP_LOGI(adc_log, "Pressure Sensor Processing Task Started");
     while (1) {
         if (xSemaphoreTake(scaled_pressures_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
 
-            // Charge Cooler Inlet Pressure
             //scaled_pressures[0] = (scaled_voltages[0] > 0) ? getSensorPressure(scaled_voltages[0], 498, 4539, 50, 356) : 0; // kPa
-            scaled_pressures[0] = (filtered_voltages[0] > 0) ? (uint16_t)((-2.502 * (filtered_voltages[0]) * (filtered_voltages[0]) + 72.145 * (filtered_voltages[0]) + 30.300) * 100.0f) : 0; // kPa
-            // Exhaust Back Pressure (0-30psi)
-            scaled_pressures[1] = (filtered_voltages[1] > 0) ? getSensorPressure(filtered_voltages[1], 500, 4500, 0, 30) : 0; // Psi
-            // Crank Case Pressure (Bosch MAP 0261230119)
-            scaled_pressures[2] = (filtered_voltages[2] > 0) ? getSensorPressure(filtered_voltages[2], 400, 4650, 20, 300) : 0; // kPa
-            // Turbo Regulator Oil Pressure (0-150psi / 0-10bar)
-            scaled_pressures[3] = (filtered_voltages[3] > 0) ? getSensorPressure(filtered_voltages[3], 500, 4500, 0, 6.89) : 0; // Bar
+            scaled_pressures[0] = (filtered_voltages[0] > 0) ? (uint16_t)((-1.248f * (filtered_voltages[0]/1000.0f) * (filtered_voltages[0]/1000.0f) + 71.275f * (filtered_voltages[0]/1000.0f) + 13.065f) * 100.0f) : 0; // Charge Cooler Inlet Pressure kPa
+            scaled_pressures[1] = (filtered_voltages[1] > 0) ? getSensorPressure(filtered_voltages[1], 500, 4500, 0, 30) : 0; // Exhaust Back Pressure - 0-30 Psi
+            scaled_pressures[2] = (filtered_voltages[2] > 0) ? getSensorPressure(filtered_voltages[2], 400, 4650, 20, 300) : 0; // Crank Case Pressure (Bosch MAP 0261230119) - kPa
+            scaled_pressures[3] = (filtered_voltages[3] > 0) ? getSensorPressure(filtered_voltages[3], 500, 4500, 0, 6.89) : 0; // Turbo Regulator Oil Pressure - 0-100 Psi / 0-6.89 Bar
 
             xSemaphoreGive(scaled_pressures_mutex);
         }
