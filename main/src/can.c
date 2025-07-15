@@ -39,7 +39,6 @@ twai_message_t init_twai_message(uint32_t id) {
     return msg;
 }
 
-
 /**
  * @brief The CAN transmit task.
  *

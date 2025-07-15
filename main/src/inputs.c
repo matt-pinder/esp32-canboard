@@ -301,7 +301,7 @@ void pressureProcess(void *arg) {
         if (xSemaphoreTake(scaled_pressures_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
 
             //scaled_pressures[0] = (scaled_voltages[0] > 0) ? getSensorPressure(scaled_voltages[0], 498, 4539, 50, 356) : 0; // kPa
-            scaled_pressures[0] = (filtered_voltages[0] > 0) ? (uint16_t)((-1.248f * (filtered_voltages[0]/1000.0f) * (filtered_voltages[0]/1000.0f) + 71.275f * (filtered_voltages[0]/1000.0f) + 13.065f) * 100.0f) : 0; // Charge Cooler Inlet Pressure kPa
+            scaled_pressures[0] = (filtered_voltages[0] > 0) ? (uint16_t)((-2.502 * (filtered_voltages[0]/1000.0f) * (filtered_voltages[0]/1000.0f) + 72.145 * (filtered_voltages[0]/1000.0f) + 30.300) * 100.0f) : 0; // Charge Cooler Inlet Pressure kPa
             scaled_pressures[1] = (filtered_voltages[1] > 0) ? getSensorPressure(filtered_voltages[1], 500, 4500, 0, 30) : 0; // Exhaust Back Pressure - 0-30 Psi
             scaled_pressures[2] = (filtered_voltages[2] > 0) ? getSensorPressure(filtered_voltages[2], 400, 4650, 20, 300) : 0; // Crank Case Pressure (Bosch MAP 0261230119) - kPa
             scaled_pressures[3] = (filtered_voltages[3] > 0) ? getSensorPressure(filtered_voltages[3], 500, 4500, 0, 6.89) : 0; // Turbo Regulator Oil Pressure - 0-100 Psi / 0-6.89 Bar
