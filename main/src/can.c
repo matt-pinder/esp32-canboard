@@ -52,7 +52,7 @@ void canTransmit(void *arg)
 {
     ESP_LOGI(can_log, "CAN Transmit Task Started");
     // Setup CAN Packets
-    twai_message_t tx_msg[4];
+    twai_message_t tx_msg[5];
     for (size_t i = 0; i <= 4; ++i) {
         tx_msg[i] = init_twai_message(CAN_BASEID + i);
     }
