@@ -4,7 +4,6 @@
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
-#include "esp_log.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -163,9 +162,8 @@ uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, fl
  * @param v_ref_mv The reference voltage in millivolts
  * @return The calculated temperature value in degrees Celsius (int8_t)
  */
-int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv)
-{
-    if (v_mv <= 0 || v_mv >= v_ref_mv || r_pullup <= 0 || v_ref_mv <= 0)
+int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_point_t *table, size_t table_size) {
+    if (v_mv <= 0 || v_mv >= v_ref_mv || r_pullup <= 0 || v_ref_mv <= 0 || table == NULL || table_size < 2)
         return (int8_t)-128;
 
     float v_ntc = v_mv / 1000.0f;
@@ -173,17 +171,17 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv)
     float r_ntc_f = (r_pullup * v_ntc) / (v_ref - v_ntc);
     int32_t r_ntc = (int32_t)(r_ntc_f + 0.5f);
 
-    if (r_ntc >= ntc_table[0].resistance) return ntc_table[0].temp_c;
-    if (r_ntc <= ntc_table[sizeof(ntc_table) / sizeof(ntc_table[0]) - 1].resistance)
-        return ntc_table[sizeof(ntc_table) / sizeof(ntc_table[0]) - 1].temp_c;
+    if (r_ntc >= table[0].resistance) return table[0].temp_c;
+    if (r_ntc <= table[table_size - 1].resistance)
+        return table[table_size - 1].temp_c;
 
-    for (int i = 0; i < sizeof(ntc_table) / sizeof(ntc_table[0]) - 1; i++) {
-        int32_t r1 = ntc_table[i].resistance;
-        int32_t r2 = ntc_table[i + 1].resistance;
+    for (size_t i = 0; i < table_size - 1; i++) {
+        int32_t r1 = table[i].resistance;
+        int32_t r2 = table[i + 1].resistance;
 
         if (r_ntc <= r1 && r_ntc > r2) {
-            int16_t t1 = ntc_table[i].temp_c;
-            int16_t t2 = ntc_table[i + 1].temp_c;
+            int16_t t1 = table[i].temp_c;
+            int16_t t2 = table[i + 1].temp_c;
 
             float frac = (float)(r_ntc - r2) / (r1 - r2);
             int8_t temp = (int8_t)(t2 + frac * (t1 - t2));
@@ -299,13 +297,10 @@ void pressureProcess(void *arg) {
     ESP_LOGI(adc_log, "Pressure Sensor Processing Task Started");
     while (1) {
         if (xSemaphoreTake(scaled_pressures_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-
-            //scaled_pressures[0] = (scaled_voltages[0] > 0) ? getSensorPressure(scaled_voltages[0], 498, 4539, 50, 356) : 0; // kPa
-            scaled_pressures[0] = (filtered_voltages[0] > 0) ? (uint16_t)((-2.502 * (filtered_voltages[0]/1000.0f) * (filtered_voltages[0]/1000.0f) + 72.145 * (filtered_voltages[0]/1000.0f) + 30.300) * 100.0f) : 0; // Charge Cooler Inlet Pressure kPa
+            scaled_pressures[0] = (filtered_voltages[0] > 0) ? (uint16_t)((-3.714 * (filtered_voltages[0]/1000.0f) * (filtered_voltages[0]/1000.0f) + 84.377 * (filtered_voltages[0]/1000.0f) + 17.778) * 100.0f) : 0; // Charge Cooler Inlet Pressure - kPa
             scaled_pressures[1] = (filtered_voltages[1] > 0) ? getSensorPressure(filtered_voltages[1], 500, 4500, 0, 30) : 0; // Exhaust Back Pressure - 0-30 Psi
             scaled_pressures[2] = (filtered_voltages[2] > 0) ? getSensorPressure(filtered_voltages[2], 400, 4650, 20, 300) : 0; // Crank Case Pressure (Bosch MAP 0261230119) - kPa
             scaled_pressures[3] = (filtered_voltages[3] > 0) ? getSensorPressure(filtered_voltages[3], 500, 4500, 0, 6.89) : 0; // Turbo Regulator Oil Pressure - 0-100 Psi / 0-6.89 Bar
-
             xSemaphoreGive(scaled_pressures_mutex);
         }
         vTaskDelay(pdMS_TO_TICKS(30));

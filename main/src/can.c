@@ -105,9 +105,9 @@ void canTransmit(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
         
         // BASE + 3
-        tx_msg[3].data[0] = getSensorTemperature(voltages_copy[8], 2400, PULLUP_VREF_MV); // Charge Cooler Water Temperature (C)
-        tx_msg[3].data[1] = getSensorTemperature(voltages_copy[9], 2400, PULLUP_VREF_MV); // Air Temperature (C)
-        tx_msg[3].data[2] = 0x00; // Charge Cooler Inlet Temperature (C)
+        tx_msg[3].data[0] = getSensorTemperature(voltages_copy[8], 2400, PULLUP_VREF_MV, ntc_table, NTC_TABLE_SIZE(ntc_table)); // Charge Cooler Water Temperature (C)
+        tx_msg[3].data[1] = getSensorTemperature(voltages_copy[9], 2400, PULLUP_VREF_MV, ntc_table, NTC_TABLE_SIZE(ntc_table)); // Air Temperature (C)
+        tx_msg[3].data[2] = getSensorTemperature(voltages_copy[7], 2400, PULLUP_VREF_MV, tmap_table, NTC_TABLE_SIZE(tmap_table)); // Charge Cooler Inlet Temperature (C)
 
         tx_msg[3].data[3] = pressures_copy[0]; // Charge Cooler Inlet Pressure (kPa)
         tx_msg[3].data[4] = (pressures_copy[0] >> 8) & 0xFF;
