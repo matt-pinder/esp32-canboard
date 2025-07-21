@@ -201,7 +201,7 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_poin
  * @param scaled Whether to scale the voltage to the range of 0 to 5000 mV
  * @return The scaled voltage in millivolts
  */
-uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled) {
+uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, float scaling_factor) {
     if (channel < ADC_CHANNEL_START || channel > ADC_CHANNEL_END) {
         ESP_LOGE(adc_log, "Requested ADC Channel %d Out of Range!", channel);
         return 0;
@@ -225,7 +225,7 @@ uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled) {
         return 0;
     }
 
-    float v_input_mv = (scaled) ? voltage * 1.47f : (float)voltage;
+    float v_input_mv = (scaled) ? voltage * scaling_factor : (float)voltage;
 
     return (uint16_t)(v_input_mv);
 }
@@ -268,7 +268,15 @@ void adcProcess(void *arg) {
     while (1) {
         for (int ch = ADC_CHANNEL_START; ch <= ADC_CHANNEL_END; ch++) {
             for (int i = 0; i < FILTER_DEPTH; i++) {
-                samples[i] = getScaledMillivolts(ch, true); 
+                switch(ch) {
+                    case 8:
+                    case 9:
+                        samples[i] = getScaledMillivolts(ch, true, 1.700f);
+                        break;
+                    default:
+                        samples[i] = getScaledMillivolts(ch, true, 1.470f);
+                        break;
+                }
                 vTaskDelay(pdMS_TO_TICKS(2)); 
             }
 
@@ -298,7 +306,7 @@ void pressureProcess(void *arg) {
     while (1) {
         if (xSemaphoreTake(scaled_pressures_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
             scaled_pressures[0] = (filtered_voltages[0] > 0) ? (uint16_t)((-3.714 * (filtered_voltages[0]/1000.0f) * (filtered_voltages[0]/1000.0f) + 84.377 * (filtered_voltages[0]/1000.0f) + 17.778) * 100.0f) : 0; // Charge Cooler Inlet Pressure - kPa
-            scaled_pressures[1] = (filtered_voltages[1] > 0) ? getSensorPressure(filtered_voltages[1], 500, 4500, 0, 30) : 0; // Exhaust Back Pressure - 0-30 Psi
+            scaled_pressures[1] = (filtered_voltages[1] > 0) ? getSensorPressure(filtered_voltages[1], 500, 4500, 0, 100) : 0; // Exhaust Back Pressure - 0-30 Psi
             scaled_pressures[2] = (filtered_voltages[2] > 0) ? getSensorPressure(filtered_voltages[2], 400, 4650, 20, 300) : 0; // Crank Case Pressure (Bosch MAP 0261230119) - kPa
             scaled_pressures[3] = (filtered_voltages[3] > 0) ? getSensorPressure(filtered_voltages[3], 500, 4500, 0, 6.89) : 0; // Turbo Regulator Oil Pressure - 0-100 Psi / 0-6.89 Bar
             xSemaphoreGive(scaled_pressures_mutex);

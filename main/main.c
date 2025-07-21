@@ -27,10 +27,10 @@ void app_main(void)
     ESP_LOGI(adc_log, "Current CPU Temperature: %u°C", getCpuTemperature());
 
     initAdcChannels();
-    for(int i = 0; i <= 9; i++){ // Display voltage readings on initial startup.
-        ESP_LOGI(adc_log, "ADC %u, GPIO %u: %u mV", i, i+1, getScaledMillivolts(i, false));
-        ESP_LOGI(adc_log, "ADC %u, GPIO %u: %u mV (Scaled 0-5v)", i, i+1, getScaledMillivolts(i, true));
-    }
+    //for(int i = 0; i <= 9; i++){ // Display voltage readings on initial startup.
+    //    ESP_LOGI(adc_log, "ADC %u, GPIO %u: %u mV", i, i+1, getScaledMillivolts(i, false));
+    //    ESP_LOGI(adc_log, "ADC %u, GPIO %u: %u mV (Scaled 0-5v)", i, i+1, getScaledMillivolts(i, true));
+    //}
 
     if(twai_driver_install_v2(&can_config, &t_can_config, &f_config, &twai_can) == ESP_OK){
         ESP_LOGI(can_log, "TWAI Driver Installed");
