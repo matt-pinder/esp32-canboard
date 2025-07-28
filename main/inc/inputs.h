@@ -34,7 +34,7 @@ extern volatile uint16_t filtered_voltages[NUM_ADC_CHANNELS];
 
 int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_point_t *table, size_t table_size);
 uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, float p_max);
-uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled);
+uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, float scaling_factor);
 uint16_t medianFilterHelper(uint16_t *samples, int count);
 void adcProcess(void *arg);
 void pressureProcess(void *arg);
