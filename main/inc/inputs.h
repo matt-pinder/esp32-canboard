@@ -48,7 +48,7 @@ void pressureProcess(void *arg);
 //     { 100,  536}, { 110,  200 }, { 120,   201 }, { 130,    202 }, { 140,    203 }
 // };
 
-static const ntc_point_t ntc_table_corrected[] = {
+static const ntc_point_t ntc_table[] = {
     { -20, 25317 }, { -4, 22855 }, {  2, 18144 }, { 10,  8233 },
     { 15, 5847 }, { 21, 4376 }, { 31, 2549 }, { 42, 1656 },
     { 50, 1100 }, { 60,  789 }, { 71,  552 }, { 80,  429 },

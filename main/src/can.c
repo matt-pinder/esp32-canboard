@@ -45,10 +45,10 @@ void canTransmit(void *arg)
     ESP_LOGI(can_log, "CAN Transmit Task Started");
     // Setup CAN Packets
     twai_message_t tx_msg[5];
-    for (size_t i = 0; i <= 4; ++i) {
-        tx_msg[i] = init_twai_message(CAN_BASEID + i);
-    }
-
+    // for (size_t i = 0; i <= 1; ++i) {
+    //     tx_msg[i] = init_twai_message(CAN_BASEID + i);
+    // }
+    tx_msg[0] = init_twai_message(CAN_BASEID);
     while(1) {
         
         uint16_t voltages_copy[NUM_ADC_CHANNELS];
@@ -64,59 +64,16 @@ void canTransmit(void *arg)
         }
 
         // Base Message
-        tx_msg[0].data[0] = (int8_t) getCpuTemperature(); // CPU Temperature (-128C > +127C)
-        tx_msg[0].data[1] = 0x00; // Unused / Spare
-        tx_msg[0].data[2] = voltages_copy[0] & 0xFF; // Analog Input 1 - Charge Cooler Inlet Pressure (BMW TMAP 13627843531)
-        tx_msg[0].data[3] = (voltages_copy[0] >> 8) & 0xFF;
-        tx_msg[0].data[4] = voltages_copy[1]; // Analog Input 2 - Exhaust Back Pressure
-        tx_msg[0].data[5] = (voltages_copy[1] >> 8) & 0xFF;
-        tx_msg[0].data[6] = voltages_copy[2]; // Analog Input 3 - Crank Case Pressure (Bosch MAP 0261230119)
-        tx_msg[0].data[7] = (voltages_copy[2] >> 8) & 0xFF;
+        tx_msg[0].data[0] =  voltages_copy[0] & 0xFF;
+        tx_msg[0].data[1] = (voltages_copy[0] >> 8) & 0xFF;
+        tx_msg[0].data[2] = 0;
+        tx_msg[0].data[3] = 0;
+        tx_msg[0].data[4] = 0;
+        tx_msg[0].data[5] = 0;
+        tx_msg[0].data[6] = 0;
+        tx_msg[0].data[7] = 0;
         twai_transmit(&tx_msg[0], pdMS_TO_TICKS(1000));
         vTaskDelay(pdMS_TO_TICKS(10));
-
-        // BASE + 1
-        tx_msg[1].data[0] = voltages_copy[3]; // Analog Input 4 - Turbo Regulator Oil Pressure
-        tx_msg[1].data[1] = (voltages_copy[3] >> 8) & 0xFF;
-        tx_msg[1].data[2] = voltages_copy[4]; // Analog Input 5
-        tx_msg[1].data[3] = (voltages_copy[4] >> 8) & 0xFF;
-        tx_msg[1].data[4] = voltages_copy[5]; // Analog Input 6
-        tx_msg[1].data[5] = (voltages_copy[5] >> 8) & 0xFF;
-        tx_msg[1].data[6] = voltages_copy[6]; // Analog Input 7
-        tx_msg[1].data[7] = (voltages_copy[6] >> 8) & 0xFF;
-        twai_transmit(&tx_msg[1], pdMS_TO_TICKS(1000));
-        vTaskDelay(pdMS_TO_TICKS(10));
-
-        // BASE + 2
-        tx_msg[2].data[0] = voltages_copy[7]; // Analog Input 8 - Charge Cooler Inlet Temperature (BMW TMAP 13627843531)
-        tx_msg[2].data[1] = (voltages_copy[7] >> 8) & 0xFF; 
-        tx_msg[2].data[2] = voltages_copy[8]; // Analog Input 9 - Charge Cooler Water Temperature (Bosch 0280130026)
-        tx_msg[2].data[3] = (voltages_copy[8] >> 8) & 0xFF;
-        tx_msg[2].data[4] = voltages_copy[9]; // Analog Input 10 - Air Temperature (Bosch 0280130039)
-        tx_msg[2].data[5] = (voltages_copy[9] >> 8) & 0xFF;
-        twai_transmit(&tx_msg[2], pdMS_TO_TICKS(1000));
-        vTaskDelay(pdMS_TO_TICKS(10));
-        
-        // BASE + 3
-        tx_msg[3].data[0] = getSensorTemperature(voltages_copy[8], 2400, PULLUP_VREF_MV, ntc_table, NTC_TABLE_SIZE(ntc_table)); // Charge Cooler Water Temperature (C)
-        tx_msg[3].data[1] = getSensorTemperature(voltages_copy[9], 2400, PULLUP_VREF_MV, ntc_table, NTC_TABLE_SIZE(ntc_table)); // Air Temperature (C)
-        tx_msg[3].data[2] = getSensorTemperature(voltages_copy[7], 2400, PULLUP_VREF_MV, tmap_table, NTC_TABLE_SIZE(tmap_table)); // Charge Cooler Inlet Temperature (C)
-
-        tx_msg[3].data[3] = pressures_copy[0]; // Charge Cooler Inlet Pressure (kPa)
-        tx_msg[3].data[4] = (pressures_copy[0] >> 8) & 0xFF;
-        tx_msg[3].data[5] = pressures_copy[1]; // Exhaust Back Pressure (Psi)
-        tx_msg[3].data[6] = (pressures_copy[1] >> 8) & 0xFF;
-        twai_transmit(&tx_msg[3], pdMS_TO_TICKS(1000));
-        vTaskDelay(pdMS_TO_TICKS(10));
-
-        // BASE + 4
-        tx_msg[4].data[0] = pressures_copy[2]; // Crank Case Pressure (kPa)
-        tx_msg[4].data[1] = (pressures_copy[2] >> 8) & 0xFF;
-        tx_msg[4].data[2] = pressures_copy[3]; // Turbo Regulator Oil Pressure (Psi)
-        tx_msg[4].data[3] = (pressures_copy[3] >> 8) & 0xFF;
-        twai_transmit(&tx_msg[4], pdMS_TO_TICKS(1000));
-
-        vTaskDelay(pdMS_TO_TICKS(80));
     }
     vTaskDelete(NULL);
 }

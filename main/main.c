@@ -13,6 +13,11 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_wifi.h"
+#include "esp_now.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "driver/gpio.h"
 #include "driver/gpio.h"
 #include "driver/twai.h"
 
@@ -20,6 +25,7 @@
 
 #include "inc/inputs.h"
 #include "inc/can.h"
+#include "inc/espnow.h"
 
 void app_main(void)
 {
@@ -57,7 +63,10 @@ void app_main(void)
 
     // Process Pressures on Core 0
     xTaskCreatePinnedToCore(pressureProcess, "pressureProcess", 4096, NULL, 5, NULL, 0);
-   
+    
+    espnow_start();  
+    xTaskCreatePinnedToCore(espnow_transmit, "espnowTransmit", 4096, NULL, 16, NULL, 0);
+
     // Transmit CAN on Core 0
     // xTaskCreatePinnedToCore(canTransmit, "canTransmit", 4096, NULL, 10, NULL, 0);
 }
