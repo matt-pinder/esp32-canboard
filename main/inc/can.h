@@ -6,7 +6,7 @@
 #define DRIVECAN_TX_GPIO_NUM       GPIO_NUM_12
 #define DRIVECAN_RX_GPIO_NUM       GPIO_NUM_11
 
-#define CAN_BASEID 0x620
+#define CAN_BASEID 0x076c
 
 extern twai_handle_t twai_can;
 
