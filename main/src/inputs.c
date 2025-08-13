@@ -171,6 +171,7 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_poin
     float r_ntc_f = (r_pullup * v_ntc) / (v_ref - v_ntc);
     int32_t r_ntc = (int32_t)(r_ntc_f + 0.5f);
 
+            // ESP_LOGI("TEMP", "r_ntc: %f, temp : ",r_ntc_f ); 
     if (r_ntc >= table[0].resistance) return table[0].temp_c;
     if (r_ntc <= table[table_size - 1].resistance)
         return table[table_size - 1].temp_c;
@@ -185,11 +186,43 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_poin
 
             float frac = (float)(r_ntc - r2) / (r1 - r2);
             int8_t temp = (int8_t)(t2 + frac * (t1 - t2));
+            
+            ESP_LOGI("TEMP", "r_ntc: %f, temp : %d",r_ntc_f, temp ); 
             return temp;
         }
     }
 
     return (int8_t)-128;
+}
+
+int8_t getSensorTemperatureEquation(int v_mv, int r_pullup, int v_ref_mv) {
+    if (v_mv <= 0 || v_mv >= v_ref_mv || r_pullup <= 0 || v_ref_mv <= 0)
+        return (int8_t)-128;
+
+    // Convert mV to V for calculation
+    float v_ntc = v_mv / 1000.0f;
+    float v_ref = v_ref_mv / 1000.0f;
+
+    // Calculate thermistor resistance from voltage divider
+    float r_ntc_f = (r_pullup * v_ntc) / (v_ref - v_ntc);
+    if (r_ntc_f <= 0.0f) return (int8_t)-128;
+
+    // Steinhart-Hart coefficients (from your fitted data)
+    const float A = 9.0871515e-04f;
+    const float B = 3.4707955e-04f;
+    const float C = -6.7570791e-07f;
+
+    float ln_r = logf(r_ntc_f);
+    float inv_t = A + B * ln_r + C * ln_r * ln_r * ln_r;
+    float temp_k = 1.0f / inv_t;
+    float temp_c = temp_k - 273.15f;
+
+    // Round to nearest whole degree and clamp to int8_t range
+    int temp_int = (int)(temp_c + 0.5f);
+    if (temp_int < -128) temp_int = -128;
+    if (temp_int > 127) temp_int = 127;
+
+    return (int8_t)temp_int;
 }
 
 /**
@@ -305,8 +338,11 @@ void pressureProcess(void *arg) {
     ESP_LOGI(adc_log, "Pressure Sensor Processing Task Started");
     while (1) {
         if (xSemaphoreTake(scaled_pressures_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-            int temp = getSensorTemperature(filtered_voltages[0], 2400, PULLUP_VREF_MV, ntc_table, NTC_TABLE_SIZE(ntc_table));
-            ESP_LOGI("Temp:", "%d", temp);
+            int tempeq = getSensorTemperatureEquation(filtered_voltages[0], 1000, PULLUP_VREF_MV);
+            int temp = getSensorTemperature(filtered_voltages[0], 1000, PULLUP_VREF_MV, ntc_table, NTC_TABLE_SIZE(ntc_table));
+
+            ESP_LOGI(adc_log, "temp %d, tempeq %d", temp, tempeq);
+
 
             scaled_pressures[1] = (filtered_voltages[1] > 0) ? getSensorPressure(filtered_voltages[1], 500, 4500, 0, 100) : 0; // Exhaust Back Pressure - 0-30 Psi
             scaled_pressures[2] = (filtered_voltages[2] > 0) ? getSensorPressure(filtered_voltages[2], 400, 4650, 20, 300) : 0; // Crank Case Pressure (Bosch MAP 0261230119) - kPa

@@ -10,7 +10,7 @@
 #define ADC_CHANNEL_START ADC_CHANNEL_0
 #define ADC_CHANNEL_END ADC_CHANNEL_9
 #define NUM_ADC_CHANNELS (ADC_CHANNEL_END - ADC_CHANNEL_START + 1)
-#define PULLUP_VREF_MV 3823
+#define PULLUP_VREF_MV 5015
 #define FILTER_DEPTH 5
 #define NTC_TABLE_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -33,18 +33,26 @@ extern volatile uint16_t scaled_pressures[4];
 extern volatile uint16_t filtered_voltages[NUM_ADC_CHANNELS];
 
 int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_point_t *table, size_t table_size);
+int8_t getSensorTemperatureEquation(int v_mv, int r_pullup, int v_ref_mv);
 uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, float p_max);
 uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, float scaling_factor);
 uint16_t medianFilterHelper(uint16_t *samples, int count);
 void adcProcess(void *arg);
 void pressureProcess(void *arg);
 
-static const ntc_point_t ntc_table[] = { // Bosch 0280130026, Bosch 0280130039
-    { -40, 45313 }, { -30, 26114 }, { -20, 15462 }, { -10,  9397 },
-    {   0,  5896 }, {  10,  3792 }, {  20,  2500 }, {  30,  1707 },
-    {  40,  1175 }, {  50,   834 }, {  60,   596 }, {  70,   436 },
-    {  80,   323 }, {  90,   243 }, { 100,   187 }, { 110,   144 },
-    { 120,   113 }, { 130,    89 }, { 140,    71 }
+// static const ntc_point_t ntc_table[] = { // Bosch 0280130026, Bosch 0280130039
+//     { -20, 52000 }, { -4, 47000  }, {   2, 37600  }, {  10,  13500 },
+//     {  21, 9400  }, {  31,  5471 }, {  40, 3600  }, 
+//     {  50, 2400 },
+//     {  60,  1612 }, {  71, 1230 }, {  80, 960 }, {  92, 687 },
+//     { 100,  536}, { 110,  200 }, { 120,   201 }, { 130,    202 }, { 140,    203 }
+// };
+
+static const ntc_point_t ntc_table_corrected[] = {
+    { -20, 25317 }, { -4, 22855 }, {  2, 18144 }, { 10,  8233 },
+    { 15, 5847 }, { 21, 4376 }, { 31, 2549 }, { 42, 1656 },
+    { 50, 1100 }, { 60,  789 }, { 71,  552 }, { 80,  429 },
+    { 92,  305 }, {100,  240 }, {109, 198 }, {150,  76 }
 };
 
 static const ntc_point_t tmap_table[] = { // BMW TMAP 13627843531
@@ -54,3 +62,6 @@ static const ntc_point_t tmap_table[] = { // BMW TMAP 13627843531
     {  80,   404 }, {  90,   325 }, { 100,   265 }, { 110,   218 },
     { 120,   181 }, { 130,   151 }, { 140,   128 },
 };
+
+
+// INPUT 1 filtered voltage 0 - TEMP SENSOR
