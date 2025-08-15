@@ -13,8 +13,10 @@ void espnow_receive_callback(const esp_now_recv_info_t *info, const uint8_t *dat
 }
 
 void espnow_start(){
+    ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
     wifi_init_config_t wifiConfig = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wifiConfig));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -32,6 +34,7 @@ void espnow_start(){
 
     esp_now_register_recv_cb(espnow_receive_callback);
 }
+
 
 void espnow_transmit(void *arg){
     ESP_LOGI(espnow_log, "ESPNOW Transmit Task Started");
