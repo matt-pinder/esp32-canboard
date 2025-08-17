@@ -53,11 +53,11 @@ void app_main(void)
     }
 
     // Process ADCs on Core 1
-    xTaskCreatePinnedToCore(adcProcess, "adcProcess", 4096, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(adcProcess, "adcProcess", 8192, NULL, 5, NULL, 1);
 
     // Process Pressures on Core 0
-    xTaskCreatePinnedToCore(pressureProcess, "pressureProcess", 4096, NULL, 5, NULL, 0);
+    xTaskCreatePinnedToCore(pressureProcess, "pressureProcess", 8192, NULL, 5, NULL, 0);
    
     // Transmit CAN on Core 0
-    xTaskCreatePinnedToCore(canTransmit, "canTransmit", 4096, NULL, 10, NULL, 0);
+    xTaskCreatePinnedToCore(canTransmit, "canTransmit", 8192, NULL, 10, NULL, 0);
 }
