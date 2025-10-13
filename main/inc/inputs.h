@@ -47,7 +47,7 @@ static const ntc_point_t ntc_table[] = { // Bosch 0280130026, Bosch 0280130039
     { 120,   113 }, { 130,    89 }, { 140,    71 }
 };
 
-static const ntc_point_t tmap_table[] = { // BMW TMAP 13627843531
+static const ntc_point_t tmap_table[] = { // Bosch TMAP 0281002437 (Was: BMW TMAP 13627843531)
     {   0,  4094 }, {  5,  3362 }, { 10,  2854 }, { 15,  2425 }, { 20,  2039 },
     { 25,  1745 }, { 30,  1489 }, { 35,  1291 }, { 40,  1110 }, { 45,   950 },
     { 50,   710 }, { 51,   698 }, { 52,   692 }, { 53,   687 }, { 54,   634 },
