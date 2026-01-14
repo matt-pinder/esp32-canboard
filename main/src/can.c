@@ -36,7 +36,8 @@ twai_general_config_t can_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, 
  * @note Runs in infinite loop until task is deleted.
  *       Protected access to filtered_voltages array via mutex.
  *       All CAN transmit failures are logged as warnings (non-fatal).
- *       Message timing: ~15ms per message, 80ms inter-cycle delay (total ~130ms)
+ *       Message timing: ~1-2ms per message, 20ms inter-cycle delay (total ~25ms = 40Hz capability)
+ *       Actual transmission frequency: 20Hz (50ms cycle time)
  *       Firmware revision is sent in Message 1, Byte 1 for version tracking.
  *
  * @see filtered_voltages_mutex, getCpuTemperature(), FIRMWARE_REVISION
@@ -77,7 +78,7 @@ void canTransmit(void *arg)
         if (err != ESP_OK) {
             ESP_LOGW(can_log, "Failed to transmit analogVoltage_1: %s", esp_err_to_name(err));
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(1));
         
         // Message 2: analogVoltage_2
         twai_message_t msg2 = init_twai_message(board_cfg.can_start_id + 1);
@@ -94,7 +95,7 @@ void canTransmit(void *arg)
         if (err != ESP_OK) {
             ESP_LOGW(can_log, "Failed to transmit analogVoltage_2: %s", esp_err_to_name(err));
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(1));
         
         // Message 3: analogVoltage_3
         twai_message_t msg3 = init_twai_message(board_cfg.can_start_id + 2);
@@ -111,7 +112,7 @@ void canTransmit(void *arg)
         if (err != ESP_OK) {
             ESP_LOGW(can_log, "Failed to transmit analogVoltage_3: %s", esp_err_to_name(err));
         }
-        vTaskDelay(pdMS_TO_TICKS(80));
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
     vTaskDelete(NULL);
 }
