@@ -16,6 +16,7 @@ extern board_config_t board_cfg;
 
 twai_handle_t twai_can;
 twai_timing_config_t t_can_config = TWAI_TIMING_CONFIG_500KBITS();
+/// Filter configuration: reject all incoming messages (TX-only mode)
 twai_filter_config_t f_config = { .acceptance_code = 0xFFFFFFFF, .acceptance_mask = 0x00000000, .single_filter = true };
 twai_general_config_t can_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM, TWAI_MODE_NORMAL);
 
@@ -41,53 +42,6 @@ esp_err_t can_init(void) {
         ESP_LOGI(can_log, "CAN speed set to 1000 kbps");
     } else if (board_cfg.can_speed_kbps == 500) {
         // Default to 500 kbps (already configured above)
-        ESP_LOGI(can_log, "CAN speed set to 500 kbps");
-    } else {
-        ESP_LOGW(can_log, "Invalid CAN speed %lu, defaulting to 500 kbps", board_cfg.can_speed_kbps);
-        // t_can_config already defaults to 500 kbps
-    }
-
-    // Install TWAI driver
-    esp_err_t err = twai_driver_install_v2(&can_config, &t_can_config, &f_config, &twai_can);
-    if (err != ESP_OK) {
-        ESP_LOGE(can_log, "Failed to install TWAI driver: %s", esp_err_to_name(err));
-        return ESP_FAIL;
-    }
-    ESP_LOGI(can_log, "TWAI driver installed");
-
-    // Start TWAI driver
-    err = twai_start_v2(twai_can);
-    if (err != ESP_OK) {
-        ESP_LOGE(can_log, "Failed to start TWAI driver: %s", esp_err_to_name(err));
-        return ESP_FAIL;
-    }
-    ESP_LOGI(can_log, "TWAI driver started");
-
-    return ESP_OK;
-}
-
-/**
- * @brief Initialize and start TWAI/CAN driver with dynamic speed configuration
- * Reads CAN speed from board_config_t (125/250/500/1000 kbps) and applies appropriate timing.
- * Must be called before creating canTransmit task.
- * @return ESP_OK on success, ESP_FAIL on driver initialization error
- */
-esp_err_t can_init(void) {
-    // Select timing config based on board configuration
-    if (board_cfg.can_speed_kbps == 125) {
-        static const twai_timing_config_t temp_config = TWAI_TIMING_CONFIG_125KBITS();
-        memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
-        ESP_LOGI(can_log, "CAN speed set to 125 kbps");
-    } else if (board_cfg.can_speed_kbps == 250) {
-        static const twai_timing_config_t temp_config = TWAI_TIMING_CONFIG_250KBITS();
-        memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
-        ESP_LOGI(can_log, "CAN speed set to 250 kbps");
-    } else if (board_cfg.can_speed_kbps == 1000) {
-        static const twai_timing_config_t temp_config = TWAI_TIMING_CONFIG_1MBITS();
-        memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
-        ESP_LOGI(can_log, "CAN speed set to 1000 kbps");
-    } else if (board_cfg.can_speed_kbps == 500) {
-        // Default to 500 kbps
         ESP_LOGI(can_log, "CAN speed set to 500 kbps");
     } else {
         ESP_LOGW(can_log, "Invalid CAN speed %lu, defaulting to 500 kbps", board_cfg.can_speed_kbps);
