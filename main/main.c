@@ -60,39 +60,9 @@ void app_main(void)
     // Initialize ADC channels
     initAdcChannels();
 
-    // Set CAN timing config based on board config
-    twai_timing_config_t t_can_config = TWAI_TIMING_CONFIG_500KBITS();
-    
-    if (board_cfg.can_speed_kbps == 125) {
-        // Reinitialize with the correct timing config
-        static const twai_timing_config_t temp_config = TWAI_TIMING_CONFIG_125KBITS();
-        memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
-        ESP_LOGI(log_tag, "CAN speed set to 125 kbps");
-    } else if (board_cfg.can_speed_kbps == 250) {
-        static const twai_timing_config_t temp_config = TWAI_TIMING_CONFIG_250KBITS();
-        memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
-        ESP_LOGI(log_tag, "CAN speed set to 250 kbps");
-    } else if (board_cfg.can_speed_kbps == 1000) {
-        static const twai_timing_config_t temp_config = TWAI_TIMING_CONFIG_1MBITS();
-        memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
-        ESP_LOGI(log_tag, "CAN speed set to 1000 kbps");
-    } else if (board_cfg.can_speed_kbps == 500) {
-        ESP_LOGI(log_tag, "CAN speed set to 500 kbps");
-    } else {
-        ESP_LOGW(log_tag, "Invalid CAN speed %lu, defaulting to 500 kbps", board_cfg.can_speed_kbps);
-    }
-
-    // Install and start TWAI (CAN) driver
-    if (twai_driver_install_v2(&can_config, &t_can_config, &f_config, &twai_can) == ESP_OK) {
-        ESP_LOGI(log_tag, "TWAI Driver Installed");
-        if (twai_start_v2(twai_can) == ESP_OK) {
-            ESP_LOGI(log_tag, "TWAI Driver Started!");
-        } else {
-            ESP_LOGE(log_tag, "Failed to Start TWAI Driver!");
-            abort();
-        }
-    } else {
-        ESP_LOGE(log_tag, "Failed to Install TWAI Driver!");
+    // Initialize TWAI/CAN driver with dynamic speed from config
+    if (can_init() != ESP_OK) {
+        ESP_LOGE(log_tag, "Failed to initialize CAN driver!");
         abort();
     }
 

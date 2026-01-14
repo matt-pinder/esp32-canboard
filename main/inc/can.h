@@ -32,6 +32,12 @@ static inline twai_message_t init_twai_message(uint32_t id) {
     return msg;
 }
 
+/// @brief Initialize and start TWAI/CAN driver with dynamic speed configuration
+/// Reads CAN speed from board_config_t (125/250/500/1000 kbps) and applies appropriate timing.
+/// Must be called before creating canTransmit task.
+/// @return ESP_OK on success, ESP_FAIL on driver initialization error
+esp_err_t can_init(void);
+
 /// @brief FreeRTOS task for transmitting CAN messages
 /// Periodically transmits 3 multiplexed CAN messages containing voltage data from all 10 channels.
 /// Message format:
