@@ -1,130 +1,116 @@
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
-
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "freertos/semphr.h"
-
-#include "esp_err.h"
 #include "esp_log.h"
-#include "driver/gpio.h"
 #include "driver/twai.h"
-
+#include "inc/config.h"
 #include "inc/can.h"
 #include "inc/inputs.h"
 
-twai_handle_t twai_can;
+extern board_config_t board_cfg;
 
+twai_handle_t twai_can;
 twai_timing_config_t t_can_config = TWAI_TIMING_CONFIG_500KBITS();
 twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-
-twai_general_config_t can_config = { .controller_id = 0, .mode = TWAI_MODE_NORMAL, .tx_io = DRIVECAN_TX_GPIO_NUM, .rx_io = DRIVECAN_RX_GPIO_NUM,
-                                   .clkout_io = TWAI_IO_UNUSED, .bus_off_io = TWAI_IO_UNUSED, .tx_queue_len = 64, .rx_queue_len = 64,
-                                   .alerts_enabled = TWAI_ALERT_NONE, .clkout_divider = 0 };
-             
-/**
- * @brief Initializes a TWAI message with the given identifier and 8 data bytes.
- *        All data bytes are initially set to 0.
- *
- * @param id The identifier of the message.
- *
- * @return The initialized TWAI message.
- */
-twai_message_t init_twai_message(uint32_t id) {
-    twai_message_t msg = { .identifier = id, .data_length_code = 8 };
-    memset(msg.data, 0, sizeof(msg.data));
-    return msg;
-}
+twai_general_config_t can_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM, TWAI_MODE_NORMAL);
 
 /**
- * @brief The CAN transmit task.
+ * @brief FreeRTOS task that transmits sensor data over CAN bus.
  *
- * This task is responsible for transmitting CAN messages to the bus. It
- * periodically reads the filtered and scaled ADC values and constructs
- * the CAN messages accordingly. The messages are then transmitted using
- * the TWAI driver.
+ * Continuously reads filtered voltage data from all ADC channels and transmits
+ * them as 3 multiplexed CAN messages. Each message contains:
+ * - Message 1 (can_start_id): CPU temperature, firmware revision, channels 0-2
+ * - Message 2 (can_start_id+1): Channels 3-6
+ * - Message 3 (can_start_id+2): Channels 7-9
+ *
+ * Voltages are encoded as uint16_t little-endian with 0.001V scale factor
+ * (i.e., 2500 mV = 2.5V). CPU Temperature is signed int8_t in degrees Celsius.
+ *
+ * @param arg Unused (FreeRTOS task parameter)
+ *
+ * @note Runs in infinite loop until task is deleted.
+ *       Protected access to filtered_voltages array via mutex.
+ *       All CAN transmit failures are logged as warnings (non-fatal).
+ *       Message timing: ~15ms per message, 80ms inter-cycle delay (total ~130ms)
+ *       Firmware revision is sent in Message 1, Byte 1 for version tracking.
+ *
+ * @see filtered_voltages_mutex, getCpuTemperature(), FIRMWARE_REVISION
  */
 void canTransmit(void *arg)
 {
     ESP_LOGI(can_log, "CAN Transmit Task Started");
-    // Setup CAN Packets
-    twai_message_t tx_msg[5];
-    for (size_t i = 0; i <= 4; ++i) {
-        tx_msg[i] = init_twai_message(CAN_BASEID + i);
-    }
-
+    extern const uint8_t FIRMWARE_REVISION;
+    
     while(1) {
-        
         uint16_t voltages_copy[NUM_ADC_CHANNELS];
+        int8_t cpu_temp = 0;
+        
+        // Safely copy voltage data
         if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
             memcpy(voltages_copy, filtered_voltages, sizeof(voltages_copy));
             xSemaphoreGive(filtered_voltages_mutex);
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
         }
-
-        uint16_t pressures_copy[4];
-        if (xSemaphoreTake(scaled_pressures_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-            memcpy(pressures_copy, scaled_pressures, sizeof(pressures_copy));
-            xSemaphoreGive(scaled_pressures_mutex);
-        }
-
-        // Base Message
-        tx_msg[0].data[0] = (int8_t) getCpuTemperature(); // CPU Temperature (-128C > +127C)
-        tx_msg[0].data[1] = 0x00; // Unused / Spare
-        tx_msg[0].data[2] = voltages_copy[0] & 0xFF; // Analog Input 1 - Charge Cooler Outlet Pressure (Bosch TMAP 0281002437)
-        tx_msg[0].data[3] = (voltages_copy[0] >> 8) & 0xFF;
-        tx_msg[0].data[4] = voltages_copy[1]; // Analog Input 2 - Exhaust Back Pressure
-        tx_msg[0].data[5] = (voltages_copy[1] >> 8) & 0xFF;
-        tx_msg[0].data[6] = voltages_copy[2]; // Analog Input 3 - Crank Case Pressure (Bosch MAP 0261230119)
-        tx_msg[0].data[7] = (voltages_copy[2] >> 8) & 0xFF;
-        twai_transmit(&tx_msg[0], pdMS_TO_TICKS(1000));
-        vTaskDelay(pdMS_TO_TICKS(10));
-
-        // BASE + 1
-        tx_msg[1].data[0] = voltages_copy[3]; // Analog Input 4 - Turbo Regulator Oil Pressure
-        tx_msg[1].data[1] = (voltages_copy[3] >> 8) & 0xFF;
-        tx_msg[1].data[2] = voltages_copy[4]; // Analog Input 5
-        tx_msg[1].data[3] = (voltages_copy[4] >> 8) & 0xFF;
-        tx_msg[1].data[4] = voltages_copy[5]; // Analog Input 6
-        tx_msg[1].data[5] = (voltages_copy[5] >> 8) & 0xFF;
-        tx_msg[1].data[6] = voltages_copy[6]; // Analog Input 7 - Charge Cooler Water Inlet Temperature (Bosch 0280130026)
-        tx_msg[1].data[7] = (voltages_copy[6] >> 8) & 0xFF;
-        twai_transmit(&tx_msg[1], pdMS_TO_TICKS(1000));
-        vTaskDelay(pdMS_TO_TICKS(10));
-
-        // BASE + 2
-        tx_msg[2].data[0] = voltages_copy[7]; // Analog Input 8 - Charge Cooler Outlet Air Temperature (Bosch TMAP 0281002437)
-        tx_msg[2].data[1] = (voltages_copy[7] >> 8) & 0xFF; 
-        tx_msg[2].data[2] = voltages_copy[8]; // Analog Input 9 - Charge Cooler Water Outlet Temperature (Bosch 0280130026)
-        tx_msg[2].data[3] = (voltages_copy[8] >> 8) & 0xFF;
-        tx_msg[2].data[4] = voltages_copy[9]; // Analog Input 10 - Airbox Temperature (Bosch 0280130039)
-        tx_msg[2].data[5] = (voltages_copy[9] >> 8) & 0xFF;
-        twai_transmit(&tx_msg[2], pdMS_TO_TICKS(1000));
-        vTaskDelay(pdMS_TO_TICKS(10));
         
-        // BASE + 3
-        tx_msg[3].data[0] = getSensorTemperature(voltages_copy[8], 2400, PULLUP_VREF_MV, ntc_table, NTC_TABLE_SIZE(ntc_table)); // Charge Cooler Water Outlet Temperature (C)
-        tx_msg[3].data[1] = getSensorTemperature(voltages_copy[9], 2400, PULLUP_VREF_MV, ntc_table, NTC_TABLE_SIZE(ntc_table)); // Air Temperature (C)
-        tx_msg[3].data[2] = getSensorTemperature(voltages_copy[7], 2400, PULLUP_VREF_MV, tmap_table, NTC_TABLE_SIZE(tmap_table)); // Charge Cooler Inlet Temperature (C)
-        tx_msg[3].data[7] = getSensorTemperature(voltages_copy[6], 2400, PULLUP_VREF_MV, ntc_table, NTC_TABLE_SIZE(ntc_table)); // Charge Cooler Water Inlet Temperature (C)
-
-        tx_msg[3].data[3] = pressures_copy[0]; // Charge Cooler Inlet Pressure (kPa)
-        tx_msg[3].data[4] = (pressures_copy[0] >> 8) & 0xFF;
-        tx_msg[3].data[5] = pressures_copy[1]; // Exhaust Back Pressure (Psi)
-        tx_msg[3].data[6] = (pressures_copy[1] >> 8) & 0xFF;
-
-        twai_transmit(&tx_msg[3], pdMS_TO_TICKS(1000));
-        vTaskDelay(pdMS_TO_TICKS(10));
-
-        // BASE + 4
-        tx_msg[4].data[0] = pressures_copy[2]; // Crank Case Pressure (kPa)
-        tx_msg[4].data[1] = (pressures_copy[2] >> 8) & 0xFF;
-        tx_msg[4].data[2] = pressures_copy[3]; // Turbo Regulator Oil Pressure (Psi)
-        tx_msg[4].data[3] = (pressures_copy[3] >> 8) & 0xFF;
-        twai_transmit(&tx_msg[4], pdMS_TO_TICKS(1000));
-
+        // Get CPU temperature
+        cpu_temp = getCpuTemperature();
+        
+        // Message 1: analogVoltage_1
+        twai_message_t msg1 = init_twai_message(board_cfg.can_start_id);
+        msg1.data[0] = (uint8_t)cpu_temp;        // CPU Temperature 
+        msg1.data[1] = FIRMWARE_REVISION;        // Firmware Revision 
+        msg1.data[2] = voltages_copy[0] & 0xFF;  // Channel 0 
+        msg1.data[3] = (voltages_copy[0] >> 8) & 0xFF;  
+        msg1.data[4] = voltages_copy[1] & 0xFF;  // Channel 1 
+        msg1.data[5] = (voltages_copy[1] >> 8) & 0xFF;  
+        msg1.data[6] = voltages_copy[2] & 0xFF;  // Channel 2 
+        msg1.data[7] = (voltages_copy[2] >> 8) & 0xFF;  
+        
+        esp_err_t err = twai_transmit(&msg1, pdMS_TO_TICKS(1000));
+        if (err != ESP_OK) {
+            ESP_LOGW(can_log, "Failed to transmit analogVoltage_1: %s", esp_err_to_name(err));
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+        
+        // Message 2: analogVoltage_2
+        twai_message_t msg2 = init_twai_message(board_cfg.can_start_id + 1);
+        msg2.data[0] = voltages_copy[3] & 0xFF; // Channel 3
+        msg2.data[1] = (voltages_copy[3] >> 8) & 0xFF;
+        msg2.data[2] = voltages_copy[4] & 0xFF; // Channel 4
+        msg2.data[3] = (voltages_copy[4] >> 8) & 0xFF;
+        msg2.data[4] = voltages_copy[5] & 0xFF; // Channel 5
+        msg2.data[5] = (voltages_copy[5] >> 8) & 0xFF;
+        msg2.data[6] = voltages_copy[6] & 0xFF; // Channel 6
+        msg2.data[7] = (voltages_copy[6] >> 8) & 0xFF;
+        
+        err = twai_transmit(&msg2, pdMS_TO_TICKS(1000));
+        if (err != ESP_OK) {
+            ESP_LOGW(can_log, "Failed to transmit analogVoltage_2: %s", esp_err_to_name(err));
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+        
+        // Message 3: analogVoltage_3
+        twai_message_t msg3 = init_twai_message(board_cfg.can_start_id + 2);
+        msg3.data[0] = voltages_copy[7] & 0xFF; // Channel 7
+        msg3.data[1] = (voltages_copy[7] >> 8) & 0xFF;
+        msg3.data[2] = voltages_copy[8] & 0xFF; // Channel 8
+        msg3.data[3] = (voltages_copy[8] >> 8) & 0xFF;
+        msg3.data[4] = voltages_copy[9] & 0xFF; // Channel 9
+        msg3.data[5] = (voltages_copy[9] >> 8) & 0xFF;
+        msg3.data[6] = 0x00;  // Unused
+        msg3.data[7] = 0x00;  // Unused
+        
+        err = twai_transmit(&msg3, pdMS_TO_TICKS(1000));
+        if (err != ESP_OK) {
+            ESP_LOGW(can_log, "Failed to transmit analogVoltage_3: %s", esp_err_to_name(err));
+        }
         vTaskDelay(pdMS_TO_TICKS(80));
     }
     vTaskDelete(NULL);

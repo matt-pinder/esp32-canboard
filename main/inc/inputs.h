@@ -6,40 +6,92 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "driver/temperature_sensor.h"
 
-#define ADC_UNIT ADC_UNIT_1
-#define ADC_CHANNEL_START ADC_CHANNEL_0
-#define ADC_CHANNEL_END ADC_CHANNEL_9
-#define NUM_ADC_CHANNELS (ADC_CHANNEL_END - ADC_CHANNEL_START + 1)
-#define PULLUP_VREF_MV 5025
-#define FILTER_DEPTH 5
-#define NTC_TABLE_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+#define ADC_UNIT ADC_UNIT_1                        ///< ADC unit to use (ADC unit 1)
+#define ADC_CHANNEL_START ADC_CHANNEL_0            ///< First ADC channel
+#define ADC_CHANNEL_END ADC_CHANNEL_9              ///< Last ADC channel
+#define NUM_ADC_CHANNELS (ADC_CHANNEL_END - ADC_CHANNEL_START + 1) ///< Total number of ADC channels (10)
+#define PULLUP_VREF_MV 5025                        ///< Optional pullup supply voltage in millivolts (5V)
+#define FILTER_DEPTH 5                             ///< Number of samples for median filtering
+#define NTC_TABLE_SIZE(x) (sizeof(x) / sizeof((x)[0])) ///< Macro to calculate NTC table size
+#define DIVIDER_HIGH_OHM 4700                      ///< Series resistor value (4.7k ohm)
+#define DIVIDER_LOW_OHM 10000                      ///< Pull-to-ground resistor value (10k ohm)
+#define DIVIDER_TOTAL_OHM (DIVIDER_HIGH_OHM + DIVIDER_LOW_OHM) ///< Total divider impedance (14.7k ohm)
 
+/// Log tag for ADC module
 static const char *adc_log = "adc";
 
+/// NTC thermistor lookup table point
 typedef struct {
-    int16_t temp_c;      // Temperature in °C
-    int32_t resistance;  // Resistance in ohms
+    int16_t temp_c;      ///< Temperature in °C
+    int32_t resistance;  ///< Resistance in ohms
 } ntc_point_t;
 
+/// NTC lookup table structure with metadata
+typedef struct {
+    const char *name;           ///< Human-readable table name (e.g., "Bosch NTC 0280130026")
+    const char *description;    ///< Part number/additional info
+    const ntc_point_t *points;  ///< Array of temperature/resistance calibration points
+    size_t points_count;        ///< Number of points in the array
+} ntc_table_def_t;
+
+/// @brief Initialize internal CPU temperature sensor
+/// @return ESP_OK on success, ESP_ERR_* on failure
 esp_err_t initCpuTempSensor(void);
+
+/// @brief Read internal CPU temperature
+/// @return Temperature in °C
 int8_t getCpuTemperature(void);
 
+/// @brief Initialize all ADC channels for measurement
 void initAdcChannels(void);
 
+/// Mutex protecting access to filtered_voltages array
 extern SemaphoreHandle_t filtered_voltages_mutex;
-extern SemaphoreHandle_t scaled_pressures_mutex;
-
-extern volatile uint16_t scaled_pressures[4];
+/// Shared voltage buffer updated by Core 1, read by CAN TX task
 extern volatile uint16_t filtered_voltages[NUM_ADC_CHANNELS];
 
+/// @brief Convert NTC voltage reading to temperature using lookup table with linear interpolation
+/// @param v_mv Measured voltage in millivolts
+/// @param r_pullup Optional pullup resistance in ohms (0 if not used)
+/// @param v_ref_mv Reference voltage (pullup supply) in millivolts
+/// @param table NTC lookup table points array
+/// @param table_size Number of points in lookup table
+/// @return Temperature in °C, or -128 on error
 int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_point_t *table, size_t table_size);
-uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, float p_max);
-uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, float scaling_factor);
-uint16_t medianFilterHelper(uint16_t *samples, int count);
-void adcProcess(void *arg);
-void pressureProcess(void *arg);
 
-static const ntc_point_t ntc_table[] = { // Bosch 0280130026, Bosch 0280130039
+/// @brief Convert voltage reading to pressure using linear scaling
+/// @param v_mv Measured voltage in millivolts
+/// @param v_min_mv Minimum voltage corresponding to minimum pressure
+/// @param v_max_mv Maximum voltage corresponding to maximum pressure
+/// @param p_min Minimum pressure in kilopascals
+/// @param p_max Maximum pressure in kilopascals
+/// @return Pressure value (clamped to [p_min, p_max])
+uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, float p_max);
+
+/// @brief Read raw ADC value and apply calibration with optional scaling
+/// @param channel ADC channel to read
+/// @param scaled If true, apply hardware divider scaling factor
+/// @param scaling_factor Multiplier for voltage conversion
+/// @return Voltage in millivolts (0-5000)
+uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, float scaling_factor);
+
+/// @brief Calculate median of sample array using bubble sort
+/// @param samples Array of voltage samples
+/// @param count Number of samples in array
+/// @return Median value
+uint16_t medianFilterHelper(uint16_t *samples, int count);
+
+/// @brief FreeRTOS task for ADC acquisition and processing
+/// Runs on Core 1, continuously reads all ADC channels with median filtering,
+/// applies dynamic scaling based on per-channel pullup configuration, and updates filtered_voltages[].
+/// @param arg Unused FreeRTOS task parameter
+void adcProcess(void *arg);
+
+// ============================================================================
+// NTC Lookup Table Definitions
+// ============================================================================
+
+static const ntc_point_t bosch_ntc_0280130026_points[] = { // Bosch 0280130026, Bosch 0280130039
     { -40, 45313 }, { -30, 26114 }, { -20, 15462 }, { -10,  9397 },
     {   0,  5896 }, {  10,  3792 }, {  20,  2500 }, {  30,  1707 },
     {  40,  1175 }, {  50,   834 }, {  60,   596 }, {  70,   436 },
@@ -47,7 +99,7 @@ static const ntc_point_t ntc_table[] = { // Bosch 0280130026, Bosch 0280130039
     { 120,   113 }, { 130,    89 }, { 140,    71 }
 };
 
-static const ntc_point_t tmap_table[] = { // Bosch TMAP 0281002437 (Was: BMW TMAP 13627843531)
+static const ntc_point_t bosch_tmap_0281002437_points[] = { // Bosch TMAP 0281002437 (Was: BMW TMAP 13627843531)
     {   0,  4094 }, {  5,  3362 }, { 10,  2854 }, { 15,  2425 }, { 20,  2039 },
     { 25,  1745 }, { 30,  1489 }, { 35,  1291 }, { 40,  1110 }, { 45,   950 },
     { 50,   710 }, { 51,   698 }, { 52,   692 }, { 53,   687 }, { 54,   634 },
@@ -60,3 +112,30 @@ static const ntc_point_t tmap_table[] = { // Bosch TMAP 0281002437 (Was: BMW TMA
     { 85,   321 }, { 90,   284 }, { 95,   252 }, {100,   225 }, {105,   200 },
     {110,   178 }, {115,   159 }, {120,   142 }
 };
+
+// Array of available NTC tables for easy lookup and enumeration
+static const ntc_table_def_t ntc_tables[] = {
+    {
+        .name = "Bosch NTC 0280130026",
+        .description = "Bosch 0280130026 / 0280130039",
+        .points = bosch_ntc_0280130026_points,
+        .points_count = NTC_TABLE_SIZE(bosch_ntc_0280130026_points)
+    },
+    {
+        .name = "Bosch TMAP 0281002437",
+        .description = "Bosch TMAP 0281002437 (BMW TMAP 13627843531)",
+        .points = bosch_tmap_0281002437_points,
+        .points_count = NTC_TABLE_SIZE(bosch_tmap_0281002437_points)
+    }
+};
+
+#define NUM_NTC_TABLES (sizeof(ntc_tables) / sizeof(ntc_tables[0]))
+
+// Helper function to get a table by index
+static inline const ntc_table_def_t* ntc_get_table(size_t index) {
+    if (index >= NUM_NTC_TABLES) {
+        return NULL;
+    }
+    return &ntc_tables[index];
+}
+

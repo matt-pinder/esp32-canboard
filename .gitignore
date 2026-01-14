@@ -1,2 +1,8 @@
 build/*
 .vscode/*
+.github/*
+components/*
+sdkconfig.ci
+skdconfig.defaults
+sdkconfig.old
+.devcontainer/*

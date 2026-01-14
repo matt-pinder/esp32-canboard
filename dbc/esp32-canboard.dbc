@@ -49,6 +49,7 @@ BO_ 16 analogVoltage_1: 8 Vector__XXX
  SG_ input1_voltage : 16|16@1+ (0.001,0) [0|5] "V" Vector__XXX
  SG_ input2_voltage : 32|16@1+ (0.001,0) [0|0] "V" Vector__XXX
  SG_ input3_voltage : 48|16@1+ (0.001,0) [0|0] "V" Vector__XXX
+ SG_ firmwareRevision : 8|8@1+ (1,0) [0|0] "" Vector__XXX
 
 BO_ 17 analogVoltage_2: 8 Vector__XXX
  SG_ input4_voltage : 0|16@1+ (0.001,0) [0|5] "V" Vector__XXX

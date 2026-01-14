@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-CanBoard Config</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 2em; }
+        .error { color: red; }
+        table { border-collapse: collapse; width: 100%; margin-bottom: 2em; }
+        th, td { border: 1px solid #ccc; padding: 0.5em; text-align: left; }
+        th { background: #f0f0f0; }
+        input, select { width: 100%; box-sizing: border-box; }
+        #reboot-btn { background: #d9534f; color: #fff; border: none; padding: 0.7em 2em; font-size: 1.1em; border-radius: 4px; cursor: pointer; margin-bottom: 1em; }
+        #reboot-btn:disabled { background: #aaa; }
+    </style>
+</head>
+<body>
+    <button id="reboot-btn">Reboot Device</button>
+    <h2>ESP32-CanBoard Configuration</h2>
+    <form id="config-form">
+        <label for="can-speed">CAN Speed:</label>
+        <select id="can-speed" name="can_speed_kbps">
+            <option value="125">125 kbps</option>
+            <option value="250">250 kbps</option>
+            <option value="500">500 kbps</option>
+            <option value="1000">1000 kbps</option>
+        </select>
+        <br><br>
+        <table>
+            <thead>
+                <tr>
+                    <th>Channel</th>
+                    <th>Name</th>
+                    <th>Pullup (Ω)</th>
+                    <th>Sensor Type</th>
+                    <th>NTC Table</th>
+                    <th>Filtering</th>
+                    <th>Pressure Min (mV)</th>
+                    <th>Pressure Max (mV)</th>
+                    <th>Pressure Min (kPa)</th>
+                    <th>Pressure Max (kPa)</th>
+                </tr>
+            </thead>
+            <tbody id="channels-tbody">
+                <!-- JS will populate rows -->
+            </tbody>
+        </table>
+        <div id="form-error" class="error"></div>
+        <button type="submit">Save Config</button>
+    </form>
+    <script>
+    const SENSOR_TYPES = ["raw", "ntc", "pressure"];
+    const NTC_TABLES = ["Table 0", "Table 1", "Table 2"];
+    let config = null;
+
+    function createRow(idx, ch) {
+        return `<tr>
+            <td>${idx+1}</td>
+            <td><input name="name${idx}" maxlength="16" value="${ch.name || ''}" required></td>
+            <td><input name="pullup${idx}" type="number" min="0" max="100000" value="${ch.pullup_ohms || 0}" required></td>
+            <td><select name="type${idx}">
+                ${SENSOR_TYPES.map((t,i)=>`<option value="${i}"${ch.type==i?' selected':''}>${t}</option>`).join('')}
+            </select></td>
+            <td><select name="ntc${idx}">
+                ${NTC_TABLES.map((t,i)=>`<option value="${i}"${ch.params?.ntc?.table_id==i?' selected':''}>${t}</option>`).join('')}
+            </select></td>
+            <td><input name="pminmv${idx}" type="number" min="0" max="5000" value="${ch.params?.pressure?.min_mv||''}"></td>
+            <td><input name="pmaxmv${idx}" type="number" min="0" max="5000" value="${ch.params?.pressure?.max_mv||''}"></td>
+            <td><input name="pminkpa${idx}" type="number" step="0.01" value="${ch.params?.pressure?.min_kpa||''}"></td>
+            <td><input name="pmaxkpa${idx}" type="number" step="0.01" value="${ch.params?.pressure?.max_kpa||''}"></td>
+            <td><input name="filtering${idx}" type="checkbox" ${ch.filtering ? 'checked' : ''}></td>
+        </tr>`;
+    }
+
+    function validateConfig(form) {
+        let error = "";
+        for (let i = 0; i < 10; ++i) {
+            const name = form[`name${i}`].value.trim();
+            if (!name) error += `Channel ${i+1}: Name required. `;
+            const pullup = parseInt(form[`pullup${i}`].value);
+            if (isNaN(pullup) || pullup < 0 || pullup > 100000) error += `Channel ${i+1}: Pullup invalid. `;
+            const type = parseInt(form[`type${i}`].value);
+            if (type === 1) { // NTC
+                if (isNaN(parseInt(form[`ntc${i}`].value))) error += `Channel ${i+1}: NTC table invalid. `;
+            }
+            if (type === 2) { // Pressure
+                const minmv = parseInt(form[`pminmv${i}`].value);
+                const maxmv = parseInt(form[`pmaxmv${i}`].value);
+                const minkpa = parseFloat(form[`pminkpa${i}`].value);
+                const maxkpa = parseFloat(form[`pmaxkpa${i}`].value);
+                if (isNaN(minmv) || isNaN(maxmv) || minmv >= maxmv) error += `Channel ${i+1}: Pressure mV min/max invalid. `;
+                if (isNaN(minkpa) || isNaN(maxkpa) || minkpa >= maxkpa) error += `Channel ${i+1}: Pressure kPa min/max invalid. `;
+            }
+        }
+        return error;
+    }
+
+    function fillTable() {
+        const tbody = document.getElementById('channels-tbody');
+        tbody.innerHTML = config.channels.map((ch,i)=>createRow(i,ch)).join('');
+    }
+
+    async function loadConfig() {
+        const res = await fetch('/api/config');
+        config = await res.json();
+        fillTable();
+        // Set CAN speed dropdown
+        document.getElementById('can-speed').value = config.can_speed_kbps || 500;
+    }
+
+    document.getElementById('config-form').onsubmit = async function(e) {
+        e.preventDefault();
+        const form = e.target;
+        const error = validateConfig(form);
+        document.getElementById('form-error').textContent = error;
+        if (error) return;
+        // Build config object
+        config.can_speed_kbps = parseInt(document.getElementById('can-speed').value);
+        for (let i = 0; i < 10; ++i) {
+            config.channels[i].name = form[`name${i}`].value.trim();
+            config.channels[i].pullup_ohms = parseInt(form[`pullup${i}`].value);
+            config.channels[i].type = parseInt(form[`type${i}`].value);
+            config.channels[i].filtering = form[`filtering${i}`].checked ? 1 : 0;
+            config.channels[i].params = {};
+            if (config.channels[i].type === 1) {
+                config.channels[i].params.ntc = { table_id: parseInt(form[`ntc${i}`].value) };
+            } else if (config.channels[i].type === 2) {
+                config.channels[i].params.pressure = {
+                    min_mv: parseInt(form[`pminmv${i}`].value),
+                    max_mv: parseInt(form[`pmaxmv${i}`].value),
+                    min_kpa: parseFloat(form[`pminkpa${i}`].value),
+                    max_kpa: parseFloat(form[`pmaxkpa${i}`].value)
+                };
+            }
+        }
+        const resp = await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+        });
+        if (resp.ok) {
+            alert('Config saved! Please reboot to apply.');
+        } else {
+            alert('Failed to save config.');
+        }
+    };
+
+    document.getElementById('reboot-btn').onclick = async function() {
+        await fetch('/api/reboot', { method: 'POST' });
+        alert('Device rebooting...');
+    };
+
+    loadConfig();
+    </script>
+</body>
+</html>

@@ -11,9 +11,12 @@
 
 #include "driver/temperature_sensor.h"
 #include "inc/inputs.h"
+#include "inc/config.h"
 
 #include <math.h>
 #include <stdint.h>
+
+extern board_config_t board_cfg;
 
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 static adc_cali_handle_t cali_handles[ADC_CHANNEL_END + 1] = {NULL};
@@ -22,9 +25,6 @@ static temperature_sensor_handle_t tempSensor_handle = NULL;
 static bool tempSensor_initialized = false;
 
 SemaphoreHandle_t filtered_voltages_mutex;
-SemaphoreHandle_t scaled_pressures_mutex;
-
-volatile uint16_t scaled_pressures[4];
 volatile uint16_t filtered_voltages[NUM_ADC_CHANNELS];
 
 /**
@@ -40,7 +40,6 @@ volatile uint16_t filtered_voltages[NUM_ADC_CHANNELS];
  *      - Error code from `temperature_sensor_install` or `temperature_sensor_enable`
  *        if initialization fails
  */
-
 esp_err_t initCpuTempSensor(void){
     if (tempSensor_initialized) return ESP_OK;
     temperature_sensor_config_t config = { .range_min = 10, .range_max = 50 };
@@ -116,21 +115,20 @@ void initAdcChannels(void){
 }
 
 /**
- * @brief Calculates the pressure from the given voltage, given min and max voltage
- *        and pressure values.
+ * @brief Calculates pressure from voltage using linear scaling.
  *
- * The function first clamps the given voltage to the valid range, then calculates
- * the relative voltage to the total voltage span. This relative voltage is then
- * multiplied with the total pressure span to get the absolute pressure value.
+ * Converts a measured voltage to pressure using a linear mapping between min/max
+ * voltage and min/max pressure values. The voltage is clamped to the valid range
+ * before conversion.
  *
- * The result is then multiplied by 100 and returned as an integer.
+ * @param v_mv Measured voltage in millivolts
+ * @param v_min_mv Minimum valid voltage in millivolts (corresponds to p_min)
+ * @param v_max_mv Maximum valid voltage in millivolts (corresponds to p_max)
+ * @param p_min Minimum pressure value (kPa)
+ * @param p_max Maximum pressure value (kPa)
  *
- * @param v_mv The measured voltage in millivolts
- * @param v_min_mv The minimum valid voltage in millivolts
- * @param v_max_mv The maximum valid voltage in millivolts
- * @param p_min The minimum pressure value
- * @param p_max The maximum pressure value
- * @return The calculated pressure value multiplied by 100
+ * @return Pressure value × 100 (as uint16_t) for 0.01 kPa resolution
+ *         Result is clamped to [0, (p_max - p_min) × 100]
  */
 uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, float p_max)
 {
@@ -148,19 +146,24 @@ uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, fl
 }
 
 /**
- * @brief Calculates the temperature from the given voltage, given pull-up resistor
- *        value and reference voltage.
+ * @brief Calculates temperature from voltage using NTC thermistor lookup table.
  *
- * The function first clamps the given voltage to the valid range, then calculates
- * the NTC resistance from the given values. This resistance is then used to
- * interpolate the temperature from the pre-defined NTC table.
+ * Converts a measured voltage to temperature using a voltage divider circuit with
+ * a known pull-up resistor. Calculates NTC resistance from voltage, then interpolates
+ * temperature from the provided lookup table.
  *
- * The result is then clamped to the valid range and returned as an integer.
+ * @param v_mv Measured voltage across NTC in millivolts
+ * @param r_pullup Pull-up resistor value in ohms
+ * @param v_ref_mv Reference voltage (usually 5000 mV) in millivolts
+ * @param table Pointer to NTC lookup table (array of ntc_point_t)
+ * @param table_size Number of entries in the NTC table
  *
- * @param v_mv The measured voltage in millivolts
- * @param r_pullup The pull-up resistor value in ohms
- * @param v_ref_mv The reference voltage in millivolts
- * @return The calculated temperature value in degrees Celsius (int8_t)
+ * @return Temperature in degrees Celsius (int8_t)
+ *         -128 if input parameters are invalid or table lookup fails
+ *
+ * @note Table must be sorted in descending order of resistance.
+ *       Performs linear interpolation between table points.
+ *       Input validation: v_mv must be in (0, v_ref_mv), r_pullup > 0, table != NULL
  */
 int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_point_t *table, size_t table_size) {
     if (v_mv <= 0 || v_mv >= v_ref_mv || r_pullup <= 0 || v_ref_mv <= 0 || table == NULL || table_size < 2)
@@ -193,13 +196,22 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_poin
 }
 
 /**
- * @brief Gets the scaled millivolts from the given ADC channel.
+ * @brief Reads and scales raw ADC value from a channel.
  *
- * If the 'scaled' parameter is true, the voltage is scaled to the range of 0 to 5000 mV.
+ * Reads the raw ADC value from the specified channel, applies calibration,
+ * and optionally scales it based on the input voltage divider ratio.
  *
- * @param channel The ADC channel to read from
- * @param scaled Whether to scale the voltage to the range of 0 to 5000 mV
- * @return The scaled voltage in millivolts
+ * @param channel ADC channel to read (must be in range [ADC_CHANNEL_START, ADC_CHANNEL_END])
+ * @param scaled If true, scales output to 0-5000 mV range using scaling_factor;
+ *               if false, returns raw calibrated voltage in mV
+ * @param scaling_factor Scaling multiplier applied to voltage (e.g., 1.47 for voltage divider)
+ *                       Only used if scaled == true
+ *
+ * @return Scaled/raw voltage in millivolts (uint16_t)
+ *         0 if channel is out of range, no calibration handle, or ADC read fails
+ *
+ * @note Calibration must have been created in initAdcChannels() before calling this.
+ *       Typical scaling factors: 1.47 (no pullup), 1.68 (2k4 pullup)
  */
 uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, float scaling_factor) {
     if (channel < ADC_CHANNEL_START || channel > ADC_CHANNEL_END) {
@@ -231,18 +243,28 @@ uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, float scaling_f
 }
 
 /**
- * @brief A helper function for median filtering.
+ * @brief Calculates median value from array of samples.
  *
- * This function takes an array of uint16_t samples and the number of samples
- * as input, and returns the median value of the samples. The median is
- * calculated by sorting the samples in ascending order and returning the
- * middle value.
+ * Sorts the sample array in ascending order using bubble sort, then returns
+ * the middle value (median). Useful for filtering noise from sensor readings.
  *
- * @param samples The array of uint16_t samples
- * @param count The number of samples
- * @return The median value of the samples
+ * @param samples Pointer to array of uint16_t sample values (will be sorted in-place)
+ * @param count Number of samples in the array (must be > 0)
+ *
+ * @return Median value from the sorted samples
+ *         0 if samples pointer is NULL or count <= 0
+ *
+ * @note Input array is modified (sorted) during execution.
+ *       For odd count: returns middle element
+ *       For even count: returns lower-middle element (count/2)
+ *       Bubble sort O(n²) is acceptable for FILTER_DEPTH (typically 5 samples)
  */
 uint16_t medianFilterHelper(uint16_t *samples, int count) {
+    if (samples == NULL || count <= 0) {
+        return 0;
+    }
+    
+    // Simple bubble sort for median filtering
     for (int i = 0; i < count - 1; i++) {
         for (int j = i + 1; j < count; j++) {
             if (samples[j] < samples[i]) {
@@ -256,64 +278,67 @@ uint16_t medianFilterHelper(uint16_t *samples, int count) {
 }
 
 /**
- * @brief Processes the ADC values in the background.
+ * @brief FreeRTOS task that continuously processes ADC inputs.
  *
- * This function runs in its own task and continuously reads the ADC values
- * from all channels. It applies a median filter to the samples and stores the
- * filtered values in the filtered_voltages array.
+ * Runs in a background task, periodically reading all ADC channels and storing
+ * filtered voltage values in shared array (protected by mutex). Applies median
+ * filtering if enabled per-channel in board configuration. Scaling factor is
+ * calculated dynamically based on each channel's pull-up resistor configuration.
+ *
+ * @param arg Unused (FreeRTOS task parameter)
+ *
+ * @note This function should be spawned as a FreeRTOS task using xTaskCreatePinnedToCore().
+ *       Runs in infinite loop until task is deleted.
+ *       Updates global filtered_voltages[] array (protected by filtered_voltages_mutex).
+ *       Scaling formula: (pullup_ohms + 14.7k) / 14.7k when pullup present
+ *       Scaling formula: 14.7k / 10k = 1.47 when no pullup
+ *       Loop timing: ~10 ms between complete channel cycles
+ *
+ * @see filtered_voltages, filtered_voltages_mutex, board_cfg.channels[].filtering
  */
 void adcProcess(void *arg) {
     ESP_LOGI(adc_log, "ADC Processing Task Started");
     uint16_t samples[FILTER_DEPTH];
+    
     while (1) {
         for (int ch = ADC_CHANNEL_START; ch <= ADC_CHANNEL_END; ch++) {
-            for (int i = 0; i < FILTER_DEPTH; i++) {
-                switch(ch) {
-                    case 6:
-                    case 7:
-                    case 8:
-                    case 9:
-                        samples[i] = getScaledMillivolts(ch, true, 1.700f);
-                        break;
-                    default:
-                        samples[i] = getScaledMillivolts(ch, true, 1.470f);
-                        break;
-                }
-                vTaskDelay(pdMS_TO_TICKS(2)); 
+            // Calculate scaling factor dynamically from pullup resistor
+            float scaling = (float)DIVIDER_TOTAL_OHM / DIVIDER_LOW_OHM;  // Base divider: 14.7k / 10k = 1.47
+            
+            if (board_cfg.channels[ch].pullup_ohms > 0) {
+                // Include pullup in series resistance calculation
+                scaling = ((float)board_cfg.channels[ch].pullup_ohms + DIVIDER_TOTAL_OHM) / DIVIDER_TOTAL_OHM;
             }
-
-            uint16_t filtered = medianFilterHelper(samples, FILTER_DEPTH);
-            if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-                filtered_voltages[ch] = filtered;
-                xSemaphoreGive(filtered_voltages_mutex);
+            
+            if (board_cfg.channels[ch].filtering) {
+                // Apply median filtering
+                bool sample_valid = true;
+                for (int i = 0; i < FILTER_DEPTH; i++) {
+                    uint16_t sample = getScaledMillivolts(ch, true, scaling);
+                    if (sample == 0) {
+                        sample_valid = false;
+                    }
+                    samples[i] = sample;
+                    vTaskDelay(pdMS_TO_TICKS(2));
+                }
+                
+                if (sample_valid) {
+                    uint16_t filtered = medianFilterHelper(samples, FILTER_DEPTH);
+                    if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                        filtered_voltages[ch] = filtered;
+                        xSemaphoreGive(filtered_voltages_mutex);
+                    }
+                }
+            } else {
+                // No filtering, just read raw value
+                uint16_t raw = getScaledMillivolts(ch, true, scaling);
+                if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    filtered_voltages[ch] = raw;
+                    xSemaphoreGive(filtered_voltages_mutex);
+                }
             }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    vTaskDelete(NULL);
-}
-
-/**
- * @brief The pressure sensor processing task.
- *
- * This task is responsible for processing the raw ADC values from the pressure
- * sensors. It reads the filtered ADC values from the filtered_voltages array and
- * calculates the pressure values using the getSensorPressure function. The
- * calculated pressure values are then stored in the scaled_pressures array. The
- * task runs in an infinite loop and continuously updates the scaled_pressures
- * array.
- */
-void pressureProcess(void *arg) {
-    ESP_LOGI(adc_log, "Pressure Sensor Processing Task Started");
-    while (1) {
-        if (xSemaphoreTake(scaled_pressures_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-            scaled_pressures[0] = (filtered_voltages[0] > 0) ? getSensorPressure(filtered_voltages[0], 500, 4500 , 50, 300) : 0; // Charge Cooler Outlet Pressure - kPa
-            scaled_pressures[1] = (filtered_voltages[1] > 0) ? getSensorPressure(filtered_voltages[1], 500, 4500, 0, 100) : 0; // Exhaust Back Pressure - 0-30 Psi
-            scaled_pressures[2] = (filtered_voltages[2] > 0) ? getSensorPressure(filtered_voltages[2], 400, 4650, 20, 300) : 0; // Crank Case Pressure (Bosch MAP 0261230119) - kPa
-            scaled_pressures[3] = (filtered_voltages[3] > 0) ? getSensorPressure(filtered_voltages[3], 500, 4500, 0, 6.89) : 0; // Turbo Regulator Oil Pressure - 0-100 Psi / 0-6.89 Bar
-            xSemaphoreGive(scaled_pressures_mutex);
-        }
-        vTaskDelay(pdMS_TO_TICKS(30));
     }
     vTaskDelete(NULL);
 }

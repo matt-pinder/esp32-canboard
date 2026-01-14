@@ -1,0 +1,9 @@
+# cJSON for ESP-IDF
+# Add this to your CMakeLists.txt or component.mk as needed
+# https://github.com/DaveGamble/cJSON
+
+set(CJSON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../components/cJSON)
+set(CJSON_SOURCES ${CJSON_DIR}/cJSON.c)
+
+add_library(cjson STATIC ${CJSON_SOURCES})
+target_include_directories(cjson PUBLIC ${CJSON_DIR})
