@@ -42,6 +42,29 @@ The web UI allows you to:
 - After restoring a new configuration via the web UI you should reboot the device to apply changes.
 
 
+## CAN Output
+
+The device transmits input data as a set of five CAN frames starting at the configured base ID. All frames use DLC=8 and little-endian byte ordering.
+
+| CAN ID | Name | Payload (bytes) |
+|---:|---|---|
+| Base ID | analogVoltage_1 | inputs 0..3 as four uint16 (LSB,MSB) — bytes 0..7 (values in mV) |
+| Base ID + 1 | analogVoltage_2 | inputs 4..7 as four uint16 (LSB,MSB) — bytes 0..7 (values in mV) |
+| Base ID + 2 | analogVoltage_3 | inputs 8..9 as two uint16 (bytes 0..3), dynamic0 (bytes 4..5), dynamic1 (bytes 6..7) |
+| Base ID + 3 | dynamicSignals_1 | dynamic2, dynamic3, dynamic4, dynamic5 as four 2-byte values (bytes 0..7) |
+| Base ID + 4 | dynamicSignals_2 | dynamic6, dynamic7, dynamic8, dynamic9 as four 2-byte values (bytes 0..7) |
+
+Encoding rules for dynamic values (one per input):
+| Type | Encoding |
+|---:|---:|
+|Raw|Not transmitted, use analogVoltage_n instead.|
+|Pressure|unsigned uint16 = pressure_kPa * 100 (resolution 0.01 kPa)|
+|NTC|signed int16 = temperature_C * 1 (°C as integer)|
+
+Notes:
+- Analog voltage values are sent as uint16 little-endian representing millivolts (scale = 0.001 V).
+- Dynamic signals use 2 bytes each (uint16 or int16 depending on sensor type) in little-endian order.
+
 ## Schematic
 [View PDF](docs/esp32-canboard-schematic.pdf)
 
