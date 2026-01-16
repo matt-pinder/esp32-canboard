@@ -62,6 +62,8 @@ Encoding rules for dynamic values (one per input):
 |dynamicSignal|Pressure|unsigned uint16 = pressure_kPa * 100 (resolution 0.01 kPa)|
 |dynamicSignal|NTC|signed int16 = temperature_C * 1 (°C as integer)|
 
+Example DBC for signal names and scaling: [dbc/esp32-canboard.dbc](dbc/esp32-canboard.dbc)
+
 ## Schematic
 [View PDF](docs/esp32-canboard-schematic.pdf)
 
