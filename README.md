@@ -54,7 +54,7 @@ The web UI allows you to:
 
 ## Connector Pinout
 |Pin|Function|Additional Information|
-|---|---|---|
+|:---:|:---|:---|
 |1|12v Supply||
 |2|5v Sensor Supply|500ma Thermal Fuse|
 |3|5v Sensor Supply|500ma Thermal Fuse|
