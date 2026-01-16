@@ -46,8 +46,8 @@ The web UI allows you to:
 
 The device transmits input data as a set of five CAN frames starting at the configured base ID. All frames use DLC=8 and little-endian byte ordering.
 
-| CAN ID | Name | Payload (bytes) |
-|---:|---|---|
+| CAN ID | Name | Payload |
+|:---|:---|:---|
 | Base ID | analogVoltage_1 | inputs 0..3 as four uint16 (LSB,MSB) — bytes 0..7 (values in mV) |
 | Base ID + 1 | analogVoltage_2 | inputs 4..7 as four uint16 (LSB,MSB) — bytes 0..7 (values in mV) |
 | Base ID + 2 | analogVoltage_3 | inputs 8..9 as two uint16 (bytes 0..3), dynamic0 (bytes 4..5), dynamic1 (bytes 6..7) |
@@ -56,7 +56,7 @@ The device transmits input data as a set of five CAN frames starting at the conf
 
 Encoding rules for dynamic values (one per input):
 | Type | Encoding |
-|---:|---:|
+|:---|:---|
 |Raw|Not transmitted, use analogVoltage_n instead.|
 |Pressure|unsigned uint16 = pressure_kPa * 100 (resolution 0.01 kPa)|
 |NTC|signed int16 = temperature_C * 1 (°C as integer)|
