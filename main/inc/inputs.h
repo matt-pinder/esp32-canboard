@@ -98,7 +98,7 @@ static const ntc_point_t bosch_ntc_0280130026_points[] = { // Bosch 0280130026, 
     { 120,   113 }, { 130,    89 }, { 140,    71 }
 };
 
-static const ntc_point_t bosch_tmap_0281002437_points[] = { // Bosch TMAP 0281002437 (Was: BMW TMAP 13627843531)
+static const ntc_point_t bosch_tmap_0281002437_points[] = { // Bosch TMAP 0281002437
     {   0,  4094 }, {  5,  3362 }, { 10,  2854 }, { 15,  2425 }, { 20,  2039 },
     { 25,  1745 }, { 30,  1489 }, { 35,  1291 }, { 40,  1110 }, { 45,   950 },
     { 50,   710 }, { 51,   698 }, { 52,   692 }, { 53,   687 }, { 54,   634 },
@@ -110,6 +110,17 @@ static const ntc_point_t bosch_tmap_0281002437_points[] = { // Bosch TMAP 028100
     { 80,   358 }, { 81,   332 }, { 82,   323 }, { 83,   326 }, { 84,   328 },
     { 85,   321 }, { 90,   284 }, { 95,   252 }, {100,   225 }, {105,   200 },
     {110,   178 }, {115,   159 }, {120,   142 }
+};
+
+// Universal 1/8 NPT
+static const ntc_point_t universal_18_npt_points[] = {
+    {  20,   850 }, {  25,   640 }, {  30,   540 }, {  35,   430 },
+    {  40,   360 }, {  45,   290 }, {  50,   240 }, {  55,   200 },
+    {  60,   170 }, {  65,   150 }, {  70,   120 }, {  75,   110 },
+    {  80,    90 }, {  85,    77 }, {  90,    60 }, {  95,    57 },
+    { 100,    52 }, { 105,    48 }, { 110,    43 }, { 115,    39 },
+    { 120,    34 }, { 125,    30 }, { 130,    27 }, { 135,    24 },
+    { 140,    21 }
 };
 
 // Array of available NTC tables for easy lookup and enumeration
@@ -125,6 +136,12 @@ static const ntc_table_def_t ntc_tables[] = {
         .description = "Bosch TMAP 0281002437 (BMW TMAP 13627843531)",
         .points = bosch_tmap_0281002437_points,
         .points_count = NTC_TABLE_SIZE(bosch_tmap_0281002437_points)
+    }
+    ,{
+        .name = "Universal 1/8 NPT",
+        .description = "Universal 18 NPT (EFI Parts)",
+        .points = universal_18_npt_points,
+        .points_count = NTC_TABLE_SIZE(universal_18_npt_points)
     }
 };
 
