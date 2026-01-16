@@ -16,11 +16,9 @@
 
 On each boot the board enables a WiFi access point and web configuration interface; this will automatically disable after 120 seconds if no client connects. 
 
-| Item | Value |
-|---|---|
-| SSID | ESP32-CanBoard |
-| Password | canboard123 |
-| Web UI | http://192.168.4.1 |
+| SSID | WPA2 Key | Web UI |
+|:---|:---|:---|
+| ESP32-CanBoard | canboard123 | http://192.168.4.1 |
 
 The web UI allows you to:
 
