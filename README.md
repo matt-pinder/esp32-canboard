@@ -8,11 +8,21 @@
 * JAE Automotive Connector (PCB Socket: MX23A18NF1, Cable Plug: MX23A18SF1)
 * Optional pull-up resistors via fused 5v rail for each input (TH 6.3mm)
 * Optional 120ohm CAN terminating resistor
+* Configuration via web interface over WiFi
+* Optional per-channel median filtering to reduce noise
 * Small PCB Footprint - 40mm x 60mm
 
 ## Device Configuration
 
-On each boot the board enables a WiFi access point and web configuration interface; this will automatically disable after 120 seconds if no client connects. The web UI allows you to:
+On each boot the board enables a WiFi access point and web configuration interface; this will automatically disable after 120 seconds if no client connects. 
+
+| Item | Value |
+|---|---|
+| SSID | ESP32-CanBoard |
+| Password | canboard123 |
+| Configuration Address | http://192.168.4.1 |
+
+The web UI allows you to:
 
 - View and edit per-channel settings (name, sensor type, pull-up, filtering, pressure calibration).
 - Configure requird CAN parameters - Base ID and bus speed.
