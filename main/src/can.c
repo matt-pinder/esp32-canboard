@@ -172,7 +172,7 @@ void canTransmit(void *arg)
                 dyn[i] = p;
             } else if (board_cfg.channels[i].type == SENSOR_NTC) {
                 const ntc_table_def_t *t = ntc_get_table(board_cfg.channels[i].params.ntc.table_id);
-                int8_t temp = getSensorTemperature(voltages_copy[i], board_cfg.channels[i].pullup_ohms, PULLUP_VREF_MV,
+                int8_t temp = getSensorTemperature(voltages_copy[i], board_cfg.channels[i].pullup_ohms, board_cfg.pullup_vref_mv,
                                                    t ? t->points : NULL, t ? t->points_count : 0);
                 if (temp == (int8_t)-128) temp = 0;
                 int16_t t16 = (int16_t)temp;

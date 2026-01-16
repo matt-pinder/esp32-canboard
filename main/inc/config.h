@@ -41,6 +41,7 @@ typedef struct {
     uint32_t version;                      ///< Config version for migration/compatibility
     uint32_t can_start_id;                 ///< CAN message ID base (incremented for each message)
     uint32_t can_speed_kbps;               ///< CAN bus speed (125, 250, 500, or 1000 kbps)
+    uint16_t pullup_vref_mv;               ///< Pull-up reference voltage in millivolts (e.g. 5025)
     channel_config_t channels[CONFIG_CHANNELS]; ///< Per-channel configuration array
     uint32_t crc32;                        ///< CRC32 checksum of all fields above for integrity verification
 } board_config_t;

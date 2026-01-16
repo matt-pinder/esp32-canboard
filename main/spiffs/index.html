@@ -46,7 +46,8 @@
         .controls-inline { display:flex; align-items:center; gap:0.75em; }
         .header-controls { margin-right: 0.9em; }
         .small-select { width:12ch; }
-        .hex-input { width:8ch; }
+        .hex-input { width:6ch; }
+        .small-input { width:5.5ch; }
         .hex-prefix { margin-right:0.2em; }
     </style>
 </head>
@@ -67,7 +68,12 @@
                 <label for="base-can-id">Base CAN ID:</label>
                 <div style="display:flex; align-items:center;">
                     <span class="hex-prefix">0x</span>
-                    <input id="base-can-id" name="can_start_id" class="hex-input" maxlength="4" value="100" />
+                    <input id="base-can-id" name="can_start_id" class="hex-input" maxlength="3" value="100" />
+                </div>
+                <label for="pullup-vref">vRef:</label>
+                <div style="display:flex; align-items:center; gap:0.25em;">
+                    <input id="pullup-vref" name="pullup_vref_mv" class="small-input no-spin" type="number" min="0" max="9999" value="5025" />
+                    <span class="unit">mV</span>
                 </div>
             </div>
             <button id="save-btn" class="action-btn" type="submit">Save Config</button>
@@ -208,6 +214,9 @@
         if (config.can_start_id !== undefined) {
             baseElem.value = config.can_start_id.toString(16).toUpperCase();
         }
+        // Set pull-up Vref if provided
+        const pullupElem = document.getElementById('pullup-vref');
+        if (pullupElem) pullupElem.value = (config.pullup_vref_mv !== undefined) ? config.pullup_vref_mv : 5025;
     }
 
     document.getElementById('config-form').onsubmit = async function(e) {
@@ -245,6 +254,9 @@
                 };
             }
         }
+        // Read pull-up Vref
+        const pv = parseInt(document.getElementById('pullup-vref').value);
+        config.pullup_vref_mv = isNaN(pv) ? (config.pullup_vref_mv || 5025) : pv;
         const resp = await fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

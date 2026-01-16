@@ -33,8 +33,10 @@ The web UI allows you to:
 
 | Function | Description |
 |:--- |:--- |
-| Backup | Click the `Backup` button in the web UI to download a JSON snapshot of the current configuration. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
-| Restore | Use the `Restore` button to select a previously exported JSON file. The UI will upload the JSON to the device and validate the payload. The existing configuration is backed up on the device before overwrite; if saving the imported file fails, the device will attempt to restore the previous configuration. |
+| Save Config | Save current UI settings to device storage (`/spiffs/config.bin`). Changes are validated and persisted immediately, reboot to apply. |
+| Backup | Download a JSON snapshot of the current configuration. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
+| Restore | Select a previously exported JSON file. The UI will upload the JSON to the device and validate the payload. The existing configuration is backed up on the device before overwrite; if saving the imported file fails, the device will restore the previous configuration. |
+| Reboot Device | Reboots the device to apply configuration changes. |
 
 **Notes:**
 - Configuration is persisted on SPIFFS at `/spiffs/config.bin` (binary) and the web UI uses JSON export/import for human-readable backups.

@@ -109,9 +109,9 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     size_t json_pos = 0;
     const size_t json_max = 4096;
     
-    // Start JSON object including CAN speed and base ID
-    json_pos += snprintf(json + json_pos, json_max - json_pos, "{\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"channels\":[",
-        (unsigned long)cfg.can_speed_kbps, (unsigned long)cfg.can_start_id);
+    // Start JSON object including CAN speed, base ID and pull-up Vref
+    json_pos += snprintf(json + json_pos, json_max - json_pos, "{\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"pullup_vref_mv\":%u,\"channels\":[",
+        (unsigned long)cfg.can_speed_kbps, (unsigned long)cfg.can_start_id, (unsigned)cfg.pullup_vref_mv);
     
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
         json_pos += snprintf(json + json_pos, json_max - json_pos,
@@ -387,8 +387,8 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
 
     size_t json_pos = 0;
     const size_t json_max = 4096;
-    json_pos += snprintf(json + json_pos, json_max - json_pos, "{\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"channels\":[",
-        (unsigned long)cfg.can_speed_kbps, (unsigned long)cfg.can_start_id);
+    json_pos += snprintf(json + json_pos, json_max - json_pos, "{\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"pullup_vref_mv\":%u,\"channels\":[",
+        (unsigned long)cfg.can_speed_kbps, (unsigned long)cfg.can_start_id, (unsigned)cfg.pullup_vref_mv);
 
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
         json_pos += snprintf(json + json_pos, json_max - json_pos,
@@ -570,6 +570,11 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
                 cfg.can_start_id = (uint32_t)strtoul(s, NULL, 0);
             }
         }
+    }
+
+    cJSON *pullup_vref = cJSON_GetObjectItem(root, "pullup_vref_mv");
+    if (pullup_vref && cJSON_IsNumber(pullup_vref)) {
+        cfg.pullup_vref_mv = (uint16_t)pullup_vref->valueint;
     }
 
     // Backup existing config file before overwrite

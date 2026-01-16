@@ -10,7 +10,6 @@
 #define ADC_CHANNEL_START ADC_CHANNEL_0            ///< First ADC channel
 #define ADC_CHANNEL_END ADC_CHANNEL_9              ///< Last ADC channel
 #define NUM_ADC_CHANNELS (ADC_CHANNEL_END - ADC_CHANNEL_START + 1) ///< Total number of ADC channels (10)
-#define PULLUP_VREF_MV 5025                        ///< Optional pullup supply voltage in millivolts (5V)
 #define FILTER_DEPTH 5                             ///< Number of samples for median filtering
 #define NTC_TABLE_SIZE(x) (sizeof(x) / sizeof((x)[0])) ///< Macro to calculate NTC table size
 #define DIVIDER_HIGH_OHM 4700                      ///< Series resistor value (4.7k ohm)
