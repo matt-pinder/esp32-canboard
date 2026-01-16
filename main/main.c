@@ -23,9 +23,7 @@
 
 #include "inc/wifi_config.h"
 #include "inc/config.h"
-
-// Firmware revision
-const uint8_t FIRMWARE_REVISION = 2;
+#include "esp_spiffs.h"
 
 // Global board configuration (shared with other modules)
 board_config_t board_cfg;
@@ -35,6 +33,20 @@ void app_main(void)
     static const char *log_tag = "APP";
     
     // Load board config from SPIFFS (with CRC check)
+    // Ensure SPIFFS is mounted so config_load/config_save can access files
+    esp_err_t spiffs_ret = esp_vfs_spiffs_register(&(esp_vfs_spiffs_conf_t){
+        .base_path = "/spiffs",
+        .partition_label = NULL,
+        .max_files = 5,
+        .format_if_mount_failed = true
+    });
+    if (spiffs_ret == ESP_ERR_INVALID_STATE) {
+        ESP_LOGI(log_tag, "SPIFFS already mounted");
+    } else if (spiffs_ret != ESP_OK) {
+        ESP_LOGW(log_tag, "Failed to mount SPIFFS: %s", esp_err_to_name(spiffs_ret));
+    } else {
+        ESP_LOGI(log_tag, "SPIFFS mounted for config access");
+    }
     if (!config_load(&board_cfg)) {
         ESP_LOGW(log_tag, "Config CRC invalid or not found, using defaults");
         config_set_defaults(&board_cfg);

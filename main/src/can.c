@@ -71,13 +71,21 @@ esp_err_t can_init(void) {
  * @brief FreeRTOS task that transmits sensor data over CAN bus.
  *
  * Continuously reads filtered voltage data from all ADC channels and transmits
- * them as 3 multiplexed CAN messages. Each message contains:
- * - Message 1 (can_start_id): CPU temperature, firmware revision, channels 0-2
- * - Message 2 (can_start_id+1): Channels 3-6
- * - Message 3 (can_start_id+2): Channels 7-9
+ * them as a set of CAN messages. New layout:
+ * - Message 1 (can_start_id): inputs 0..3 (four uint16 LE)
+ * - Message 2 (can_start_id+1): inputs 4..7 (four uint16 LE)
+ * - Message 3 (can_start_id+2): inputs 8..9 (two uint16 LE in bytes 0..3)
+ *   followed immediately by the first two dynamic signals in bytes 4..7.
+ * Dynamic signals (10 total) are encoded based on channel configuration and
+ * are placed into msg3 (first two), then msg4 (can_start_id+3, four signals),
+ * then msg5 (can_start_id+4, final four signals). Each dynamic signal is 2
+ * bytes (uint16/int16 LE) with encoding rules:
+ *  - Raw: output 0 (uint16)
+ *  - Pressure: unsigned uint16 = pressure_kPa * 100 (factor 0.01)
+ *  - NTC: signed int16 = temperature_C * 1 (factor 1)
  *
- * Voltages are encoded as uint16_t little-endian with 0.001V scale factor
- * (i.e., 2500 mV = 2.5V). CPU Temperature is signed int8_t in degrees Celsius.
+ * Voltages are encoded as uint16_t little-endian with 0.001 V scale (i.e., mV
+ * stored directly). Endianness: little-endian (LSB first) for multi-byte fields.
  *
  * @param arg Unused (FreeRTOS task parameter)
  *
@@ -86,9 +94,6 @@ esp_err_t can_init(void) {
  *       All CAN transmit failures are logged as warnings (non-fatal).
  *       Message timing: ~1-2ms per message, 20ms inter-cycle delay (total ~25ms = 40Hz capability)
  *       Actual transmission frequency: 20Hz (50ms cycle time)
- *       Firmware revision is sent in Message 1, Byte 1 for version tracking.
- *
- * @see filtered_voltages_mutex, getCpuTemperature(), FIRMWARE_REVISION
  */
 void canTransmit(void *arg)
 {
@@ -111,16 +116,16 @@ void canTransmit(void *arg)
         // Get CPU temperature
         cpu_temp = getCpuTemperature();
         
-        // Message 1: analogVoltage_1
+        // Message 1: inputs 0..3 (each uint16 LE)
         twai_message_t msg1 = init_twai_message(board_cfg.can_start_id);
-        msg1.data[0] = (uint8_t)cpu_temp;        // CPU Temperature 
-        msg1.data[1] = FIRMWARE_REVISION;        // Firmware Revision 
-        msg1.data[2] = voltages_copy[0] & 0xFF;  // Channel 0 
-        msg1.data[3] = (voltages_copy[0] >> 8) & 0xFF;  
-        msg1.data[4] = voltages_copy[1] & 0xFF;  // Channel 1 
-        msg1.data[5] = (voltages_copy[1] >> 8) & 0xFF;  
-        msg1.data[6] = voltages_copy[2] & 0xFF;  // Channel 2 
-        msg1.data[7] = (voltages_copy[2] >> 8) & 0xFF;  
+        msg1.data[0] = voltages_copy[0] & 0xFF;  // input 0 LSB
+        msg1.data[1] = (voltages_copy[0] >> 8) & 0xFF; // input 0 MSB
+        msg1.data[2] = voltages_copy[1] & 0xFF;  // input 1 LSB
+        msg1.data[3] = (voltages_copy[1] >> 8) & 0xFF; // input 1 MSB
+        msg1.data[4] = voltages_copy[2] & 0xFF;  // input 2 LSB
+        msg1.data[5] = (voltages_copy[2] >> 8) & 0xFF; // input 2 MSB
+        msg1.data[6] = voltages_copy[3] & 0xFF;  // input 3 LSB
+        msg1.data[7] = (voltages_copy[3] >> 8) & 0xFF; // input 3 MSB
         
         esp_err_t err = twai_transmit(&msg1, pdMS_TO_TICKS(1000));
         if (err != ESP_OK) {
@@ -128,16 +133,16 @@ void canTransmit(void *arg)
         }
         vTaskDelay(pdMS_TO_TICKS(1));
         
-        // Message 2: analogVoltage_2
+        // Message 2: inputs 4..7 (each uint16 LE)
         twai_message_t msg2 = init_twai_message(board_cfg.can_start_id + 1);
-        msg2.data[0] = voltages_copy[3] & 0xFF; // Channel 3
-        msg2.data[1] = (voltages_copy[3] >> 8) & 0xFF;
-        msg2.data[2] = voltages_copy[4] & 0xFF; // Channel 4
-        msg2.data[3] = (voltages_copy[4] >> 8) & 0xFF;
-        msg2.data[4] = voltages_copy[5] & 0xFF; // Channel 5
-        msg2.data[5] = (voltages_copy[5] >> 8) & 0xFF;
-        msg2.data[6] = voltages_copy[6] & 0xFF; // Channel 6
-        msg2.data[7] = (voltages_copy[6] >> 8) & 0xFF;
+        msg2.data[0] = voltages_copy[4] & 0xFF; // input 4 LSB
+        msg2.data[1] = (voltages_copy[4] >> 8) & 0xFF; // input 4 MSB
+        msg2.data[2] = voltages_copy[5] & 0xFF; // input 5 LSB
+        msg2.data[3] = (voltages_copy[5] >> 8) & 0xFF; // input 5 MSB
+        msg2.data[4] = voltages_copy[6] & 0xFF; // input 6 LSB
+        msg2.data[5] = (voltages_copy[6] >> 8) & 0xFF; // input 6 MSB
+        msg2.data[6] = voltages_copy[7] & 0xFF; // input 7 LSB
+        msg2.data[7] = (voltages_copy[7] >> 8) & 0xFF; // input 7 MSB
         
         err = twai_transmit(&msg2, pdMS_TO_TICKS(1000));
         if (err != ESP_OK) {
@@ -145,20 +150,81 @@ void canTransmit(void *arg)
         }
         vTaskDelay(pdMS_TO_TICKS(1));
         
-        // Message 3: analogVoltage_3
+        // Message 3: inputs 8..9 (each uint16 LE) and first two dynamic signals
         twai_message_t msg3 = init_twai_message(board_cfg.can_start_id + 2);
-        msg3.data[0] = voltages_copy[7] & 0xFF; // Channel 7
-        msg3.data[1] = (voltages_copy[7] >> 8) & 0xFF;
-        msg3.data[2] = voltages_copy[8] & 0xFF; // Channel 8
-        msg3.data[3] = (voltages_copy[8] >> 8) & 0xFF;
-        msg3.data[4] = voltages_copy[9] & 0xFF; // Channel 9
-        msg3.data[5] = (voltages_copy[9] >> 8) & 0xFF;
-        msg3.data[6] = 0x00;  // Unused
-        msg3.data[7] = 0x00;  // Unused
-        
+        msg3.data[0] = voltages_copy[8] & 0xFF; // input 8 LSB
+        msg3.data[1] = (voltages_copy[8] >> 8) & 0xFF; // input 8 MSB
+        msg3.data[2] = voltages_copy[9] & 0xFF; // input 9 LSB
+        msg3.data[3] = (voltages_copy[9] >> 8) & 0xFF; // input 9 MSB
+
+        // Prepare dynamic signals (10 signals, one per channel), encoded per config
+        uint16_t dyn[10];
+        for (int i = 0; i < 10; ++i) {
+            if (board_cfg.channels[i].type == SENSOR_RAW) {
+                dyn[i] = 0;
+            } else if (board_cfg.channels[i].type == SENSOR_PRESSURE) {
+                // getSensorPressure returns kPa * 100 (0.01 kPa resolution)
+                uint16_t p = getSensorPressure(voltages_copy[i],
+                                               board_cfg.channels[i].params.pressure.min_mv,
+                                               board_cfg.channels[i].params.pressure.max_mv,
+                                               board_cfg.channels[i].params.pressure.min_kpa,
+                                               board_cfg.channels[i].params.pressure.max_kpa);
+                dyn[i] = p;
+            } else if (board_cfg.channels[i].type == SENSOR_NTC) {
+                const ntc_table_def_t *t = ntc_get_table(board_cfg.channels[i].params.ntc.table_id);
+                int8_t temp = getSensorTemperature(voltages_copy[i], board_cfg.channels[i].pullup_ohms, PULLUP_VREF_MV,
+                                                   t ? t->points : NULL, t ? t->points_count : 0);
+                if (temp == (int8_t)-128) temp = 0;
+                int16_t t16 = (int16_t)temp;
+                dyn[i] = (uint16_t)((uint16_t)t16 & 0xFFFF);
+            } else {
+                dyn[i] = 0;
+            }
+        }
+
+        // Place first two dynamic signals into msg3 bytes 4..7
+        msg3.data[4] = dyn[0] & 0xFF;
+        msg3.data[5] = (dyn[0] >> 8) & 0xFF;
+        msg3.data[6] = dyn[1] & 0xFF;
+        msg3.data[7] = (dyn[1] >> 8) & 0xFF;
+
         err = twai_transmit(&msg3, pdMS_TO_TICKS(1000));
         if (err != ESP_OK) {
-            ESP_LOGW(can_log, "Failed to transmit analogVoltage_3: %s", esp_err_to_name(err));
+            ESP_LOGW(can_log, "Failed to transmit analogVoltage_3/msg3: %s", esp_err_to_name(err));
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+
+        // Message 4: dynamic signals 2..5 (four uint16)
+        twai_message_t msg4 = init_twai_message(board_cfg.can_start_id + 3);
+        msg4.data[0] = dyn[2] & 0xFF;
+        msg4.data[1] = (dyn[2] >> 8) & 0xFF;
+        msg4.data[2] = dyn[3] & 0xFF;
+        msg4.data[3] = (dyn[3] >> 8) & 0xFF;
+        msg4.data[4] = dyn[4] & 0xFF;
+        msg4.data[5] = (dyn[4] >> 8) & 0xFF;
+        msg4.data[6] = dyn[5] & 0xFF;
+        msg4.data[7] = (dyn[5] >> 8) & 0xFF;
+
+        err = twai_transmit(&msg4, pdMS_TO_TICKS(1000));
+        if (err != ESP_OK) {
+            ESP_LOGW(can_log, "Failed to transmit dynamic msg4: %s", esp_err_to_name(err));
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+
+        // Message 5: dynamic signals 6..9 (four uint16)
+        twai_message_t msg5 = init_twai_message(board_cfg.can_start_id + 4);
+        msg5.data[0] = dyn[6] & 0xFF;
+        msg5.data[1] = (dyn[6] >> 8) & 0xFF;
+        msg5.data[2] = dyn[7] & 0xFF;
+        msg5.data[3] = (dyn[7] >> 8) & 0xFF;
+        msg5.data[4] = dyn[8] & 0xFF;
+        msg5.data[5] = (dyn[8] >> 8) & 0xFF;
+        msg5.data[6] = dyn[9] & 0xFF;
+        msg5.data[7] = (dyn[9] >> 8) & 0xFF;
+
+        err = twai_transmit(&msg5, pdMS_TO_TICKS(1000));
+        if (err != ESP_OK) {
+            ESP_LOGW(can_log, "Failed to transmit dynamic msg5: %s", esp_err_to_name(err));
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }

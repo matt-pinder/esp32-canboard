@@ -8,11 +8,12 @@
 #include "inc/config.h"
 
 #include "inc/http_server.h"
+#include "inc/wifi_config.h"
 
 #define WIFI_SSID "ESP32-CanBoard"      ///< WiFi access point SSID
 #define WIFI_PASS "canboard123"         ///< WiFi access point password
 #define WIFI_MAX_CONN 1                 ///< Maximum number of simultaneous WiFi connections
-#define CONFIG_TIMEOUT_MS 60000         ///< Configuration mode timeout in milliseconds (60 seconds)
+#define CONFIG_TIMEOUT_MS 120000        ///< Configuration mode timeout in milliseconds (120 seconds)
 
 /**
  * @brief Log tag for this module
@@ -41,6 +42,25 @@ static void config_timeout_cb(void *arg) {
 }
 
 /**
+ * @brief WiFi event handler to log station connect/disconnect and reasons
+ */
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                               int32_t event_id, void* event_data)
+{
+    if (event_base != WIFI_EVENT) return;
+
+    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+        wifi_event_ap_staconnected_t *evt = (wifi_event_ap_staconnected_t *)event_data;
+        ESP_LOGI(TAG, "station: %02x:%02x:%02x:%02x:%02x:%02x join, AID=%d, bgn, 40U",
+                 evt->mac[0], evt->mac[1], evt->mac[2], evt->mac[3], evt->mac[4], evt->mac[5], evt->aid);
+    } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+        wifi_event_ap_stadisconnected_t *evt = (wifi_event_ap_stadisconnected_t *)event_data;
+        ESP_LOGI(TAG, "station: %02x:%02x:%02x:%02x:%02x:%02x leave, AID = %d, reason = %d, bss_flags is %u, bss:0x%p",
+                 evt->mac[0], evt->mac[1], evt->mac[2], evt->mac[3], evt->mac[4], evt->mac[5], evt->aid, evt->reason, 0, event_data);
+    }
+}
+
+/**
  * @brief Initialize WiFi AP mode with configuration timeout
  * Starts WiFi access point (SSID: ESP32-CanBoard) and HTTP configuration server.
  * Automatically shuts down after 60 seconds of inactivity or when shutdown is requested.
@@ -49,6 +69,7 @@ void wifi_config_mode_start(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     esp_netif_create_default_wifi_ap();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -60,7 +81,7 @@ void wifi_config_mode_start(void) {
             .ssid_len = strlen(WIFI_SSID),
             .password = WIFI_PASS,
             .max_connection = WIFI_MAX_CONN,
-            .authmode = WIFI_AUTH_WPA_WPA2_PSK
+            .authmode = WIFI_AUTH_WPA2_PSK
         }
     };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));

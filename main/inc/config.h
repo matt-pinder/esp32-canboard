@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 #define CONFIG_CHANNELS 10       ///< Number of ADC input channels
-#define CONFIG_NAME_LEN 16      ///< Maximum characters for channel name
+#define CONFIG_NAME_LEN 32      ///< Maximum characters for channel name
 #define CONFIG_VERSION 2        ///< Configuration structure version number
 
 /// Sensor measurement types for ADC channels

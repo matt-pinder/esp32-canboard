@@ -10,6 +10,28 @@
 * Optional 120ohm CAN terminating resistor
 * Small PCB Footprint - 40mm x 60mm
 
+## Device Configuration
+
+On each boot the board enables a WiFi access point and web configuration interface; this will automatically disable after 120 seconds if no client connects. The web UI allows you to:
+
+- View and edit per-channel settings (name, sensor type, pull-up, filtering, pressure calibration).
+- Configure requird CAN parameters - Base ID and bus speed.
+- Backup the entire configuration to a JSON file.
+- Restore configuration from a previously exported JSON file.
+
+![esp32-canboard-configuration](docs/esp32-canboard-configuration.png)
+
+Backup behavior:
+- Click the `Backup` button in the web UI to download a JSON snapshot of the current configuration. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format.
+
+Restore behavior:
+- Use the `Restore` button to select a previously exported JSON file. The UI will upload the JSON to the device and validate the payload. The existing configuration is backed up on the device before overwrite; if saving the imported file fails, the device will attempt to restore the previous configuration.
+
+Notes:
+- Configuration is persisted on SPIFFS at `/spiffs/config.bin` (binary) and the web UI uses JSON export/import for human-readable backups.
+- After restoring a new configuration via the web UI you should reboot the device to apply changes.
+
+
 ## Schematic
 [View PDF](docs/esp32-canboard-schematic.pdf)
 
