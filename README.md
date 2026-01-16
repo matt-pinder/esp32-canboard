@@ -20,7 +20,7 @@ On each boot the board enables a WiFi access point and web configuration interfa
 |---|---|
 | SSID | ESP32-CanBoard |
 | Password | canboard123 |
-| Configuration Address | http://192.168.4.1 |
+| Web UI | http://192.168.4.1 |
 
 The web UI allows you to:
 
