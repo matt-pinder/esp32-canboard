@@ -13,8 +13,10 @@ void espnow_receive_callback(const esp_now_recv_info_t *info, const uint8_t *dat
 }
 
 void espnow_start(){
+    ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
     wifi_init_config_t wifiConfig = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wifiConfig));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -54,8 +56,10 @@ void espnow_transmit(void *arg){
             xSemaphoreGive(scaled_pressures_mutex);
         }
 
-        espnow_76c.data[0] = voltages_copy[0] & 0xFF;
-        espnow_76c.data[1] = (voltages_copy[0] >> 8) & 0xFF;
+        int difftemp = getSensorTemperature(voltages_copy[0], 1000, PULLUP_VREF_MV, ntc_table, NTC_TABLE_SIZE(ntc_table));
+
+        espnow_76c.data[0] = difftemp & 0xFF;
+        espnow_76c.data[1] = (difftemp >> 8) & 0xFF;
         espnow_76c.data[2] = 0;
         espnow_76c.data[3] = 0;
         espnow_76c.data[4] = 0;

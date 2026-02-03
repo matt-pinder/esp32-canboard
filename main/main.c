@@ -18,7 +18,6 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
-#include "driver/gpio.h"
 #include "driver/twai.h"
 
 #define USB_PRESENCE_DETECT GPIO_NUM_38
