@@ -56,7 +56,7 @@ void espnow_transmit(void *arg){
             xSemaphoreGive(scaled_pressures_mutex);
         }
 
-        int difftemp = getSensorTemperature(voltages_copy[0], 1000, PULLUP_VREF_MV, ntc_table, NTC_TABLE_SIZE(ntc_table));
+        int difftemp = getSensorTemperature(voltages_copy[0], 1000, PULLUP_VREF_MV, custom_ntc_table, CUSTOM_NTC_TABLE_SIZE(custom_ntc_table));
 
         espnow_76c.data[0] = difftemp & 0xFF;
         espnow_76c.data[1] = (difftemp >> 8) & 0xFF;

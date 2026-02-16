@@ -13,6 +13,7 @@
 #define PULLUP_VREF_MV 5015
 #define FILTER_DEPTH 5
 #define NTC_TABLE_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+#define CUSTOM_NTC_TABLE_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
 static const char *adc_log = "adc";
 
@@ -40,15 +41,7 @@ uint16_t medianFilterHelper(uint16_t *samples, int count);
 void adcProcess(void *arg);
 void pressureProcess(void *arg);
 
-// static const ntc_point_t ntc_table[] = { // Bosch 0280130026, Bosch 0280130039
-//     { -20, 52000 }, { -4, 47000  }, {   2, 37600  }, {  10,  13500 },
-//     {  21, 9400  }, {  31,  5471 }, {  40, 3600  }, 
-//     {  50, 2400 },
-//     {  60,  1612 }, {  71, 1230 }, {  80, 960 }, {  92, 687 },
-//     { 100,  536}, { 110,  200 }, { 120,   201 }, { 130,    202 }, { 140,    203 }
-// };
-
-static const ntc_point_t ntc_table[] = {
+static const ntc_point_t custom_ntc_table[] = {
     { -20, 25317 }, { -4, 22855 }, {  2, 18144 }, { 10,  8233 },
     { 15, 5847 }, { 21, 4376 }, { 31, 2549 }, { 42, 1656 },
     { 50, 1100 }, { 60,  789 }, { 71,  552 }, { 80,  429 },
