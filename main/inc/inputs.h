@@ -123,6 +123,13 @@ static const ntc_point_t universal_18_npt_points[] = {
     { 140,    21 }
 };
 
+static const ntc_point_t custom_ntc_points[] = {
+    { -20, 25317 }, { -4, 22855 }, {  2, 18144 }, { 10,  8233 },
+    { 15, 5847 }, { 21, 4376 }, { 31, 2549 }, { 42, 1656 },
+    { 50, 1100 }, { 60,  789 }, { 71,  552 }, { 80,  429 },
+    { 92,  305 }, {100,  240 }, {109, 198 }, {150,  76 }
+};
+
 // Array of available NTC tables for easy lookup and enumeration
 static const ntc_table_def_t ntc_tables[] = {
     {
@@ -142,6 +149,12 @@ static const ntc_table_def_t ntc_tables[] = {
         .description = "Universal 18 NPT (EFI Parts)",
         .points = universal_18_npt_points,
         .points_count = NTC_TABLE_SIZE(universal_18_npt_points)
+    }
+    ,{
+        .name = "Custom NTC",
+        .description = "Custom NTC",
+        .points = custom_ntc_points,
+        .points_count = NTC_TABLE_SIZE(custom_ntc_points)
     }
 };
 
