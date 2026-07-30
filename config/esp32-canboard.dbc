@@ -1,0 +1,85 @@
+VERSION ""
+
+
+NS_ : 
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_:
+
+
+BO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Vector__XXX
+ SG_ channel1_mV : 16|12@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ channel2_mV : 28|12@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ channel4_mV : 52|12@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ channel3_mV : 40|12@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ boardVersion : 0|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ firmwareVersion : 4|4@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 16 analogVoltage_1: 8 Vector__XXX
+ SG_ input0_voltage : 0|16@1+ (0.001,0) [0|5000] "V" Vector__XXX
+ SG_ input1_voltage : 16|16@1+ (0.001,0) [0|5000] "V" Vector__XXX
+ SG_ input2_voltage : 32|16@1+ (0.001,0) [0|5000] "V" Vector__XXX
+ SG_ input3_voltage : 48|16@1+ (0.001,0) [0|5000] "V" Vector__XXX
+
+BO_ 17 analogVoltage_2: 8 Vector__XXX
+ SG_ input4_voltage : 0|16@1+ (0.001,0) [0|5000] "V" Vector__XXX
+ SG_ input5_voltage : 16|16@1+ (0.001,0) [0|5000] "V" Vector__XXX
+ SG_ input6_voltage : 32|16@1+ (0.001,0) [0|5000] "V" Vector__XXX
+ SG_ input7_voltage : 48|16@1+ (0.001,0) [0|5000] "V" Vector__XXX
+
+BO_ 18 analogVoltage_3: 8 Vector__XXX
+ SG_ input8_voltage : 0|16@1+ (0.001,0) [0|5000] "V" Vector__XXX
+ SG_ input9_voltage : 16|16@1+ (0.001,0) [0|5000] "V" Vector__XXX
+ SG_ dyn0_value : 32|16@1+ (1,0) [0|32767] "C" Vector__XXX
+ SG_ dyn1_value : 48|16@1- (1,0) [0|32767] "C" Vector__XXX
+
+BO_ 19 dynamicSignals_1: 8 Vector__XXX
+ SG_ dyn2_value : 0|16@1+ (0.01,0) [0|32767] "C" Vector__XXX
+ SG_ dyn3_value : 16|16@1+ (0.01,0) [0|655.35] "kPa" Vector__XXX
+ SG_ dyn4_value : 32|16@1+ (0.01,0) [0|655.35] "kPa" Vector__XXX
+ SG_ dyn5_value : 48|16@1+ (0.01,0) [0|655.35] "kPa" Vector__XXX
+
+BO_ 20 dynamicSignals_2: 8 Vector__XXX
+ SG_ dyn6_value : 0|16@1+ (0.01,0) [0|655.35] "kPa" Vector__XXX
+ SG_ dyn7_value : 16|16@1+ (0.01,0) [0|1034] "kPa" Vector__XXX
+ SG_ dyn8_value : 32|16@1+ (0.01,0) [0|1034] "kPa" Vector__XXX
+ SG_ dyn9_value : 48|16@1+ (0.01,0) [0|1034] "kPa" Vector__XXX
+
+
+
+CM_ SG_ 18 dyn0_value "OilTemp";
+CM_ SG_ 18 dyn1_value "WaterTemp";
+CM_ SG_ 19 dyn2_value "DiffTemp";
+CM_ SG_ 20 dyn7_value "InletPressure";
+CM_ SG_ 20 dyn8_value "FuelPressure";
+CM_ SG_ 20 dyn9_value "OilPressure";
+

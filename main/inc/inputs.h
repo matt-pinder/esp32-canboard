@@ -124,10 +124,8 @@ static const ntc_point_t universal_18_npt_points[] = {
 };
 
 static const ntc_point_t custom_ntc_points[] = {
-    { -20, 25317 }, { -4, 22855 }, {  2, 18144 }, { 10,  8233 },
-    { 15, 5847 }, { 21, 4376 }, { 31, 2549 }, { 42, 1656 },
-    { 50, 1100 }, { 60,  789 }, { 71,  552 }, { 80,  429 },
-    { 92,  305 }, {100,  240 }, {109, 198 }, {150,  76 }
+    {  0, 2860 }, { 8,  1181 }, { 37, 663 }, { 58, 390 },
+    {80,  208 }, {100, 126 }, {150,  20 }
 };
 
 // Array of available NTC tables for easy lookup and enumeration

@@ -173,7 +173,7 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_poin
     float v_ref = v_ref_mv / 1000.0f;
     float r_ntc_f = (r_pullup * v_ntc) / (v_ref - v_ntc);
     int32_t r_ntc = (int32_t)(r_ntc_f + 0.5f);
-
+    // ESP_LOGI("ergh", "this %"PRIu32, r_ntc);
     if (r_ntc >= table[0].resistance) return table[0].temp_c;
     if (r_ntc <= table[table_size - 1].resistance)
         return table[table_size - 1].temp_c;

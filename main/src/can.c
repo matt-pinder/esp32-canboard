@@ -174,6 +174,7 @@ void canTransmit(void *arg)
                 const ntc_table_def_t *t = ntc_get_table(board_cfg.channels[i].params.ntc.table_id);
                 int8_t temp = getSensorTemperature(voltages_copy[i], board_cfg.channels[i].pullup_ohms, board_cfg.pullup_vref_mv,
                                                    t ? t->points : NULL, t ? t->points_count : 0);
+                // ESP_LOGI("can temp", "volatge %u, temp %d",voltages_copy[i], temp);
                 if (temp == (int8_t)-128) temp = 0;
                 int16_t t16 = (int16_t)temp;
                 dyn[i] = (uint16_t)((uint16_t)t16 & 0xFFFF);

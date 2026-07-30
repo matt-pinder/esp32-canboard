@@ -1,0 +1,120 @@
+{
+  "can_speed_kbps": 500,
+  "can_start_id": 1568,
+  "pullup_vref_mv": 5025,
+  "channels": [
+    {
+      "name": "OilTemp",
+      "pullup_ohms": 1000,
+      "type": 1,
+      "filtering": 0,
+      "params": {
+        "ntc": {
+          "table_id": 3
+        }
+      }
+    },
+    {
+      "name": "WaterTemp",
+      "pullup_ohms": 1000,
+      "type": 1,
+      "filtering": 0,
+      "params": {
+        "ntc": {
+          "table_id": 3
+        }
+      }
+    },
+    {
+      "name": "DiffTemp",
+      "pullup_ohms": 1000,
+      "type": 1,
+      "filtering": 0,
+      "params": {
+        "ntc": {
+          "table_id": 3
+        }
+      }
+    },
+    {
+      "name": "AirTemp",
+      "pullup_ohms": 1000,
+      "type": 1,
+      "filtering": 0,
+      "params": {
+        "ntc": {
+          "table_id": 0
+        }
+      }
+    },
+    {
+      "name": "UNUSED",
+      "pullup_ohms": 0,
+      "type": 0,
+      "filtering": 0,
+      "params": {
+        "raw": {}
+      }
+    },
+    {
+      "name": "UNUSED",
+      "pullup_ohms": 0,
+      "type": 0,
+      "filtering": 0,
+      "params": {
+        "raw": {}
+      }
+    },
+    {
+      "name": "UNUSED",
+      "pullup_ohms": 0,
+      "type": 0,
+      "filtering": 0,
+      "params": {
+        "raw": {}
+      }
+    },
+    {
+      "name": "InletPressure",
+      "pullup_ohms": 0,
+      "type": 2,
+      "filtering": 1,
+      "params": {
+        "pressure": {
+          "min_mv": 500,
+          "max_mv": 4500,
+          "min_kpa": 0.00,
+          "max_kpa": 206.00
+        }
+      }
+    },
+    {
+      "name": "FuelPressure",
+      "pullup_ohms": 0,
+      "type": 2,
+      "filtering": 1,
+      "params": {
+        "pressure": {
+          "min_mv": 500,
+          "max_mv": 4500,
+          "min_kpa": 0.00,
+          "max_kpa": 1034.00
+        }
+      }
+    },
+    {
+      "name": "OilPressure",
+      "pullup_ohms": 0,
+      "type": 2,
+      "filtering": 1,
+      "params": {
+        "pressure": {
+          "min_mv": 500,
+          "max_mv": 4500,
+          "min_kpa": 0.00,
+          "max_kpa": 1034.00
+        }
+      }
+    }
+  ]
+}
