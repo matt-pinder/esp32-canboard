@@ -10,6 +10,16 @@
 #define CONFIG_FILE_PATH "/spiffs/config.bin"
 #define TAG "CONFIG"
 
+typedef struct {
+    uint32_t version;
+    uint32_t can_start_id;
+    uint32_t can_speed_kbps;
+    uint8_t can_tx_hz;
+    uint16_t pullup_vref_divider_high_ohm;
+    channel_config_t channels[CONFIG_CHANNELS];
+    uint32_t crc32;
+} board_config_persist_t;
+
 /**
  * @brief Computes CRC32 checksum of data buffer.
  *
@@ -64,10 +74,16 @@ bool config_save(const board_config_t *cfg) {
         ESP_LOGE(TAG, "Invalid config pointer");
         return false;
     }
-    
-    board_config_t temp = *cfg;
-    temp.crc32 = crc32(&temp, offsetof(board_config_t, crc32));
-    
+
+    board_config_persist_t temp = {0};
+    temp.version = cfg->version;
+    temp.can_start_id = cfg->can_start_id;
+    temp.can_speed_kbps = cfg->can_speed_kbps;
+    temp.can_tx_hz = cfg->can_tx_hz;
+    temp.pullup_vref_divider_high_ohm = cfg->pullup_vref_divider_high_ohm;
+    memcpy(temp.channels, cfg->channels, sizeof(temp.channels));
+    temp.crc32 = crc32(&temp, offsetof(board_config_persist_t, crc32));
+
     FILE *f = fopen(CONFIG_FILE_PATH, "wb");
     if (!f) {
         ESP_LOGE(TAG, "Failed to open config file for writing");
@@ -119,21 +135,75 @@ bool config_load(board_config_t *cfg) {
         return false;
     }
     
-    size_t read = fread(cfg, sizeof(*cfg), 1, f);
+    board_config_persist_t persisted = {0};
+    size_t read = fread(&persisted, sizeof(persisted), 1, f);
     fclose(f);
-    
+
     if (read != 1) {
         ESP_LOGE(TAG, "Failed to read config data");
         return false;
     }
-    
-    uint32_t crc = crc32(cfg, offsetof(board_config_t, crc32));
-    if (crc != cfg->crc32) {
-        ESP_LOGE(TAG, "CRC mismatch: expected 0x%08X, got 0x%08X", crc, cfg->crc32);
+
+    uint32_t crc = crc32(&persisted, offsetof(board_config_persist_t, crc32));
+    if (crc != persisted.crc32) {
+        ESP_LOGE(TAG, "CRC mismatch: expected 0x%08X, got 0x%08X", crc, persisted.crc32);
         return false;
     }
-    
+
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->version = persisted.version;
+    cfg->can_start_id = persisted.can_start_id;
+    cfg->can_speed_kbps = persisted.can_speed_kbps;
+    cfg->can_tx_hz = persisted.can_tx_hz;
+    cfg->pullup_vref_divider_high_ohm = persisted.pullup_vref_divider_high_ohm;
+    memcpy(cfg->channels, persisted.channels, sizeof(persisted.channels));
+    cfg->pullup_vref_mv = 5025;
+    cfg->crc32 = persisted.crc32;
+
     ESP_LOGI(TAG, "Config loaded and verified, CRC=0x%08X", cfg->crc32);
+
+    // migrate older versions if necessary
+    if (cfg->version < CONFIG_VERSION) {
+        ESP_LOGW(TAG, "Migrating config from version %u to %u", cfg->version, CONFIG_VERSION);
+        if (cfg->version < 3) {
+            // previous versions stored filtering as boolean
+            for (int i = 0; i < CONFIG_CHANNELS; ++i) {
+                if (cfg->channels[i].filtering) {
+                    cfg->channels[i].filtering = FILTER_MED;
+                } else {
+                    cfg->channels[i].filtering = FILTER_NONE;
+                }
+            }
+        }
+        if (cfg->version < 4) {
+            for (int i = 0; i < CONFIG_CHANNELS; ++i) {
+                cfg->channels[i].emub_tx = EMUB_TX_DISABLED;
+            }
+        }
+        if (cfg->version < 5) {
+            cfg->can_tx_hz = 25;
+        }
+        if (cfg->version < 6) {
+            cfg->pullup_vref_divider_high_ohm = 5850;
+        }
+        if (cfg->version < 7) {
+            cfg->pullup_vref_divider_high_ohm = 5850;
+        }
+        cfg->version = CONFIG_VERSION;
+        if (cfg->can_tx_hz != 25 && cfg->can_tx_hz != 50) {
+            cfg->can_tx_hz = 25;
+        }
+        // update CRC and persist new layout immediately
+        cfg->crc32 = 0;
+        config_save(cfg);
+    }
+
+    if (cfg->can_tx_hz != 25 && cfg->can_tx_hz != 50) {
+        cfg->can_tx_hz = 25;
+        cfg->crc32 = 0;
+        config_save(cfg);
+    }
+
     return true;
 }
 
@@ -170,13 +240,16 @@ void config_set_defaults(board_config_t *cfg) {
     cfg->version = CONFIG_VERSION;
     cfg->can_start_id = 0x100;
     cfg->can_speed_kbps = 500; // Default CAN speed 500 kbps
-    cfg->pullup_vref_mv = 5025; // Default pull-up reference voltage (mV)
+    cfg->can_tx_hz = 25; // Default CAN transmit rate 25 Hz
+    cfg->pullup_vref_mv = 5025; // Default live pull-up reference voltage (mV)
+    cfg->pullup_vref_divider_high_ohm = 5850;
     
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
         snprintf(cfg->channels[i].name, CONFIG_NAME_LEN, "Input %d", i + 1);
         cfg->channels[i].pullup_ohms = 0;
         cfg->channels[i].type = SENSOR_RAW;
-        cfg->channels[i].filtering = 0; // No filtering by default
+        cfg->channels[i].filtering = FILTER_NONE; // No filtering by default
+        cfg->channels[i].emub_tx = EMUB_TX_DISABLED;
     }
     
     ESP_LOGI(TAG, "Default config set");

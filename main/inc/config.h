@@ -6,7 +6,29 @@
 
 #define CONFIG_CHANNELS 10       ///< Number of ADC input channels
 #define CONFIG_NAME_LEN 32      ///< Maximum characters for channel name
-#define CONFIG_VERSION 2        ///< Configuration structure version number
+#define CONFIG_VERSION 7        ///< Configuration structure version number (increment for new fields or layout changes)
+
+/// Per-channel median filter strength levels
+/// stored in the 8‑bit `filtering` field below.
+/// 0 = none, 1 = low (3‑sample), 2 = med (5‑sample), 3 = high (7‑sample)
+typedef enum {
+    FILTER_NONE = 0,
+    FILTER_LOW  = 1,
+    FILTER_MED  = 2,
+    FILTER_HIGH = 3
+} filter_level_t;
+
+typedef enum {
+    EMUB_TX_DISABLED = 0,
+    EMUB_TX_CAN_ANALOG_9 = 1,
+    EMUB_TX_CAN_ANALOG_10 = 2,
+    EMUB_TX_CAN_ANALOG_11 = 3,
+    EMUB_TX_CAN_ANALOG_12 = 4,
+    EMUB_TX_CAN_ANALOG_13 = 5,
+    EMUB_TX_CAN_ANALOG_14 = 6,
+    EMUB_TX_CAN_ANALOG_15 = 7,
+    EMUB_TX_CAN_ANALOG_16 = 8
+} emub_tx_t;
 
 /// Sensor measurement types for ADC channels
 typedef enum {
@@ -20,7 +42,8 @@ typedef struct {
     char name[CONFIG_NAME_LEN]; ///< ASCII name/description of the channel
     uint32_t pullup_ohms;       ///< Optional pullup resistor value in ohms (0 if not present)
     sensor_type_t type;         ///< Sensor type (RAW, NTC, PRESSURE)
-    uint8_t filtering;          ///< Enable median filtering (1=enabled, 0=raw ADC)
+    uint8_t filtering;          ///< Median filter level (see filter_level_t enum; 0=none)
+    uint8_t emub_tx;            ///< Optional EMUB TX mapping 0=Disabled, 1..8 => CAN Analog 9..16
     union {
         struct { ///< NTC thermistor configuration
             uint8_t table_id;   ///< Reference table index for NTC lookup
@@ -36,12 +59,15 @@ typedef struct {
     } params;
 } channel_config_t;
 
-/// Main board configuration structure persisted to SPIFFS
+/// Runtime board configuration used by the firmware.
+/// `pullup_vref_mv` is a live ADC-derived measurement and is not persisted.
 typedef struct {
     uint32_t version;                      ///< Config version for migration/compatibility
     uint32_t can_start_id;                 ///< CAN message ID base (incremented for each message)
     uint32_t can_speed_kbps;               ///< CAN bus speed (125, 250, 500, or 1000 kbps)
-    uint16_t pullup_vref_mv;               ///< Pull-up reference voltage in millivolts (e.g. 5025)
+    uint8_t can_tx_hz;                     ///< CAN transmit loop rate in Hz (supported: 25 or 50)
+    uint16_t pullup_vref_mv;               ///< Live pull-up reference voltage in millivolts (runtime read-only display)
+    uint16_t pullup_vref_divider_high_ohm; ///< Top resistor value of the pull-up Vref divider (persisted)
     channel_config_t channels[CONFIG_CHANNELS]; ///< Per-channel configuration array
     uint32_t crc32;                        ///< CRC32 checksum of all fields above for integrity verification
 } board_config_t;

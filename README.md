@@ -9,7 +9,7 @@
 * Optional pull-up resistors via fused 5v rail for each input (TH 6.3mm)
 * Optional 120ohm CAN terminating resistor
 * Configuration via web interface over WiFi
-* Optional per-channel median filtering to reduce noise
+* Optional per-channel median filtering with selectable strength (none/low/med/high) to reduce noise
 * Small PCB Footprint - 40mm x 60mm
 
 ## Device Configuration
@@ -22,9 +22,10 @@ On each boot the board enables a WiFi access point and web configuration interfa
 
 The web UI allows you to:
 
-- View and edit per-channel settings (name, sensor type, pull-up, filtering, pressure calibration).
+- View and edit per-channel settings (name, sensor type, pull-up, **filter level** dropdown, pressure calibration).
 - Configure required CAN parameters - Base ID and bus speed.
 - Adjust pullup vref calculation voltage to allow for LDO regulator output/load.
+- View current input voltages and calculated values in real time.
 - Backup the entire configuration to a JSON file.
 - Restore configuration from a previously exported JSON file.
 
@@ -32,14 +33,14 @@ The web UI allows you to:
 
 | Function | Description |
 |:----|:----|
-| Save Config | Save current UI settings to device storage (`/spiffs/config.bin`). Changes are validated and persisted immediately, reboot to apply. |
+| Save Config | Save current UI settings to device storage (`/spiffs/config.bin`). Changes are validated, persisted and applied immediately. |
 | Backup | Download a JSON snapshot of the current configuration. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
 | Restore | Select a previously exported JSON file. The UI will upload the JSON to the device and validate the payload. The existing configuration is backed up on the device before overwrite; if saving the imported file fails, the device will restore the previous configuration. |
-| Reboot Device | Reboots the device to apply configuration changes. |
+| Reboot Device | Reboots the device. |
 
 **Notes:**
 - Configuration is persisted on SPIFFS at `/spiffs/config.bin` (binary) and the web UI uses JSON export/import for human-readable backups.
-- After restoring a new configuration via the web UI you should reboot the device to apply changes.
+- After restoring a new configuration via the web UI the changes are applied immediately.
 
 
 ## CAN Output

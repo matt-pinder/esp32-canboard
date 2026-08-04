@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "driver/twai.h"
@@ -92,8 +93,8 @@ esp_err_t can_init(void) {
  * @note Runs in infinite loop until task is deleted.
  *       Protected access to filtered_voltages array via mutex.
  *       All CAN transmit failures are logged as warnings (non-fatal).
- *       Message timing: ~1-2ms per message, 20ms inter-cycle delay (total ~25ms = 40Hz capability)
- *       Actual transmission frequency: 20Hz (50ms cycle time)
+ *       Message timing: ~1-2ms spacing between messages in a cycle.
+ *       Overall loop cadence is configurable via board_cfg.can_tx_hz (25 or 50 Hz).
  */
 void canTransmit(void *arg)
 {
@@ -101,6 +102,8 @@ void canTransmit(void *arg)
     extern const uint8_t FIRMWARE_REVISION;
     
     while(1) {
+        TickType_t loop_start = xTaskGetTickCount();
+        uint8_t can_tx_hz_snapshot = board_cfg.can_tx_hz;
         uint16_t voltages_copy[NUM_ADC_CHANNELS];
         int8_t cpu_temp = 0;
         
@@ -174,7 +177,6 @@ void canTransmit(void *arg)
                 const ntc_table_def_t *t = ntc_get_table(board_cfg.channels[i].params.ntc.table_id);
                 int8_t temp = getSensorTemperature(voltages_copy[i], board_cfg.channels[i].pullup_ohms, board_cfg.pullup_vref_mv,
                                                    t ? t->points : NULL, t ? t->points_count : 0);
-                // ESP_LOGI("can temp", "volatge %u, temp %d",voltages_copy[i], temp);
                 if (temp == (int8_t)-128) temp = 0;
                 int16_t t16 = (int16_t)temp;
                 dyn[i] = (uint16_t)((uint16_t)t16 & 0xFFFF);
@@ -227,7 +229,34 @@ void canTransmit(void *arg)
         if (err != ESP_OK) {
             ESP_LOGW(can_log, "Failed to transmit dynamic msg5: %s", esp_err_to_name(err));
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+
+        bool any_emub = false;
+        uint8_t emub_bytes[8] = {0};
+        for (int i = 0; i < 10; ++i) {
+            if (board_cfg.channels[i].emub_tx > EMUB_TX_DISABLED && board_cfg.channels[i].emub_tx <= EMUB_TX_CAN_ANALOG_16) {
+                uint32_t scaled = ((uint32_t)voltages_copy[i] * 5 + 49) / 98; // 19.6 mV per count
+                if (scaled > 255) scaled = 255;
+                emub_bytes[board_cfg.channels[i].emub_tx - 1] = (uint8_t)scaled;
+                any_emub = true;
+            }
+        }
+
+        if (any_emub) {
+            twai_message_t emub_msg = init_twai_message(0x66B);
+            memcpy(emub_msg.data, emub_bytes, sizeof(emub_bytes));
+            err = twai_transmit(&emub_msg, pdMS_TO_TICKS(1000));
+            if (err != ESP_OK) {
+                ESP_LOGW(can_log, "Failed to transmit EMUB TX msg: %s", esp_err_to_name(err));
+            }
+        }
+
+        TickType_t target_period_ticks = pdMS_TO_TICKS((can_tx_hz_snapshot == 50) ? 20 : 40);
+        TickType_t elapsed_ticks = xTaskGetTickCount() - loop_start;
+        if (elapsed_ticks < target_period_ticks) {
+            vTaskDelay(target_period_ticks - elapsed_ticks);
+        } else {
+            taskYIELD();
+        }
     }
     vTaskDelete(NULL);
 }

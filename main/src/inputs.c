@@ -149,7 +149,8 @@ uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, fl
  * @brief Calculates temperature from voltage using NTC thermistor lookup table.
  *
  * Converts a measured voltage to temperature using a voltage divider circuit with
- * a known pull-up resistor. Calculates NTC resistance from voltage, then interpolates
+ * a known pull-up resistor. Calculates apparent resistance from voltage, removes
+ * fixed board input loading (4k7 + 10k path to ground), then interpolates
  * temperature from the provided lookup table.
  *
  * @param v_mv Measured voltage across NTC in millivolts
@@ -164,6 +165,8 @@ uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, fl
  * @note Table must be sorted in descending order of resistance.
  *       Performs linear interpolation between table points.
  *       Input validation: v_mv must be in (0, v_ref_mv), r_pullup > 0, table != NULL
+ *       Compensation assumes each NTC channel sees the fixed board load
+ *       DIVIDER_TOTAL_OHM to ground.
  */
 int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_point_t *table, size_t table_size) {
     if (v_mv <= 0 || v_mv >= v_ref_mv || r_pullup <= 0 || v_ref_mv <= 0 || table == NULL || table_size < 2)
@@ -172,8 +175,17 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_poin
     float v_ntc = v_mv / 1000.0f;
     float v_ref = v_ref_mv / 1000.0f;
     float r_ntc_f = (r_pullup * v_ntc) / (v_ref - v_ntc);
+
+    // Remove fixed board input loading (4k7 + 10k to ground) to recover true NTC resistance.
+    const float r_input_load = (float)DIVIDER_TOTAL_OHM;
+    float denom = r_input_load - r_ntc_f;
+    if (denom <= 0.0f) {
+        return table[0].temp_c;
+    }
+    r_ntc_f = (r_ntc_f * r_input_load) / denom;
+
     int32_t r_ntc = (int32_t)(r_ntc_f + 0.5f);
-    // ESP_LOGI("ergh", "this %"PRIu32, r_ntc);
+
     if (r_ntc >= table[0].resistance) return table[0].temp_c;
     if (r_ntc <= table[table_size - 1].resistance)
         return table[table_size - 1].temp_c;
@@ -254,10 +266,11 @@ uint16_t getScaledMillivolts(adc_channel_t channel, bool scaled, float scaling_f
  * @return Median value from the sorted samples
  *         0 if samples pointer is NULL or count <= 0
  *
- * @note Input array is modified (sorted) during execution.
- *       For odd count: returns middle element
- *       For even count: returns lower-middle element (count/2)
- *       Bubble sort O(n²) is acceptable for FILTER_DEPTH (typically 5 samples)
+ * @note Input array is modified (sorted) during execution.  The caller may
+ *       supply any sample depth (e.g. 3,5,7) as determined by the configured
+ *       filter level.  For odd count: returns middle element.  For even
+ *       count: returns lower-middle element (count/2).  Bubble sort O(n²) is
+ *       acceptable for the small depths used by this application.
  */
 uint16_t medianFilterHelper(uint16_t *samples, int count) {
     if (samples == NULL || count <= 0) {
@@ -290,51 +303,77 @@ uint16_t medianFilterHelper(uint16_t *samples, int count) {
  * @note This function should be spawned as a FreeRTOS task using xTaskCreatePinnedToCore().
  *       Runs in infinite loop until task is deleted.
  *       Updates global filtered_voltages[] array (protected by filtered_voltages_mutex).
- *       Scaling formula: (pullup_ohms + 14.7k) / 14.7k when pullup present
- *       Scaling formula: 14.7k / 10k = 1.47 when no pullup
+ *       Scaling formula: 14.7k / 10k = 1.47 (fixed board divider only)
  *       Loop timing: ~10 ms between complete channel cycles
  *
  * @see filtered_voltages, filtered_voltages_mutex, board_cfg.channels[].filtering
  */
 void adcProcess(void *arg) {
     ESP_LOGI(adc_log, "ADC Processing Task Started");
-    uint16_t samples[FILTER_DEPTH];
-    
+    uint16_t samples[FILTER_DEPTH_MAX];
+    const float pin_voltage_scaling = (float)DIVIDER_TOTAL_OHM / DIVIDER_LOW_OHM;
+
     while (1) {
         for (int ch = ADC_CHANNEL_START; ch <= ADC_CHANNEL_END; ch++) {
-            // Calculate scaling factor dynamically from pullup resistor
-            float scaling = (float)DIVIDER_TOTAL_OHM / DIVIDER_LOW_OHM;  // Base divider: 14.7k / 10k = 1.47
-            
-            if (board_cfg.channels[ch].pullup_ohms > 0) {
-                // Include pullup in series resistance calculation
-                scaling = ((float)board_cfg.channels[ch].pullup_ohms + DIVIDER_TOTAL_OHM) / DIVIDER_TOTAL_OHM;
-            }
-            
-            if (board_cfg.channels[ch].filtering) {
-                // Apply median filtering
-                bool sample_valid = true;
-                for (int i = 0; i < FILTER_DEPTH; i++) {
-                    uint16_t sample = getScaledMillivolts(ch, true, scaling);
-                    if (sample == 0) {
-                        sample_valid = false;
-                    }
-                    samples[i] = sample;
-                    vTaskDelay(pdMS_TO_TICKS(2));
+            float scaling = pin_voltage_scaling;
+
+            if (ch == ADC_CHANNEL_PULLUP_VREF) {
+                uint16_t raw_adc_mv = getScaledMillivolts(ch, false, 0.0f);
+                if (raw_adc_mv > 0) {
+                    uint16_t measured_vref_mv = (uint16_t)
+                        ((float)raw_adc_mv *
+                         (float)(board_cfg.pullup_vref_divider_high_ohm + PULLUP_VREF_DIVIDER_LOW_OHM) /
+                         (float)PULLUP_VREF_DIVIDER_LOW_OHM);
+                    board_cfg.pullup_vref_mv = measured_vref_mv;
+                    // ESP_LOGI("vref", "raw_adc_mv=%u derived_vref_mv=%u", raw_adc_mv, measured_vref_mv);
                 }
-                
-                if (sample_valid) {
-                    uint16_t filtered = medianFilterHelper(samples, FILTER_DEPTH);
+
+                if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    filtered_voltages[ch] = raw_adc_mv;
+                    xSemaphoreGive(filtered_voltages_mutex);
+                }
+                continue;
+            }
+
+            switch (board_cfg.channels[ch].filtering) {
+                case FILTER_LOW:
+                case FILTER_MED:
+                case FILTER_HIGH: {
+                    int depth = FILTER_DEPTH_MED;
+                    if (board_cfg.channels[ch].filtering == FILTER_LOW) {
+                        depth = FILTER_DEPTH_LOW;
+                    } else if (board_cfg.channels[ch].filtering == FILTER_HIGH) {
+                        depth = FILTER_DEPTH_HIGH;
+                    }
+
+                    // Apply median filtering with `depth` samples
+                    bool sample_valid = true;
+                    for (int i = 0; i < depth; i++) {
+                        uint16_t sample = getScaledMillivolts(ch, true, scaling);
+                        if (sample == 0) {
+                            sample_valid = false;
+                        }
+                        samples[i] = sample;
+                        vTaskDelay(pdMS_TO_TICKS(2));
+                    }
+
+                    if (sample_valid) {
+                        uint16_t filtered = medianFilterHelper(samples, depth);
+                        if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                            filtered_voltages[ch] = filtered;
+                            xSemaphoreGive(filtered_voltages_mutex);
+                        }
+                    }
+                    break;
+                }
+                default: {
+                    // FILTER_NONE or invalid value: no filtering
+                    uint16_t raw = getScaledMillivolts(ch, true, scaling);
                     if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-                        filtered_voltages[ch] = filtered;
+                        filtered_voltages[ch] = raw;
                         xSemaphoreGive(filtered_voltages_mutex);
                     }
-                }
-            } else {
-                // No filtering, just read raw value
-                uint16_t raw = getScaledMillivolts(ch, true, scaling);
-                if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-                    filtered_voltages[ch] = raw;
-                    xSemaphoreGive(filtered_voltages_mutex);
+                    break;
                 }
             }
         }

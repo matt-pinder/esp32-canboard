@@ -6,7 +6,6 @@
     <title>esp32-canboard - Config</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 0.6em 1.2em; }
-        .error { color: red; }
         .header-row { display:flex; align-items:center; justify-content:space-between; gap:1em; margin-bottom:0.6em; }
         h2 { margin: 0; }
         table { border-collapse: collapse; width: 100%; margin-bottom: 2em; table-layout: fixed; }
@@ -14,8 +13,9 @@
         /* Center the Input (1st) and Pullup header (4th) */
         th:nth-child(1), td:nth-child(1) { text-align: center; }
         th:nth-child(4) { text-align: center; }
-        /* Center voltage/pressure headers (7-10) */
-        th:nth-child(7), th:nth-child(8), th:nth-child(9), th:nth-child(10) { text-align: center; }
+        /* Center voltage/pressure headers (7-12) */
+        th:nth-child(7), th:nth-child(8), th:nth-child(9), th:nth-child(10), th:nth-child(11), th:nth-child(12), th:nth-child(13) { text-align: center; }
+        td:nth-child(12), td:nth-child(13) { text-align: center; }
         /* Allow Pullup input to fill its cell but align value to the right */
         td:nth-child(4) input { text-align: right; width: 100%; box-sizing: border-box; }
         /* Center the Filtering column (6th) and its checkboxes */
@@ -49,6 +49,86 @@
         .hex-input { width:6ch; }
         .small-input { width:5.5ch; }
         .hex-prefix { margin-right:0.2em; }
+        .overlay {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.55);
+            z-index: 9999;
+        }
+        .overlay-card {
+            min-width: 260px;
+            max-width: 420px;
+            padding: 1rem 1.25rem;
+            border-radius: 8px;
+            background: #fff;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        }
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 3px solid #d0d0d0;
+            border-top-color: #337ab7;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            flex: 0 0 auto;
+        }
+        .overlay-text {
+            font-size: 0.98rem;
+            color: #222;
+        }
+        .toast {
+            position: fixed;
+            bottom: 14px;
+            right: 14px;
+            min-width: 220px;
+            max-width: 380px;
+            padding: 0.65rem 0.85rem;
+            border-radius: 6px;
+            color: #222;
+            background: #fff;
+            border: 1px solid #9a9a9a;
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.14);
+            opacity: 0;
+            transform: translateY(8px);
+            pointer-events: none;
+            transition: opacity 0.2s ease, transform 0.2s ease;
+            z-index: 10000;
+            font-size: 0.94rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .toast.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .toast.error {
+            border-color: #e7b1af;
+        }
+        .toast.success {
+            border-color: #b8dcbc;
+        }
+        .toast-icon {
+            display: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #27ae60;
+            color: #fff;
+            font-size: 0.75rem;
+            line-height: 18px;
+            text-align: center;
+            flex: 0 0 18px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
@@ -65,6 +145,12 @@
                     <option value="1000">1000kbps</option>
                 </select>
 
+                <label for="can-tx-rate">CAN TX:</label>
+                <select id="can-tx-rate" name="can_tx_hz" class="small-select">
+                    <option value="25">25Hz</option>
+                    <option value="50">50Hz</option>
+                </select>
+
                 <label for="base-can-id">Base CAN ID:</label>
                 <div style="display:flex; align-items:center;">
                     <span class="hex-prefix">0x</span>
@@ -72,8 +158,13 @@
                 </div>
                 <label for="pullup-vref">vRef:</label>
                 <div style="display:flex; align-items:center; gap:0.25em;">
-                    <input id="pullup-vref" name="pullup_vref_mv" class="small-input no-spin" type="number" min="0" max="9999" value="5025" />
+                    <input id="pullup-vref" name="pullup_vref_mv" class="small-input no-spin" type="number" min="0" max="9999" value="5025" readonly />
                     <span class="unit">mV</span>
+                </div>
+                <label for="pullup-vref-divider-high-ohm">Vref Divider High:</label>
+                <div style="display:flex; align-items:center; gap:0.25em;">
+                    <input id="pullup-vref-divider-high-ohm" name="pullup_vref_divider_high_ohm" class="small-input no-spin" type="number" min="0" max="20000" value="5850" />
+                    <span class="unit">Ω</span>
                 </div>
             </div>
             <button id="save-btn" class="action-btn" type="submit">Save Config</button>
@@ -88,19 +179,23 @@
             <col style="width:5%">    <!-- Channel -->
             <col>                     <!-- Name (flexible) -->
             <col style="width:8%">    <!-- Sensor Type -->
+            <col style="width:9%">    <!-- EMUB TX -->
             <col style="width:6%">    <!-- Pullup -->
-            <col style="width:14%">    <!-- NTC Table -->
+            <col style="width:12%">    <!-- NTC Table -->
             <col style="width:6%">    <!-- Filtering -->
-            <col style="width:8%">    <!-- Pressure Min mV -->
-            <col style="width:8%">    <!-- Pressure Max mV -->
-            <col style="width:8%">    <!-- Pressure Min kPa -->
-            <col style="width:8%">    <!-- Pressure Max kPa -->
+            <col style="width:6%">    <!-- Pressure Min mV -->
+            <col style="width:6%">    <!-- Pressure Max mV -->
+            <col style="width:6%">    <!-- Pressure Min kPa -->
+            <col style="width:6%">    <!-- Pressure Max kPa -->
+            <col style="width:6%">    <!-- Voltage -->
+            <col style="width:6%">    <!-- Value -->
         </colgroup>
             <thead>
                 <tr>
                     <th>Input</th>
                     <th>Name</th>
                     <th>Sensor Type</th>
+                    <th>EMU Black TX</th>
                     <th>Pullup</th>
                     <th>NTC Table</th>
                     <th>Filtering</th>
@@ -108,18 +203,71 @@
                     <th>Voltage Max</th>
                     <th>Pressure Min</th>
                     <th>Pressure Max</th>
+                    <th>Voltage</th>
+                    <th>Value</th>
                 </tr>
             </thead>
             <tbody id="channels-tbody">
                 <!-- JS will populate rows -->
             </tbody>
         </table>
-        <div id="form-error" class="error"></div>
     </form>
+    <div id="status-toast" class="toast" role="status" aria-live="polite">
+        <span id="status-toast-icon" class="toast-icon">✓</span>
+        <span id="status-toast-text"></span>
+    </div>
+    <div id="loading-overlay" class="overlay" aria-live="polite" aria-busy="true">
+        <div class="overlay-card" role="status">
+            <div class="spinner"></div>
+            <div id="overlay-text" class="overlay-text">Working...</div>
+        </div>
+    </div>
     <script>
     const SENSOR_TYPES = ["Raw", "NTC", "Pressure"];
-    const NTC_TABLES = ["Bosch 0280130026", "Bosch TMAP 0281002437", "Universal 1/8 NPT", "Custom NTC"];
+    const EMUB_TX_OPTIONS = ["Disabled", "CAN Analog 9", "CAN Analog 10", "CAN Analog 11", "CAN Analog 12", "CAN Analog 13", "CAN Analog 14", "CAN Analog 15", "CAN Analog 16"];
+    const NTC_TABLES = ["Bosch 0280130026", "Bosch TMAP 0281002437", "Universal 1/8 NPT", "FAE 33166", "Bosch 0280130055", "Custom NTC"];
     let config = null;
+    const loadingOverlay = document.getElementById('loading-overlay');
+    const overlayText = document.getElementById('overlay-text');
+    const statusToast = document.getElementById('status-toast');
+    const statusToastIcon = document.getElementById('status-toast-icon');
+    const statusToastText = document.getElementById('status-toast-text');
+    let toastTimer = null;
+
+    function showOverlay(message) {
+        if (overlayText) {
+            if (message) {
+                overlayText.style.display = '';
+                overlayText.textContent = message;
+            } else {
+                overlayText.style.display = 'none';
+                overlayText.textContent = '';
+            }
+        }
+        if (loadingOverlay) loadingOverlay.style.display = 'flex';
+    }
+
+    function hideOverlay() {
+        if (loadingOverlay) loadingOverlay.style.display = 'none';
+    }
+
+    function setStatus(message, isError, withSuccessIcon) {
+        if (!statusToast || !statusToastText || !message) return;
+        statusToastText.textContent = message;
+        if (statusToastIcon) {
+            statusToastIcon.style.display = withSuccessIcon ? 'inline-block' : 'none';
+        }
+        statusToast.classList.remove('error', 'success', 'show');
+        statusToast.classList.add(isError ? 'error' : 'success');
+        void statusToast.offsetWidth;
+        statusToast.classList.add('show');
+        if (toastTimer) {
+            clearTimeout(toastTimer);
+        }
+        toastTimer = setTimeout(() => {
+            statusToast.classList.remove('show');
+        }, isError ? 4500 : 2500);
+    }
 
     function createRow(idx, ch) {
         const isNTC = ch.type == 1;
@@ -130,26 +278,47 @@
             <td><select name="type${idx}">
                 ${SENSOR_TYPES.map((t,i)=>`<option value="${i}"${ch.type==i?' selected':''}>${t}</option>`).join('')}
             </select></td>
+            <td><select name="emubtx${idx}">
+                ${EMUB_TX_OPTIONS.map((label,i)=>`<option value="${i}"${(ch.emub_tx||0)==i?' selected':''}>${label}</option>`).join('')}
+            </select></td>
             <td><div class="unit-wrap"><input name="pullup${idx}" class="no-spin" type="number" min="0" max="100000" value="${ch.pullup_ohms || 0}" ${isNTC ? '' : 'disabled'}><span class="unit">Ω</span></div></td>
             <td><select name="ntc${idx}" ${isNTC ? '' : 'disabled'}>
                 ${NTC_TABLES.map((t,i)=>`<option value="${i}"${ch.params?.ntc?.table_id==i?' selected':''}>${t}</option>`).join('')}
             </select></td>
-            <td><input name="filtering${idx}" type="checkbox" ${ch.filtering ? 'checked' : ''} ${isPressure ? '' : 'disabled'}></td>
+            <td><select name="filtering${idx}" ${isPressure ? '' : 'disabled'}>
+                    <option value="0"${ch.filtering==0?' selected':''}>None</option>
+                    <option value="1"${ch.filtering==1?' selected':''}>Low</option>
+                    <option value="2"${ch.filtering==2?' selected':''}>Medium</option>
+                    <option value="3"${ch.filtering==3?' selected':''}>High</option>
+                </select></td>
             <td><div class="unit-wrap"><input name="pminmv${idx}" class="no-spin" type="number" min="0" max="5000" value="${(ch.params && ch.params.pressure && typeof ch.params.pressure.min_mv !== 'undefined') ? ch.params.pressure.min_mv : ''}" ${isPressure ? '' : 'disabled'}><span class="unit">mV</span></div></td>
             <td><div class="unit-wrap"><input name="pmaxmv${idx}" class="no-spin" type="number" min="0" max="5000" value="${(ch.params && ch.params.pressure && typeof ch.params.pressure.max_mv !== 'undefined') ? ch.params.pressure.max_mv : ''}" ${isPressure ? '' : 'disabled'}><span class="unit">mV</span></div></td>
             <td><div class="unit-wrap"><input name="pminkpa${idx}" class="no-spin" type="number" step="0.01" value="${(ch.params && ch.params.pressure && typeof ch.params.pressure.min_kpa !== 'undefined') ? ch.params.pressure.min_kpa : ''}" ${isPressure ? '' : 'disabled'}><span class="unit">kPa</span></div></td>
             <td><div class="unit-wrap"><input name="pmaxkpa${idx}" class="no-spin" type="number" step="0.01" value="${(ch.params && ch.params.pressure && typeof ch.params.pressure.max_kpa !== 'undefined') ? ch.params.pressure.max_kpa : ''}" ${isPressure ? '' : 'disabled'}><span class="unit">kPa</span></div></td>
+            <td><span id="live-voltage-${idx}">--</span></td>
+            <td><span id="live-value-${idx}"></span></td>
         </tr>`;
     }
 
     function validateConfig(form) {
         let error = "";
+        const emubSelection = new Array(EMUB_TX_OPTIONS.length).fill(false);
         for (let i = 0; i < 10; ++i) {
             const name = form[`name${i}`].value.trim();
             if (!name) error += `Channel ${i+1}: Name required. `;
             const pullup = parseInt(form[`pullup${i}`].value);
             if (isNaN(pullup) || pullup < 0 || pullup > 100000) error += `Channel ${i+1}: Pullup invalid. `;
             const type = parseInt(form[`type${i}`].value);
+            const emubTx = parseInt(form[`emubtx${i}`].value);
+            if (isNaN(emubTx) || emubTx < 0 || emubTx > 8) {
+                error += `Channel ${i+1}: EMUB TX invalid. `;
+            } else if (emubTx > 0) {
+                if (emubSelection[emubTx]) {
+                    error += `Channel ${i+1}: EMUB TX must be unique. `;
+                } else {
+                    emubSelection[emubTx] = true;
+                }
+            }
             if (type === 1) { // NTC
                 if (isNaN(parseInt(form[`ntc${i}`].value))) error += `Channel ${i+1}: NTC table invalid. `;
             }
@@ -161,6 +330,8 @@
                 if (isNaN(minmv) || isNaN(maxmv) || minmv >= maxmv) error += `Channel ${i+1}: Pressure mV min/max invalid. `;
                 if (minmv < 0 || minmv > 5000 || maxmv < 0 || maxmv > 5000) error += `Channel ${i+1}: Pressure mV must be 0-5000. `;
                 if (isNaN(minkpa) || isNaN(maxkpa) || minkpa >= maxkpa) error += `Channel ${i+1}: Pressure kPa min/max invalid. `;
+                const lvl = parseInt(form[`filtering${i}`].value);
+                if (isNaN(lvl) || lvl < 0 || lvl > 3) error += `Channel ${i+1}: Filter level invalid. `;
             }
         }
         return error;
@@ -170,6 +341,31 @@
         const tbody = document.getElementById('channels-tbody');
         tbody.innerHTML = config.channels.map((ch,i)=>createRow(i,ch)).join('');
         attachTypeHandlers();
+        attachEmubTxHandlers();
+    }
+
+    function updateEmubTxOptions() {
+        const selects = Array.from(document.querySelectorAll('select[name^="emubtx"]'));
+        const chosenValues = selects.map(sel => parseInt(sel.value) || 0);
+        selects.forEach(sel => {
+            const current = parseInt(sel.value) || 0;
+            Array.from(sel.options).forEach(opt => {
+                const value = parseInt(opt.value) || 0;
+                if (value === 0 || value === current) {
+                    opt.disabled = false;
+                } else {
+                    opt.disabled = chosenValues.includes(value);
+                }
+            });
+        });
+    }
+
+    function attachEmubTxHandlers() {
+        const selects = Array.from(document.querySelectorAll('select[name^="emubtx"]'));
+        selects.forEach(sel => {
+            sel.onchange = updateEmubTxOptions;
+        });
+        updateEmubTxOptions();
     }
 
     function updateRowControls(i) {
@@ -209,6 +405,8 @@
         fillTable();
         // Set CAN speed dropdown
         document.getElementById('can-speed').value = config.can_speed_kbps || 500;
+        // Set CAN TX rate dropdown
+        document.getElementById('can-tx-rate').value = (config.can_tx_hz === 50) ? 50 : 25;
         // Set base CAN ID (show hex without 0x prefix)
         const baseElem = document.getElementById('base-can-id');
         if (config.can_start_id !== undefined) {
@@ -217,16 +415,67 @@
         // Set pull-up Vref if provided
         const pullupElem = document.getElementById('pullup-vref');
         if (pullupElem) pullupElem.value = (config.pullup_vref_mv !== undefined) ? config.pullup_vref_mv : 5025;
+        const pullupHighElem = document.getElementById('pullup-vref-divider-high-ohm');
+        if (pullupHighElem) pullupHighElem.value = (config.pullup_vref_divider_high_ohm !== undefined) ? config.pullup_vref_divider_high_ohm : 5850;
+        await refreshLiveValues();
+    }
+
+    async function refreshLiveValues() {
+        try {
+            const res = await fetch('/api/live_values', { cache: 'no-store' });
+            if (!res.ok) {
+                throw new Error(`Live values HTTP ${res.status}`);
+            }
+            const live = await res.json();
+            if (!live || !Array.isArray(live.channels)) {
+                throw new Error('Live values payload is invalid');
+            }
+
+            const pullupElem = document.getElementById('pullup-vref');
+            if (pullupElem && typeof live.derived_vref_mv === 'number') {
+                pullupElem.value = live.derived_vref_mv;
+            }
+
+            for (let i = 0; i < 10; ++i) {
+                const ch = live.channels[i];
+                if (!ch) continue;
+                const voltageEl = document.getElementById(`live-voltage-${i}`);
+                const valueEl = document.getElementById(`live-value-${i}`);
+
+                if (voltageEl) {
+                    if (typeof ch.voltage_v === 'number') {
+                        voltageEl.textContent = `${Math.round(ch.voltage_v * 1000)} mV`;
+                    } else {
+                        voltageEl.textContent = '--';
+                    }
+                }
+
+                if (valueEl) {
+                    valueEl.textContent = ch.value || '';
+                }
+            }
+        } catch (e) {
+            for (let i = 0; i < 10; ++i) {
+                const voltageEl = document.getElementById(`live-voltage-${i}`);
+                const valueEl = document.getElementById(`live-value-${i}`);
+                if (voltageEl) voltageEl.textContent = '--';
+                if (valueEl) valueEl.textContent = '';
+            }
+            if (window.console && console.warn) {
+                console.warn('refreshLiveValues failed:', e);
+            }
+        }
     }
 
     document.getElementById('config-form').onsubmit = async function(e) {
         e.preventDefault();
         const form = e.target;
         const error = validateConfig(form);
-        document.getElementById('form-error').textContent = error;
+        setStatus(error, true);
         if (error) return;
         // Build config object
         config.can_speed_kbps = parseInt(document.getElementById('can-speed').value);
+        config.can_tx_hz = (parseInt(document.getElementById('can-tx-rate').value) === 50) ? 50 : 25;
         // Read base CAN ID from hex input (allow decimal as fallback)
         const baseVal = document.getElementById('base-can-id').value.trim();
         if (/^0x/i.test(baseVal)) {
@@ -241,7 +490,8 @@
             config.channels[i].name = form[`name${i}`].value.trim();
             config.channels[i].pullup_ohms = parseInt(form[`pullup${i}`].value);
             config.channels[i].type = parseInt(form[`type${i}`].value);
-            config.channels[i].filtering = form[`filtering${i}`].checked ? 1 : 0;
+            config.channels[i].filtering = parseInt(form[`filtering${i}`].value);
+            config.channels[i].emub_tx = parseInt(form[`emubtx${i}`].value) || 0;
             config.channels[i].params = {};
             if (config.channels[i].type === 1) {
                 config.channels[i].params.ntc = { table_id: parseInt(form[`ntc${i}`].value) };
@@ -257,45 +507,70 @@
         // Read pull-up Vref
         const pv = parseInt(document.getElementById('pullup-vref').value);
         config.pullup_vref_mv = isNaN(pv) ? (config.pullup_vref_mv || 5025) : pv;
-        const resp = await fetch('/api/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(config)
-        });
-        if (resp.ok) {
-            alert('Config saved! Please reboot to apply.');
-        } else {
-            alert('Failed to save config.');
+        const pvh = parseInt(document.getElementById('pullup-vref-divider-high-ohm').value);
+        config.pullup_vref_divider_high_ohm = isNaN(pvh) ? (config.pullup_vref_divider_high_ohm || 5850) : pvh;
+        try {
+            const resp = await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            });
+            if (resp.ok) {
+                setStatus('Config saved.', false, true);
+            } else {
+                setStatus('Failed to save config.', true);
+            }
+        } catch (e) {
+            setStatus('Failed to save config.', true);
         }
     };
 
     document.getElementById('reboot-btn').onclick = async function() {
-        await fetch('/api/reboot', { method: 'POST' });
-        alert('Device rebooting...');
+        let secondsLeft = 10;
+        showOverlay(`Rebooting device... Refreshing in ${secondsLeft} seconds`);
+        try {
+            await fetch('/api/reboot', { method: 'POST' });
+        } catch (e) {
+            // Ignore errors because reboot can drop HTTP connection abruptly
+        }
+        const countdown = setInterval(() => {
+            secondsLeft -= 1;
+            if (secondsLeft > 0) {
+                showOverlay(`Rebooting device... Refreshing in ${secondsLeft} seconds`);
+                return;
+            }
+            clearInterval(countdown);
+            showOverlay('Rebooting device... Refreshing now');
+            window.location.reload();
+        }, 1000);
     };
 
     // Backup (download JSON) — filename uses client time ddmmyy-hhmmss
     document.getElementById('backup-btn').onclick = async function() {
-        const resp = await fetch('/api/config/export.json');
-        if (!resp.ok) { alert('Failed to download config'); return; }
-        const blob = await resp.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        const now = new Date();
-        const pad = (n) => n.toString().padStart(2, '0');
-        const dd = pad(now.getDate());
-        const mm = pad(now.getMonth() + 1);
-        const yy = pad(now.getFullYear() % 100);
-        const hh = pad(now.getHours());
-        const mi = pad(now.getMinutes());
-        const ss = pad(now.getSeconds());
-        const datetime = `${dd}${mm}${yy}-${hh}${mi}${ss}`; // ddmmyy-hhmmss
-        a.download = `esp32-canboard-config-${datetime}.json`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
+        try {
+            const resp = await fetch('/api/config/export.json');
+            if (!resp.ok) { setStatus('Failed to download config.', true); return; }
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            const now = new Date();
+            const pad = (n) => n.toString().padStart(2, '0');
+            const dd = pad(now.getDate());
+            const mm = pad(now.getMonth() + 1);
+            const yy = pad(now.getFullYear() % 100);
+            const hh = pad(now.getHours());
+            const mi = pad(now.getMinutes());
+            const ss = pad(now.getSeconds());
+            const datetime = `${dd}${mm}${yy}-${hh}${mi}${ss}`; // ddmmyy-hhmmss
+            a.download = `esp32-canboard-config-${datetime}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            // No toast needed for backup flow
+        }
     };
 
     // Restore (upload JSON)
@@ -307,16 +582,25 @@
         const f = e.target.files[0];
         if (!f) return;
         if (!confirm('Restore configuration from selected file? Existing config will be overwritten.')) return;
-        const text = await f.text();
-        const resp = await fetch('/api/config/import.json', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: text });
-        if (resp.ok) {
-            alert('Config restored. Please reboot to apply.');
-        } else {
-            alert('Failed to restore config.');
+        try {
+            const text = await f.text();
+            const resp = await fetch('/api/config/import.json', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: text });
+            if (resp.ok) {
+                setTimeout(() => {
+                    window.location.reload();
+                }, 900);
+            } else {
+                // No toast needed for restore flow
+            }
+        } catch (e) {
+            // No toast needed for restore flow
+        } finally {
+            e.target.value = '';
         }
     };
 
     loadConfig();
+    setInterval(refreshLiveValues, 1000);
     </script>
 </body>
 </html>

@@ -8,6 +8,7 @@
 #include "inc/inputs.h"
 #include "inc/wifi_config.h"
 #include "esp_wifi.h"
+#include "driver/twai.h"
 #include "cJSON.h"
 #include <sys/param.h>
 #include <string.h>
@@ -22,6 +23,47 @@ static const char *TAG = "HTTPD";
  * @brief HTTP server handle
  */
 static httpd_handle_t server = NULL;
+extern board_config_t board_cfg;
+extern twai_handle_t twai_can;
+extern esp_err_t can_init(void);
+
+static bool apply_runtime_config(const board_config_t *cfg) {
+    if (cfg == NULL) {
+        return false;
+    }
+
+    board_config_t previous_cfg = board_cfg;
+    bool can_speed_changed = (previous_cfg.can_speed_kbps != cfg->can_speed_kbps);
+    board_cfg = *cfg;
+
+    if (!can_speed_changed) {
+        return true;
+    }
+
+    esp_err_t err = twai_stop_v2(twai_can);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Failed to stop TWAI before reinit: %s", esp_err_to_name(err));
+    }
+
+    err = twai_driver_uninstall_v2(twai_can);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Failed to uninstall TWAI driver: %s", esp_err_to_name(err));
+        board_cfg = previous_cfg;
+        return false;
+    }
+
+    if (can_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to reinitialize CAN after config update, restoring previous config");
+        board_cfg = previous_cfg;
+        if (can_init() != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to restore previous CAN configuration");
+        }
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Runtime CAN speed updated to %lu kbps", (unsigned long)board_cfg.can_speed_kbps);
+    return true;
+}
 
 // Delayed restart task: stops HTTP server and WiFi, then restarts the chip.
 static void delayed_restart_task(void *arg) {
@@ -93,10 +135,7 @@ esp_err_t index_get_handler(httpd_req_t *req) {
  */
 esp_err_t config_get_handler(httpd_req_t *req) {
     notify_client_connected();
-    board_config_t cfg;
-    if (!config_load(&cfg)) {
-        config_set_defaults(&cfg);
-    }
+    board_config_t cfg = board_cfg;
     
     // Use larger buffer for JSON output
     char *json = malloc(4096);
@@ -109,18 +148,24 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     size_t json_pos = 0;
     const size_t json_max = 4096;
     
-    // Start JSON object including CAN speed, base ID and pull-up Vref
-    json_pos += snprintf(json + json_pos, json_max - json_pos, "{\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"pullup_vref_mv\":%u,\"channels\":[",
-        (unsigned long)cfg.can_speed_kbps, (unsigned long)cfg.can_start_id, (unsigned)cfg.pullup_vref_mv);
+    // Start JSON object including CAN speed, base ID, TX rate, live Vref display, and persisted divider calibration
+    json_pos += snprintf(json + json_pos, json_max - json_pos,
+        "{\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"pullup_vref_mv\":%u,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        (unsigned long)cfg.can_speed_kbps,
+        (unsigned long)cfg.can_start_id,
+        (unsigned)cfg.can_tx_hz,
+        (unsigned)cfg.pullup_vref_mv,
+        (unsigned)cfg.pullup_vref_divider_high_ohm);
     
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
         json_pos += snprintf(json + json_pos, json_max - json_pos,
-            "%s{\"name\":\"%s\",\"pullup_ohms\":%lu,\"type\":%u,\"filtering\":%d,\"params\":{",
+            "%s{\"name\":\"%s\",\"pullup_ohms\":%lu,\"type\":%u,\"filtering\":%d,\"emub_tx\":%u,\"params\":{",
             i ? "," : "",
             cfg.channels[i].name,
             (unsigned long)cfg.channels[i].pullup_ohms,
             cfg.channels[i].type,
-            cfg.channels[i].filtering);
+            cfg.channels[i].filtering,
+            cfg.channels[i].emub_tx);
             
         if (cfg.channels[i].type == SENSOR_NTC) {
             const ntc_table_def_t* table = ntc_get_table(cfg.channels[i].params.ntc.table_id);
@@ -209,8 +254,9 @@ esp_err_t config_post_handler(httpd_req_t *req) {
         cJSON *pullup = cJSON_GetObjectItem(ch, "pullup_ohms");
         cJSON *type = cJSON_GetObjectItem(ch, "type");
         cJSON *filtering = cJSON_GetObjectItem(ch, "filtering");
+        cJSON *emub_tx = cJSON_GetObjectItem(ch, "emub_tx");
         
-        if (!cJSON_IsString(name) || !cJSON_IsNumber(pullup) || !cJSON_IsNumber(type)) {
+        if (!cJSON_IsString(name) || !cJSON_IsNumber(pullup) || !cJSON_IsNumber(type) || !cJSON_IsNumber(emub_tx)) {
             ESP_LOGW(TAG, "Invalid channel fields at index %d", i);
             cJSON_Delete(root);
             httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid channel fields");
@@ -221,7 +267,18 @@ esp_err_t config_post_handler(httpd_req_t *req) {
         cfg.channels[i].name[CONFIG_NAME_LEN - 1] = 0;
         cfg.channels[i].pullup_ohms = (uint32_t)pullup->valueint;
         cfg.channels[i].type = (sensor_type_t)type->valueint;
-        cfg.channels[i].filtering = filtering && cJSON_IsNumber(filtering) ? filtering->valueint : 0;
+        if (filtering && cJSON_IsNumber(filtering)) {
+            int lvl = filtering->valueint;
+            if (lvl < FILTER_NONE) lvl = FILTER_NONE;
+            if (lvl > FILTER_HIGH) lvl = FILTER_HIGH;
+            cfg.channels[i].filtering = (uint8_t)lvl;
+        } else {
+            cfg.channels[i].filtering = FILTER_NONE;
+        }
+        cfg.channels[i].emub_tx = (uint8_t)emub_tx->valueint;
+        if (cfg.channels[i].emub_tx > EMUB_TX_CAN_ANALOG_16) {
+            cfg.channels[i].emub_tx = EMUB_TX_DISABLED;
+        }
         
         cJSON *params = cJSON_GetObjectItem(ch, "params");
         if (!params) {
@@ -290,6 +347,35 @@ esp_err_t config_post_handler(httpd_req_t *req) {
         }
     }
 
+    cJSON *can_tx_hz = cJSON_GetObjectItem(root, "can_tx_hz");
+    if (can_tx_hz && cJSON_IsNumber(can_tx_hz)) {
+        uint32_t requested_hz = (uint32_t)can_tx_hz->valueint;
+        cfg.can_tx_hz = (requested_hz == 50) ? 50 : 25;
+    }
+
+    cJSON *pullup_vref_high = cJSON_GetObjectItem(root, "pullup_vref_divider_high_ohm");
+    if (pullup_vref_high && cJSON_IsNumber(pullup_vref_high)) {
+        cfg.pullup_vref_divider_high_ohm = (uint16_t)pullup_vref_high->valueint;
+    }
+
+    // Keep pullup_vref_mv driven by the ADC task rather than the HTTP API.
+    cfg.pullup_vref_mv = board_cfg.pullup_vref_mv;
+
+    // Validate unique EMUB TX assignments
+    bool emub_seen[EMUB_TX_CAN_ANALOG_16 + 1] = { false };
+    for (int i = 0; i < CONFIG_CHANNELS; ++i) {
+        if (cfg.channels[i].emub_tx > EMUB_TX_DISABLED) {
+            if (emub_seen[cfg.channels[i].emub_tx]) {
+                ESP_LOGW(TAG, "Duplicate EMUB TX assignment: %u", cfg.channels[i].emub_tx);
+                cJSON_Delete(root);
+                free(buf);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Duplicate EMUB TX assignment");
+                return ESP_FAIL;
+            }
+            emub_seen[cfg.channels[i].emub_tx] = true;
+        }
+    }
+
     cJSON_Delete(root);
     free(buf);
 
@@ -297,6 +383,10 @@ esp_err_t config_post_handler(httpd_req_t *req) {
         ESP_LOGE(TAG, "Failed to save configuration");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save config");
         return ESP_FAIL;
+    }
+
+    if (!apply_runtime_config(&cfg)) {
+        ESP_LOGW(TAG, "Config saved but failed to fully apply at runtime");
     }
     
     ESP_LOGI(TAG, "Configuration updated successfully");
@@ -369,14 +459,124 @@ esp_err_t ntc_tables_get_handler(httpd_req_t *req) {
 }
 
 /**
+ * @brief HTTP GET handler for live channel values (GET /api/live_values)
+ * Returns current measured voltage and computed value (pressure/temperature) per channel.
+ */
+esp_err_t live_values_get_handler(httpd_req_t *req) {
+    notify_client_connected();
+
+    uint16_t voltages_copy[NUM_ADC_CHANNELS] = {0};
+    if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        memcpy(voltages_copy, (const void *)filtered_voltages, sizeof(voltages_copy));
+        xSemaphoreGive(filtered_voltages_mutex);
+    }
+
+    char *json = malloc(4096);
+    if (!json) {
+        ESP_LOGE(TAG, "Failed to allocate live values JSON buffer");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    size_t json_pos = 0;
+    const size_t json_max = 4096;
+
+    int written = snprintf(json + json_pos, json_max - json_pos,
+        "{\"derived_vref_mv\":%u,\"channels\":[",
+        (unsigned)board_cfg.pullup_vref_mv);
+    if (written < 0 || (size_t)written >= (json_max - json_pos)) {
+        ESP_LOGE(TAG, "Failed to build live values JSON header");
+        free(json);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    json_pos += (size_t)written;
+
+    for (int i = 0; i < CONFIG_CHANNELS; ++i) {
+        float voltage_v = (float)voltages_copy[i] / 1000.0f;
+
+        if (board_cfg.channels[i].type == SENSOR_PRESSURE) {
+            uint16_t pressure_x100 = getSensorPressure(
+                voltages_copy[i],
+                board_cfg.channels[i].params.pressure.min_mv,
+                board_cfg.channels[i].params.pressure.max_mv,
+                board_cfg.channels[i].params.pressure.min_kpa,
+                board_cfg.channels[i].params.pressure.max_kpa);
+            float pressure_kpa = (float)pressure_x100 / 100.0f;
+            written = snprintf(json + json_pos, json_max - json_pos,
+                "%s{\"voltage_v\":%.2f,\"value\":\"%.2f kPa\"}",
+                i ? "," : "", voltage_v, pressure_kpa);
+        } else if (board_cfg.channels[i].type == SENSOR_NTC) {
+            const ntc_table_def_t *table = ntc_get_table(board_cfg.channels[i].params.ntc.table_id);
+            int8_t temp_c = getSensorTemperature(
+                voltages_copy[i],
+                board_cfg.channels[i].pullup_ohms,
+                board_cfg.pullup_vref_mv,
+                table ? table->points : NULL,
+                table ? table->points_count : 0);
+
+            int32_t r_ntc = -1;
+            if (voltages_copy[i] > 0 && voltages_copy[i] < board_cfg.pullup_vref_mv &&
+                board_cfg.channels[i].pullup_ohms > 0 && board_cfg.pullup_vref_mv > 0) {
+                float v_ntc = (float)voltages_copy[i] / 1000.0f;
+                float v_ref = (float)board_cfg.pullup_vref_mv / 1000.0f;
+                float r_eq_f = ((float)board_cfg.channels[i].pullup_ohms * v_ntc) / (v_ref - v_ntc);
+                float denom = (float)DIVIDER_TOTAL_OHM - r_eq_f;
+                if (denom > 0.0f) {
+                    float r_ntc_f = (r_eq_f * (float)DIVIDER_TOTAL_OHM) / denom;
+                    r_ntc = (int32_t)(r_ntc_f + 0.5f);
+                }
+            }
+
+            if (temp_c == (int8_t)-128) {
+                written = snprintf(json + json_pos, json_max - json_pos,
+                    "%s{\"voltage_v\":%.2f,\"value\":\"\"}",
+                    i ? "," : "", voltage_v);
+            } else {
+                if (r_ntc >= 0) {
+                    written = snprintf(json + json_pos, json_max - json_pos,
+                        "%s{\"voltage_v\":%.2f,\"value\":\"%d C (%ld ohm)\"}",
+                        i ? "," : "", voltage_v, (int)temp_c, (long)r_ntc);
+                } else {
+                    written = snprintf(json + json_pos, json_max - json_pos,
+                        "%s{\"voltage_v\":%.2f,\"value\":\"%d C\"}",
+                        i ? "," : "", voltage_v, (int)temp_c);
+                }
+            }
+        } else {
+            written = snprintf(json + json_pos, json_max - json_pos,
+                "%s{\"voltage_v\":%.2f,\"value\":\"\"}",
+                i ? "," : "", voltage_v);
+        }
+
+        if (written < 0 || (size_t)written >= (json_max - json_pos)) {
+            ESP_LOGE(TAG, "JSON buffer overflow in live values (channel %d)", i);
+            free(json);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        json_pos += (size_t)written;
+    }
+
+    written = snprintf(json + json_pos, json_max - json_pos, "]}\n");
+    if (written < 0 || (size_t)written >= (json_max - json_pos)) {
+        ESP_LOGE(TAG, "Failed to finalize live values JSON");
+        free(json);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    free(json);
+    return ESP_OK;
+}
+
+/**
  * @brief HTTP GET handler to export configuration as downloadable JSON file
  * (GET /api/config/export.json)
  */
 esp_err_t config_export_get_handler(httpd_req_t *req) {
-    board_config_t cfg;
-    if (!config_load(&cfg)) {
-        config_set_defaults(&cfg);
-    }
+    board_config_t cfg = board_cfg;
 
     char *json = malloc(4096);
     if (!json) {
@@ -387,17 +587,18 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
 
     size_t json_pos = 0;
     const size_t json_max = 4096;
-    json_pos += snprintf(json + json_pos, json_max - json_pos, "{\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"pullup_vref_mv\":%u,\"channels\":[",
-        (unsigned long)cfg.can_speed_kbps, (unsigned long)cfg.can_start_id, (unsigned)cfg.pullup_vref_mv);
+    json_pos += snprintf(json + json_pos, json_max - json_pos, "{\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"pullup_vref_mv\":%u,\"channels\":[",
+        (unsigned long)cfg.can_speed_kbps, (unsigned long)cfg.can_start_id, (unsigned)cfg.can_tx_hz, (unsigned)cfg.pullup_vref_mv);
 
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
         json_pos += snprintf(json + json_pos, json_max - json_pos,
-            "%s{\"name\":\"%s\",\"pullup_ohms\":%lu,\"type\":%u,\"filtering\":%d,\"params\":{",
+            "%s{\"name\":\"%s\",\"pullup_ohms\":%lu,\"type\":%u,\"filtering\":%d,\"emub_tx\":%u,\"params\":{",
             i ? "," : "",
             cfg.channels[i].name,
             (unsigned long)cfg.channels[i].pullup_ohms,
             cfg.channels[i].type,
-            cfg.channels[i].filtering);
+            cfg.channels[i].filtering,
+            cfg.channels[i].emub_tx);
 
         if (cfg.channels[i].type == SENSOR_NTC) {
             json_pos += snprintf(json + json_pos, json_max - json_pos,
@@ -487,8 +688,9 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
         cJSON *pullup = cJSON_GetObjectItem(ch, "pullup_ohms");
         cJSON *type = cJSON_GetObjectItem(ch, "type");
         cJSON *filtering = cJSON_GetObjectItem(ch, "filtering");
+        cJSON *emub_tx = cJSON_GetObjectItem(ch, "emub_tx");
 
-        if (!cJSON_IsString(name) || !cJSON_IsNumber(pullup) || !cJSON_IsNumber(type)) {
+        if (!cJSON_IsString(name) || !cJSON_IsNumber(pullup) || !cJSON_IsNumber(type) || !cJSON_IsNumber(emub_tx)) {
             ESP_LOGW(TAG, "Invalid channel fields at index %d", i);
             cJSON_Delete(root);
             free(buf);
@@ -500,7 +702,18 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
         cfg.channels[i].name[CONFIG_NAME_LEN - 1] = 0;
         cfg.channels[i].pullup_ohms = (uint32_t)pullup->valueint;
         cfg.channels[i].type = (sensor_type_t)type->valueint;
-        cfg.channels[i].filtering = filtering && cJSON_IsNumber(filtering) ? filtering->valueint : 0;
+        cfg.channels[i].emub_tx = (uint8_t)emub_tx->valueint;
+        if (cfg.channels[i].emub_tx > EMUB_TX_CAN_ANALOG_16) {
+            cfg.channels[i].emub_tx = EMUB_TX_DISABLED;
+        }
+        if (filtering && cJSON_IsNumber(filtering)) {
+            int lvl = filtering->valueint;
+            if (lvl < FILTER_NONE) lvl = FILTER_NONE;
+            if (lvl > FILTER_HIGH) lvl = FILTER_HIGH;
+            cfg.channels[i].filtering = (uint8_t)lvl;
+        } else {
+            cfg.channels[i].filtering = FILTER_NONE;
+        }
 
         cJSON *params = cJSON_GetObjectItem(ch, "params");
         if (!params) {
@@ -572,10 +785,17 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
         }
     }
 
-    cJSON *pullup_vref = cJSON_GetObjectItem(root, "pullup_vref_mv");
-    if (pullup_vref && cJSON_IsNumber(pullup_vref)) {
-        cfg.pullup_vref_mv = (uint16_t)pullup_vref->valueint;
+    cJSON *can_tx_hz = cJSON_GetObjectItem(root, "can_tx_hz");
+    if (can_tx_hz && cJSON_IsNumber(can_tx_hz)) {
+        uint32_t requested_hz = (uint32_t)can_tx_hz->valueint;
+        cfg.can_tx_hz = (requested_hz == 50) ? 50 : 25;
     }
+
+    cJSON *pullup_vref_high = cJSON_GetObjectItem(root, "pullup_vref_divider_high_ohm");
+    if (pullup_vref_high && cJSON_IsNumber(pullup_vref_high)) {
+        cfg.pullup_vref_divider_high_ohm = (uint16_t)pullup_vref_high->valueint;
+    }
+    cfg.pullup_vref_mv = board_cfg.pullup_vref_mv;
 
     // Backup existing config file before overwrite
     const char *path = "/spiffs/config.bin";
@@ -598,6 +818,10 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
         free(buf);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save imported config");
         return ESP_FAIL;
+    }
+
+    if (!apply_runtime_config(&cfg)) {
+        ESP_LOGW(TAG, "Imported config saved but failed to fully apply at runtime");
     }
 
     cJSON_Delete(root);
@@ -695,6 +919,14 @@ void start_http_server(void) {
         .user_ctx = NULL 
     };
     httpd_register_uri_handler(server, &ntc_tables_uri);
+
+    httpd_uri_t live_values_uri = {
+        .uri = "/api/live_values",
+        .method = HTTP_GET,
+        .handler = live_values_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &live_values_uri);
     
     ESP_LOGI(TAG, "HTTP server started on http://192.168.4.1");
 }

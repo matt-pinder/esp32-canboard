@@ -10,7 +10,18 @@
 #define ADC_CHANNEL_START ADC_CHANNEL_0            ///< First ADC channel
 #define ADC_CHANNEL_END ADC_CHANNEL_9              ///< Last ADC channel
 #define NUM_ADC_CHANNELS (ADC_CHANNEL_END - ADC_CHANNEL_START + 1) ///< Total number of ADC channels (10)
-#define FILTER_DEPTH 5                             ///< Number of samples for median filtering
+// Median filter sample depths for selectable levels
+#define FILTER_DEPTH_LOW 5                         ///< Samples for "low" filter level
+#define FILTER_DEPTH_MED 10                         ///< Samples for "medium" filter level (default)
+#define FILTER_DEPTH_HIGH 15                        ///< Samples for "high" filter level
+#define FILTER_DEPTH_MAX FILTER_DEPTH_HIGH        ///< Maximum buffer size required for filtering
+
+#define ADC_CHANNEL_PULLUP_VREF ADC_CHANNEL_5      ///< ADC channel measuring the pull-up reference divider on IO6
+#define PULLUP_VREF_DIVIDER_LOW_OHM 10000         ///< Lower resistor in the pull-up Vref divider (10k)
+
+// legacy macro kept for existing code, evaluates to medium depth
+#define FILTER_DEPTH FILTER_DEPTH_MED             ///< Alias for backward compatibility
+
 #define NTC_TABLE_SIZE(x) (sizeof(x) / sizeof((x)[0])) ///< Macro to calculate NTC table size
 #define DIVIDER_HIGH_OHM 4700                      ///< Series resistor value (4.7k ohm)
 #define DIVIDER_LOW_OHM 10000                      ///< Pull-to-ground resistor value (10k ohm)
@@ -82,7 +93,8 @@ uint16_t medianFilterHelper(uint16_t *samples, int count);
 
 /// @brief FreeRTOS task for ADC acquisition and processing
 /// Runs on Core 1, continuously reads all ADC channels with median filtering,
-/// applies dynamic scaling based on per-channel pullup configuration, and updates filtered_voltages[].
+/// converts ADC readings back to pin voltage using the fixed on-board 4k7/10k divider,
+/// and updates filtered_voltages[].
 /// @param arg Unused FreeRTOS task parameter
 void adcProcess(void *arg);
 
@@ -123,6 +135,24 @@ static const ntc_point_t universal_18_npt_points[] = {
     { 140,    21 }
 };
 
+// FAE 33166
+static const ntc_point_t fae_33166_points[] = {
+    { -40, 65667 }, { -30, 64789 }, { -20, 55180 }, { -10, 29488 },
+    {   0, 17657 }, {  10, 10765 }, {  20,  6599 }, {  30,  4076 },
+    {  40,  2600 }, {  50,  1800 }, {  60,  1260 }, {  70,   878 },
+    {  80,   626 }, {  90,   459 }, { 100,   353 }, { 110,   267 },
+    { 120,   205 }, { 130,   165 }, { 140,   130 }, { 150,   110 }
+};
+
+// Bosch 0280130055
+static const ntc_point_t bosch_ntc_0280130055_points[] = {
+    { -20, 13700 }, { -10,  8200 }, {   0,  5890 }, {  10,  3790 },
+    {  20,  2500 }, {  25,  2080 }, {  30,  1700 }, {  40,  1170 },
+    {  50,   830 }, {  60,   595 }, {  70,   425 }, {  80,   302 },
+    {  90,   231 }, { 100,   180 }, { 110,   139 }, { 120,   109 },
+    { 130,    86 }, { 140,    69 }, { 150,    56 }
+};
+
 static const ntc_point_t custom_ntc_points[] = {
     {  0, 2860 }, { 8,  1181 }, { 37, 663 }, { 58, 390 },
     {80,  208 }, {100, 126 }, {150,  20 }
@@ -147,6 +177,18 @@ static const ntc_table_def_t ntc_tables[] = {
         .description = "Universal 18 NPT (EFI Parts)",
         .points = universal_18_npt_points,
         .points_count = NTC_TABLE_SIZE(universal_18_npt_points)
+    },
+    {
+        .name = "FAE 33166",
+        .description = "FAE 33166",
+        .points = fae_33166_points,
+        .points_count = NTC_TABLE_SIZE(fae_33166_points)
+    },
+    {
+        .name = "Bosch 0280130055",
+        .description = "Bosch 0280130055",
+        .points = bosch_ntc_0280130055_points,
+        .points_count = NTC_TABLE_SIZE(bosch_ntc_0280130055_points)
     }
     ,{
         .name = "Custom NTC",
