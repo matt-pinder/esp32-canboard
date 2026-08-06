@@ -1,7 +1,8 @@
 #pragma once
 
 #include "driver/gpio.h"
-#include "driver/twai.h"
+#include "driver/twai_types_legacy.h"
+#include "esp_err.h"
 
 #define CAN_TX_GPIO_NUM       GPIO_NUM_12 ///< CAN bus TX pin (GPIO 12)
 #define CAN_RX_GPIO_NUM       GPIO_NUM_11 ///< CAN bus RX pin (GPIO 11)
@@ -37,6 +38,10 @@ static inline twai_message_t init_twai_message(uint32_t id) {
 /// Must be called before creating canTransmit task.
 /// @return ESP_OK on success, ESP_FAIL on driver initialization error
 esp_err_t can_init(void);
+
+/// @brief Stop and uninstall the TWAI/CAN driver if it is active
+/// @return ESP_OK on success, otherwise the first driver error encountered
+esp_err_t can_deinit(void);
 
 /// @brief FreeRTOS task for transmitting CAN messages
 /// Periodically transmits 3 multiplexed CAN messages containing voltage data from all 10 channels.

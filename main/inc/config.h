@@ -3,10 +3,11 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "esp_now.h"
 
 #define CONFIG_CHANNELS 10       ///< Number of ADC input channels
 #define CONFIG_NAME_LEN 32      ///< Maximum characters for channel name
-#define CONFIG_VERSION 7        ///< Configuration structure version number (increment for new fields or layout changes)
+#define CONFIG_VERSION 8        ///< Configuration structure version number (increment for new fields or layout changes)
 
 /// Per-channel median filter strength levels
 /// stored in the 8‑bit `filtering` field below.
@@ -66,6 +67,9 @@ typedef struct {
     uint32_t can_start_id;                 ///< CAN message ID base (incremented for each message)
     uint32_t can_speed_kbps;               ///< CAN bus speed (125, 250, 500, or 1000 kbps)
     uint8_t can_tx_hz;                     ///< CAN transmit loop rate in Hz (supported: 25 or 50)
+    bool can_enabled;                      ///< Enable physical CAN/TWAI transmission
+    bool espnow_enabled;                   ///< Enable ESP-NOW transmission of TWAI messages
+    uint8_t espnow_target_mac[ESP_NOW_ETH_ALEN]; ///< ESP-NOW peer MAC address
     uint16_t pullup_vref_mv;               ///< Live pull-up reference voltage in millivolts (runtime read-only display)
     uint16_t pullup_vref_divider_high_ohm; ///< Top resistor value of the pull-up Vref divider (persisted)
     channel_config_t channels[CONFIG_CHANNELS]; ///< Per-channel configuration array

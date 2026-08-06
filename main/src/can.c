@@ -12,10 +12,12 @@
 #include "inc/config.h"
 #include "inc/can.h"
 #include "inc/inputs.h"
+#include "inc/espnow_transport.h"
 
 extern board_config_t board_cfg;
 
-twai_handle_t twai_can;
+twai_handle_t twai_can = NULL;
+static bool can_driver_active = false;
 twai_timing_config_t t_can_config = TWAI_TIMING_CONFIG_500KBITS();
 /// Filter configuration: reject all incoming messages (TX-only mode)
 twai_filter_config_t f_config = { .acceptance_code = 0xFFFFFFFF, .acceptance_mask = 0x00000000, .single_filter = true };
@@ -28,6 +30,15 @@ twai_general_config_t can_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, 
  * @return ESP_OK on success, ESP_FAIL on driver initialization error
  */
 esp_err_t can_init(void) {
+    if (!board_cfg.can_enabled) {
+        ESP_LOGI(can_log, "CAN disabled; TWAI driver not started");
+        return ESP_OK;
+    }
+
+    if (can_driver_active) {
+        return ESP_OK;
+    }
+
     // Select timing config based on board configuration
     if (board_cfg.can_speed_kbps == 125) {
         static const twai_timing_config_t temp_config = TWAI_TIMING_CONFIG_125KBITS();
@@ -61,11 +72,65 @@ esp_err_t can_init(void) {
     err = twai_start_v2(twai_can);
     if (err != ESP_OK) {
         ESP_LOGE(can_log, "Failed to start TWAI driver: %s", esp_err_to_name(err));
+        twai_driver_uninstall_v2(twai_can);
+        twai_can = NULL;
         return ESP_FAIL;
     }
     ESP_LOGI(can_log, "TWAI driver started");
 
+    can_driver_active = true;
     return ESP_OK;
+}
+
+esp_err_t can_deinit(void) {
+    if (!can_driver_active || twai_can == NULL) {
+        can_driver_active = false;
+        twai_can = NULL;
+        return ESP_OK;
+    }
+
+    esp_err_t first_err = ESP_OK;
+    esp_err_t err = twai_stop_v2(twai_can);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(can_log, "Failed to stop TWAI driver: %s", esp_err_to_name(err));
+        first_err = err;
+    }
+
+    err = twai_driver_uninstall_v2(twai_can);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(can_log, "Failed to uninstall TWAI driver: %s", esp_err_to_name(err));
+        if (first_err == ESP_OK) {
+            first_err = err;
+        }
+    } else {
+        can_driver_active = false;
+        twai_can = NULL;
+        ESP_LOGI(can_log, "TWAI driver stopped");
+    }
+
+    return first_err;
+}
+
+static void transmit_frame(const twai_message_t *message, const char *label) {
+    static TickType_t last_espnow_warn = 0;
+
+    if (board_cfg.can_enabled && can_driver_active) {
+        esp_err_t err = twai_transmit(message, pdMS_TO_TICKS(1000));
+        if (err != ESP_OK) {
+            ESP_LOGW(can_log, "Failed to transmit %s via CAN: %s", label, esp_err_to_name(err));
+        }
+    }
+
+    if (board_cfg.espnow_enabled) {
+        esp_err_t err = espnow_transport_send_twai(message);
+        if (err != ESP_OK) {
+            TickType_t now = xTaskGetTickCount();
+            if (last_espnow_warn == 0 || (now - last_espnow_warn) >= pdMS_TO_TICKS(1000)) {
+                ESP_LOGW(can_log, "Failed to transmit %s via ESP-NOW: %s", label, esp_err_to_name(err));
+                last_espnow_warn = now;
+            }
+        }
+    }
 }
 
 /**
@@ -98,14 +163,12 @@ esp_err_t can_init(void) {
  */
 void canTransmit(void *arg)
 {
-    ESP_LOGI(can_log, "CAN Transmit Task Started");
-    extern const uint8_t FIRMWARE_REVISION;
+    ESP_LOGI(can_log, "Transmit Task Started");
     
     while(1) {
         TickType_t loop_start = xTaskGetTickCount();
         uint8_t can_tx_hz_snapshot = board_cfg.can_tx_hz;
         uint16_t voltages_copy[NUM_ADC_CHANNELS];
-        int8_t cpu_temp = 0;
         
         // Safely copy voltage data
         if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
@@ -115,9 +178,6 @@ void canTransmit(void *arg)
             vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }
-        
-        // Get CPU temperature
-        cpu_temp = getCpuTemperature();
         
         // Message 1: inputs 0..3 (each uint16 LE)
         twai_message_t msg1 = init_twai_message(board_cfg.can_start_id);
@@ -130,10 +190,7 @@ void canTransmit(void *arg)
         msg1.data[6] = voltages_copy[3] & 0xFF;  // input 3 LSB
         msg1.data[7] = (voltages_copy[3] >> 8) & 0xFF; // input 3 MSB
         
-        esp_err_t err = twai_transmit(&msg1, pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) {
-            ESP_LOGW(can_log, "Failed to transmit analogVoltage_1: %s", esp_err_to_name(err));
-        }
+        transmit_frame(&msg1, "analogVoltage_1");
         vTaskDelay(pdMS_TO_TICKS(1));
         
         // Message 2: inputs 4..7 (each uint16 LE)
@@ -147,10 +204,7 @@ void canTransmit(void *arg)
         msg2.data[6] = voltages_copy[7] & 0xFF; // input 7 LSB
         msg2.data[7] = (voltages_copy[7] >> 8) & 0xFF; // input 7 MSB
         
-        err = twai_transmit(&msg2, pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) {
-            ESP_LOGW(can_log, "Failed to transmit analogVoltage_2: %s", esp_err_to_name(err));
-        }
+        transmit_frame(&msg2, "analogVoltage_2");
         vTaskDelay(pdMS_TO_TICKS(1));
         
         // Message 3: inputs 8..9 (each uint16 LE) and first two dynamic signals
@@ -191,10 +245,7 @@ void canTransmit(void *arg)
         msg3.data[6] = dyn[1] & 0xFF;
         msg3.data[7] = (dyn[1] >> 8) & 0xFF;
 
-        err = twai_transmit(&msg3, pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) {
-            ESP_LOGW(can_log, "Failed to transmit analogVoltage_3/msg3: %s", esp_err_to_name(err));
-        }
+        transmit_frame(&msg3, "analogVoltage_3/msg3");
         vTaskDelay(pdMS_TO_TICKS(1));
 
         // Message 4: dynamic signals 2..5 (four uint16)
@@ -208,10 +259,7 @@ void canTransmit(void *arg)
         msg4.data[6] = dyn[5] & 0xFF;
         msg4.data[7] = (dyn[5] >> 8) & 0xFF;
 
-        err = twai_transmit(&msg4, pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) {
-            ESP_LOGW(can_log, "Failed to transmit dynamic msg4: %s", esp_err_to_name(err));
-        }
+        transmit_frame(&msg4, "dynamic msg4");
         vTaskDelay(pdMS_TO_TICKS(1));
 
         // Message 5: dynamic signals 6..9 (four uint16)
@@ -225,10 +273,7 @@ void canTransmit(void *arg)
         msg5.data[6] = dyn[9] & 0xFF;
         msg5.data[7] = (dyn[9] >> 8) & 0xFF;
 
-        err = twai_transmit(&msg5, pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) {
-            ESP_LOGW(can_log, "Failed to transmit dynamic msg5: %s", esp_err_to_name(err));
-        }
+        transmit_frame(&msg5, "dynamic msg5");
 
         bool any_emub = false;
         uint8_t emub_bytes[8] = {0};
@@ -244,10 +289,7 @@ void canTransmit(void *arg)
         if (any_emub) {
             twai_message_t emub_msg = init_twai_message(0x66B);
             memcpy(emub_msg.data, emub_bytes, sizeof(emub_bytes));
-            err = twai_transmit(&emub_msg, pdMS_TO_TICKS(1000));
-            if (err != ESP_OK) {
-                ESP_LOGW(can_log, "Failed to transmit EMUB TX msg: %s", esp_err_to_name(err));
-            }
+            transmit_frame(&emub_msg, "EMUB TX msg");
         }
 
         TickType_t target_period_ticks = pdMS_TO_TICKS((can_tx_hz_snapshot == 50) ? 20 : 40);

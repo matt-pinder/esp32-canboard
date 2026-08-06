@@ -15,10 +15,57 @@ typedef struct {
     uint32_t can_start_id;
     uint32_t can_speed_kbps;
     uint8_t can_tx_hz;
+    bool can_enabled;
+    bool espnow_enabled;
+    uint8_t espnow_target_mac[ESP_NOW_ETH_ALEN];
     uint16_t pullup_vref_divider_high_ohm;
     channel_config_t channels[CONFIG_CHANNELS];
     uint32_t crc32;
 } board_config_persist_t;
+
+static void log_board_config(const board_config_t *cfg) {
+    if (cfg == NULL) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Loaded board_config_t:");
+    ESP_LOGI(TAG, "  version=%lu can_enabled=%d can_start_id=0x%lX can_speed_kbps=%lu can_tx_hz=%u",
+             (unsigned long)cfg->version,
+             cfg->can_enabled,
+             (unsigned long)cfg->can_start_id,
+             (unsigned long)cfg->can_speed_kbps,
+             (unsigned)cfg->can_tx_hz);
+    ESP_LOGI(TAG, "  espnow_enabled=%d espnow_target_mac=%02X:%02X:%02X:%02X:%02X:%02X",
+             cfg->espnow_enabled,
+             cfg->espnow_target_mac[0], cfg->espnow_target_mac[1], cfg->espnow_target_mac[2],
+             cfg->espnow_target_mac[3], cfg->espnow_target_mac[4], cfg->espnow_target_mac[5]);
+    ESP_LOGI(TAG, "  pullup_vref_divider_high_ohm=%u crc32=0x%08lX",
+             (unsigned)cfg->pullup_vref_divider_high_ohm,
+             (unsigned long)cfg->crc32);
+
+    for (int i = 0; i < CONFIG_CHANNELS; ++i) {
+        const channel_config_t *ch = &cfg->channels[i];
+        ESP_LOGI(TAG, "  channels[%d]: name=\"%s\" pullup_ohms=%lu type=%u filtering=%u emub_tx=%u",
+                 i,
+                 ch->name,
+                 (unsigned long)ch->pullup_ohms,
+                 (unsigned)ch->type,
+                 (unsigned)ch->filtering,
+                 (unsigned)ch->emub_tx);
+
+        if (ch->type == SENSOR_NTC) {
+            ESP_LOGI(TAG, "    params.ntc.table_id=%u", (unsigned)ch->params.ntc.table_id);
+        } else if (ch->type == SENSOR_PRESSURE) {
+            ESP_LOGI(TAG, "    params.pressure.min_mv=%u max_mv=%u min_kpa=%.2f max_kpa=%.2f",
+                     (unsigned)ch->params.pressure.min_mv,
+                     (unsigned)ch->params.pressure.max_mv,
+                     ch->params.pressure.min_kpa,
+                     ch->params.pressure.max_kpa);
+        } else {
+            ESP_LOGI(TAG, "    params.raw={}");
+        }
+    }
+}
 
 /**
  * @brief Computes CRC32 checksum of data buffer.
@@ -80,6 +127,9 @@ bool config_save(const board_config_t *cfg) {
     temp.can_start_id = cfg->can_start_id;
     temp.can_speed_kbps = cfg->can_speed_kbps;
     temp.can_tx_hz = cfg->can_tx_hz;
+    temp.can_enabled = cfg->can_enabled;
+    temp.espnow_enabled = cfg->espnow_enabled;
+    memcpy(temp.espnow_target_mac, cfg->espnow_target_mac, sizeof(temp.espnow_target_mac));
     temp.pullup_vref_divider_high_ohm = cfg->pullup_vref_divider_high_ohm;
     memcpy(temp.channels, cfg->channels, sizeof(temp.channels));
     temp.crc32 = crc32(&temp, offsetof(board_config_persist_t, crc32));
@@ -135,8 +185,18 @@ bool config_load(board_config_t *cfg) {
         return false;
     }
     
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
     board_config_persist_t persisted = {0};
-    size_t read = fread(&persisted, sizeof(persisted), 1, f);
+    size_t read = 0;
+
+    if (file_size == (long)sizeof(board_config_persist_t)) {
+        read = fread(&persisted, sizeof(persisted), 1, f);
+    } else {
+        ESP_LOGE(TAG, "Unexpected config size: %ld bytes", file_size);
+    }
     fclose(f);
 
     if (read != 1) {
@@ -155,6 +215,9 @@ bool config_load(board_config_t *cfg) {
     cfg->can_start_id = persisted.can_start_id;
     cfg->can_speed_kbps = persisted.can_speed_kbps;
     cfg->can_tx_hz = persisted.can_tx_hz;
+    cfg->can_enabled = persisted.can_enabled;
+    cfg->espnow_enabled = persisted.espnow_enabled;
+    memcpy(cfg->espnow_target_mac, persisted.espnow_target_mac, sizeof(cfg->espnow_target_mac));
     cfg->pullup_vref_divider_high_ohm = persisted.pullup_vref_divider_high_ohm;
     memcpy(cfg->channels, persisted.channels, sizeof(persisted.channels));
     cfg->pullup_vref_mv = 5025;
@@ -186,8 +249,10 @@ bool config_load(board_config_t *cfg) {
         if (cfg->version < 6) {
             cfg->pullup_vref_divider_high_ohm = 5850;
         }
-        if (cfg->version < 7) {
-            cfg->pullup_vref_divider_high_ohm = 5850;
+        if (cfg->version < 8) {
+            cfg->can_enabled = true;
+            cfg->espnow_enabled = false;
+            memset(cfg->espnow_target_mac, 0, sizeof(cfg->espnow_target_mac));
         }
         cfg->version = CONFIG_VERSION;
         if (cfg->can_tx_hz != 25 && cfg->can_tx_hz != 50) {
@@ -204,6 +269,7 @@ bool config_load(board_config_t *cfg) {
         config_save(cfg);
     }
 
+    log_board_config(cfg);
     return true;
 }
 
@@ -241,8 +307,11 @@ void config_set_defaults(board_config_t *cfg) {
     cfg->can_start_id = 0x100;
     cfg->can_speed_kbps = 500; // Default CAN speed 500 kbps
     cfg->can_tx_hz = 25; // Default CAN transmit rate 25 Hz
+    cfg->can_enabled = true;
+    cfg->espnow_enabled = false;
+    memset(cfg->espnow_target_mac, 0, sizeof(cfg->espnow_target_mac));
     cfg->pullup_vref_mv = 5025; // Default live pull-up reference voltage (mV)
-    cfg->pullup_vref_divider_high_ohm = 5850;
+    cfg->pullup_vref_divider_high_ohm = 9475;
     
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
         snprintf(cfg->channels[i].name, CONFIG_NAME_LEN, "Input %d", i + 1);

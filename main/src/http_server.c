@@ -4,11 +4,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "inc/config.h"
+#include "inc/can.h"
+#include "inc/espnow_transport.h"
 #include "inc/http_server.h"
 #include "inc/inputs.h"
 #include "inc/wifi_config.h"
 #include "esp_wifi.h"
-#include "driver/twai.h"
 #include "cJSON.h"
 #include <sys/param.h>
 #include <string.h>
@@ -24,8 +25,68 @@ static const char *TAG = "HTTPD";
  */
 static httpd_handle_t server = NULL;
 extern board_config_t board_cfg;
-extern twai_handle_t twai_can;
-extern esp_err_t can_init(void);
+
+static void format_mac(const uint8_t mac[ESP_NOW_ETH_ALEN], char *out, size_t out_len) {
+    snprintf(out, out_len, "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+static bool parse_mac(const char *text, uint8_t mac[ESP_NOW_ETH_ALEN]) {
+    if (text == NULL || mac == NULL) {
+        return false;
+    }
+
+    unsigned int bytes[ESP_NOW_ETH_ALEN] = {0};
+    int matched = sscanf(text, "%2x:%2x:%2x:%2x:%2x:%2x",
+                         &bytes[0], &bytes[1], &bytes[2], &bytes[3], &bytes[4], &bytes[5]);
+    if (matched != ESP_NOW_ETH_ALEN) {
+        matched = sscanf(text, "%2x-%2x-%2x-%2x-%2x-%2x",
+                         &bytes[0], &bytes[1], &bytes[2], &bytes[3], &bytes[4], &bytes[5]);
+    }
+    if (matched != ESP_NOW_ETH_ALEN && strlen(text) == 12) {
+        matched = sscanf(text, "%2x%2x%2x%2x%2x%2x",
+                         &bytes[0], &bytes[1], &bytes[2], &bytes[3], &bytes[4], &bytes[5]);
+    }
+    if (matched != ESP_NOW_ETH_ALEN) {
+        return false;
+    }
+
+    for (int i = 0; i < ESP_NOW_ETH_ALEN; ++i) {
+        if (bytes[i] > 0xFF) {
+            return false;
+        }
+        mac[i] = (uint8_t)bytes[i];
+    }
+    return true;
+}
+
+static bool read_transport_config(cJSON *root, board_config_t *cfg) {
+    cJSON *can_enabled = cJSON_GetObjectItem(root, "can_enabled");
+    if (can_enabled && cJSON_IsBool(can_enabled)) {
+        cfg->can_enabled = cJSON_IsTrue(can_enabled);
+    }
+
+    cJSON *espnow_enabled = cJSON_GetObjectItem(root, "espnow_enabled");
+    if (espnow_enabled && cJSON_IsBool(espnow_enabled)) {
+        cfg->espnow_enabled = cJSON_IsTrue(espnow_enabled);
+    }
+
+    cJSON *espnow_mac = cJSON_GetObjectItem(root, "espnow_target_mac");
+    if (espnow_mac && cJSON_IsString(espnow_mac)) {
+        if (espnow_mac->valuestring == NULL || espnow_mac->valuestring[0] == '\0') {
+            memset(cfg->espnow_target_mac, 0, ESP_NOW_ETH_ALEN);
+        } else if (!parse_mac(espnow_mac->valuestring, cfg->espnow_target_mac)) {
+            return false;
+        }
+    }
+
+    uint8_t zero_mac[ESP_NOW_ETH_ALEN] = {0};
+    if (cfg->espnow_enabled && memcmp(cfg->espnow_target_mac, zero_mac, ESP_NOW_ETH_ALEN) == 0) {
+        return false;
+    }
+
+    return true;
+}
 
 static bool apply_runtime_config(const board_config_t *cfg) {
     if (cfg == NULL) {
@@ -33,35 +94,52 @@ static bool apply_runtime_config(const board_config_t *cfg) {
     }
 
     board_config_t previous_cfg = board_cfg;
-    bool can_speed_changed = (previous_cfg.can_speed_kbps != cfg->can_speed_kbps);
+    bool can_changed = (previous_cfg.can_enabled != cfg->can_enabled) ||
+                       (previous_cfg.can_speed_kbps != cfg->can_speed_kbps);
+    bool espnow_changed = (previous_cfg.espnow_enabled != cfg->espnow_enabled) ||
+                          (memcmp(previous_cfg.espnow_target_mac, cfg->espnow_target_mac, ESP_NOW_ETH_ALEN) != 0);
     board_cfg = *cfg;
 
-    if (!can_speed_changed) {
+    if (can_changed) {
+        esp_err_t err = can_deinit();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to stop CAN before config update: %s", esp_err_to_name(err));
+            board_cfg = previous_cfg;
+            return false;
+        }
+        if (can_init() != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to reinitialize CAN after config update, restoring previous config");
+            board_cfg = previous_cfg;
+            can_deinit();
+            if (previous_cfg.can_enabled && can_init() != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to restore previous CAN configuration");
+            }
+            return false;
+        }
+        ESP_LOGI(TAG, "Runtime CAN settings updated: enabled=%d speed=%lu kbps",
+                 board_cfg.can_enabled, (unsigned long)board_cfg.can_speed_kbps);
+    }
+
+    if (espnow_changed) {
+        esp_err_t err = espnow_transport_apply_config();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to apply ESP-NOW config: %s", esp_err_to_name(err));
+            board_cfg = previous_cfg;
+            if (can_changed) {
+                can_deinit();
+                if (previous_cfg.can_enabled && can_init() != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to restore previous CAN configuration");
+                }
+            }
+            espnow_transport_apply_config();
+            return false;
+        }
+    }
+
+    if (!can_changed && !espnow_changed) {
         return true;
     }
 
-    esp_err_t err = twai_stop_v2(twai_can);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "Failed to stop TWAI before reinit: %s", esp_err_to_name(err));
-    }
-
-    err = twai_driver_uninstall_v2(twai_can);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "Failed to uninstall TWAI driver: %s", esp_err_to_name(err));
-        board_cfg = previous_cfg;
-        return false;
-    }
-
-    if (can_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to reinitialize CAN after config update, restoring previous config");
-        board_cfg = previous_cfg;
-        if (can_init() != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to restore previous CAN configuration");
-        }
-        return false;
-    }
-
-    ESP_LOGI(TAG, "Runtime CAN speed updated to %lu kbps", (unsigned long)board_cfg.can_speed_kbps);
     return true;
 }
 
@@ -147,14 +225,18 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     
     size_t json_pos = 0;
     const size_t json_max = 4096;
+    char espnow_mac[18];
+    format_mac(cfg.espnow_target_mac, espnow_mac, sizeof(espnow_mac));
     
-    // Start JSON object including CAN speed, base ID, TX rate, live Vref display, and persisted divider calibration
+    // Start JSON object including persisted board and transport configuration.
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"pullup_vref_mv\":%u,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        cfg.can_enabled ? "true" : "false",
         (unsigned long)cfg.can_speed_kbps,
         (unsigned long)cfg.can_start_id,
         (unsigned)cfg.can_tx_hz,
-        (unsigned)cfg.pullup_vref_mv,
+        cfg.espnow_enabled ? "true" : "false",
+        espnow_mac,
         (unsigned)cfg.pullup_vref_divider_high_ohm);
     
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
@@ -356,6 +438,14 @@ esp_err_t config_post_handler(httpd_req_t *req) {
     cJSON *pullup_vref_high = cJSON_GetObjectItem(root, "pullup_vref_divider_high_ohm");
     if (pullup_vref_high && cJSON_IsNumber(pullup_vref_high)) {
         cfg.pullup_vref_divider_high_ohm = (uint16_t)pullup_vref_high->valueint;
+    }
+
+    if (!read_transport_config(root, &cfg)) {
+        ESP_LOGW(TAG, "Invalid transport configuration");
+        cJSON_Delete(root);
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid transport configuration");
+        return ESP_FAIL;
     }
 
     // Keep pullup_vref_mv driven by the ADC task rather than the HTTP API.
@@ -576,7 +666,11 @@ esp_err_t live_values_get_handler(httpd_req_t *req) {
  * (GET /api/config/export.json)
  */
 esp_err_t config_export_get_handler(httpd_req_t *req) {
-    board_config_t cfg = board_cfg;
+    board_config_t cfg = {0};
+    if (!config_load(&cfg)) {
+        ESP_LOGW(TAG, "Failed to load persisted config for export; using runtime config");
+        cfg = board_cfg;
+    }
 
     char *json = malloc(4096);
     if (!json) {
@@ -587,8 +681,17 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
 
     size_t json_pos = 0;
     const size_t json_max = 4096;
-    json_pos += snprintf(json + json_pos, json_max - json_pos, "{\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"pullup_vref_mv\":%u,\"channels\":[",
-        (unsigned long)cfg.can_speed_kbps, (unsigned long)cfg.can_start_id, (unsigned)cfg.can_tx_hz, (unsigned)cfg.pullup_vref_mv);
+    char espnow_mac[18];
+    format_mac(cfg.espnow_target_mac, espnow_mac, sizeof(espnow_mac));
+    json_pos += snprintf(json + json_pos, json_max - json_pos,
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        cfg.can_enabled ? "true" : "false",
+        (unsigned long)cfg.can_speed_kbps,
+        (unsigned long)cfg.can_start_id,
+        (unsigned)cfg.can_tx_hz,
+        cfg.espnow_enabled ? "true" : "false",
+        espnow_mac,
+        (unsigned)cfg.pullup_vref_divider_high_ohm);
 
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
         json_pos += snprintf(json + json_pos, json_max - json_pos,
@@ -794,6 +897,14 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
     cJSON *pullup_vref_high = cJSON_GetObjectItem(root, "pullup_vref_divider_high_ohm");
     if (pullup_vref_high && cJSON_IsNumber(pullup_vref_high)) {
         cfg.pullup_vref_divider_high_ohm = (uint16_t)pullup_vref_high->valueint;
+    }
+
+    if (!read_transport_config(root, &cfg)) {
+        ESP_LOGW(TAG, "Invalid transport configuration in import");
+        cJSON_Delete(root);
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid transport configuration");
+        return ESP_FAIL;
     }
     cfg.pullup_vref_mv = board_cfg.pullup_vref_mv;
 

@@ -14,12 +14,12 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
-#include "driver/twai.h"
 
 #define USB_PRESENCE_DETECT GPIO_NUM_38
 
 #include "inc/inputs.h"
 #include "inc/can.h"
+#include "inc/espnow_transport.h"
 
 #include "inc/wifi_config.h"
 #include "inc/config.h"
@@ -72,10 +72,13 @@ void app_main(void)
     // Initialize ADC channels
     initAdcChannels();
 
-    // Initialize TWAI/CAN driver with dynamic speed from config
+    // Initialize enabled transports with dynamic settings from config.
     if (can_init() != ESP_OK) {
         ESP_LOGE(log_tag, "Failed to initialize CAN driver!");
         abort();
+    }
+    if (espnow_transport_apply_config() != ESP_OK) {
+        ESP_LOGW(log_tag, "ESP-NOW transport is not active");
     }
 
     // Create mutex for protecting filtered voltage array

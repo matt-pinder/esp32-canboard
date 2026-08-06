@@ -19,6 +19,7 @@
  * @brief Log tag for this module
  */
 static const char *TAG = "WIFI_CFG";
+extern board_config_t board_cfg;
 /**
  * @brief Timer handle for configuration mode timeout
  */
@@ -35,9 +36,16 @@ static bool client_connected = false;
  */
 static void config_timeout_cb(void *arg) {
     if (!client_connected) {
-        ESP_LOGI(TAG, "No client connected in 60s, disabling AP and HTTP server");
+        ESP_LOGI(TAG, "No client connected in 120s, disabling config AP and HTTP server");
         stop_http_server();
-        esp_wifi_stop();
+        if (board_cfg.espnow_enabled) {
+            esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to switch WiFi to STA mode for ESP-NOW: %s", esp_err_to_name(err));
+            }
+        } else {
+            esp_wifi_stop();
+        }
     }
 }
 
@@ -71,6 +79,7 @@ void wifi_config_mode_start(void) {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     esp_netif_create_default_wifi_ap();
+    esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -84,10 +93,10 @@ void wifi_config_mode_start(void) {
             .authmode = WIFI_AUTH_WPA2_PSK
         }
     };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "WiFi AP started: %s", WIFI_SSID);
+    ESP_LOGI(TAG, "WiFi AP+STA started: %s", WIFI_SSID);
 
     // Start HTTP server for config UI
     start_http_server();
