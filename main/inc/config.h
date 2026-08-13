@@ -7,7 +7,7 @@
 
 #define CONFIG_CHANNELS 10       ///< Number of ADC input channels
 #define CONFIG_NAME_LEN 32      ///< Maximum characters for channel name
-#define CONFIG_VERSION 8        ///< Configuration structure version number (increment for new fields or layout changes)
+#define CONFIG_VERSION 9        ///< Configuration structure version number (increment for new fields or layout changes)
 
 /// Per-channel median filter strength levels
 /// stored in the 8‑bit `filtering` field below.
@@ -70,6 +70,9 @@ typedef struct {
     bool can_enabled;                      ///< Enable physical CAN/TWAI transmission
     bool espnow_enabled;                   ///< Enable ESP-NOW transmission of TWAI messages
     uint8_t espnow_target_mac[ESP_NOW_ETH_ALEN]; ///< ESP-NOW peer MAC address
+    bool gps_enabled;                      ///< Enable external BLE GPS integration
+    uint32_t gps_can_start_id;             ///< First CAN ID used by GPS frames; following frames increment from this
+    uint8_t gps_target_mac[ESP_NOW_ETH_ALEN]; ///< Optional BLE GPS target MAC address
     uint16_t pullup_vref_mv;               ///< Live pull-up reference voltage in millivolts (runtime read-only display)
     uint16_t pullup_vref_divider_high_ohm; ///< Top resistor value of the pull-up Vref divider (persisted)
     channel_config_t channels[CONFIG_CHANNELS]; ///< Per-channel configuration array

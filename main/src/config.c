@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include "esp_log.h"
 #include "esp_spiffs.h"
 #include "esp_system.h"
@@ -20,6 +21,9 @@ typedef struct {
     uint8_t espnow_target_mac[ESP_NOW_ETH_ALEN];
     uint16_t pullup_vref_divider_high_ohm;
     channel_config_t channels[CONFIG_CHANNELS];
+    bool gps_enabled;
+    uint32_t gps_can_start_id;
+    uint8_t gps_target_mac[ESP_NOW_ETH_ALEN];
     uint32_t crc32;
 } board_config_persist_t;
 
@@ -42,6 +46,11 @@ static void log_board_config(const board_config_t *cfg) {
     ESP_LOGI(TAG, "  pullup_vref_divider_high_ohm=%u crc32=0x%08lX",
              (unsigned)cfg->pullup_vref_divider_high_ohm,
              (unsigned long)cfg->crc32);
+    ESP_LOGI(TAG, "  gps_enabled=%d gps_can_start_id=0x%lX gps_target_mac=%02X:%02X:%02X:%02X:%02X:%02X",
+             cfg->gps_enabled,
+             (unsigned long)cfg->gps_can_start_id,
+             cfg->gps_target_mac[0], cfg->gps_target_mac[1], cfg->gps_target_mac[2],
+             cfg->gps_target_mac[3], cfg->gps_target_mac[4], cfg->gps_target_mac[5]);
 
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
         const channel_config_t *ch = &cfg->channels[i];
@@ -132,6 +141,9 @@ bool config_save(const board_config_t *cfg) {
     memcpy(temp.espnow_target_mac, cfg->espnow_target_mac, sizeof(temp.espnow_target_mac));
     temp.pullup_vref_divider_high_ohm = cfg->pullup_vref_divider_high_ohm;
     memcpy(temp.channels, cfg->channels, sizeof(temp.channels));
+    temp.gps_enabled = cfg->gps_enabled;
+    temp.gps_can_start_id = cfg->gps_can_start_id;
+    memcpy(temp.gps_target_mac, cfg->gps_target_mac, sizeof(temp.gps_target_mac));
     temp.crc32 = crc32(&temp, offsetof(board_config_persist_t, crc32));
 
     FILE *f = fopen(CONFIG_FILE_PATH, "wb");
@@ -189,26 +201,32 @@ bool config_load(board_config_t *cfg) {
     long file_size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    board_config_persist_t persisted = {0};
+    uint8_t raw[sizeof(board_config_persist_t)] = {0};
     size_t read = 0;
 
-    if (file_size == (long)sizeof(board_config_persist_t)) {
-        read = fread(&persisted, sizeof(persisted), 1, f);
+    if (file_size >= (long)(sizeof(uint32_t) * 2) && file_size <= (long)sizeof(board_config_persist_t)) {
+        read = fread(raw, 1, (size_t)file_size, f);
     } else {
         ESP_LOGE(TAG, "Unexpected config size: %ld bytes", file_size);
     }
     fclose(f);
 
-    if (read != 1) {
+    if (read != (size_t)file_size) {
         ESP_LOGE(TAG, "Failed to read config data");
         return false;
     }
 
-    uint32_t crc = crc32(&persisted, offsetof(board_config_persist_t, crc32));
-    if (crc != persisted.crc32) {
-        ESP_LOGE(TAG, "CRC mismatch: expected 0x%08X, got 0x%08X", crc, persisted.crc32);
+    uint32_t stored_crc = 0;
+    memcpy(&stored_crc, raw + file_size - sizeof(stored_crc), sizeof(stored_crc));
+    uint32_t crc = crc32(raw, (size_t)file_size - sizeof(stored_crc));
+    if (crc != stored_crc) {
+        ESP_LOGE(TAG, "CRC mismatch: expected 0x%08X, got 0x%08X", crc, stored_crc);
         return false;
     }
+
+    board_config_persist_t persisted = {0};
+    memcpy(&persisted, raw, (size_t)file_size - sizeof(stored_crc));
+    persisted.crc32 = stored_crc;
 
     memset(cfg, 0, sizeof(*cfg));
     cfg->version = persisted.version;
@@ -220,6 +238,9 @@ bool config_load(board_config_t *cfg) {
     memcpy(cfg->espnow_target_mac, persisted.espnow_target_mac, sizeof(cfg->espnow_target_mac));
     cfg->pullup_vref_divider_high_ohm = persisted.pullup_vref_divider_high_ohm;
     memcpy(cfg->channels, persisted.channels, sizeof(persisted.channels));
+    cfg->gps_enabled = persisted.gps_enabled;
+    cfg->gps_can_start_id = persisted.gps_can_start_id;
+    memcpy(cfg->gps_target_mac, persisted.gps_target_mac, sizeof(cfg->gps_target_mac));
     cfg->pullup_vref_mv = 5025;
     cfg->crc32 = persisted.crc32;
 
@@ -254,9 +275,17 @@ bool config_load(board_config_t *cfg) {
             cfg->espnow_enabled = false;
             memset(cfg->espnow_target_mac, 0, sizeof(cfg->espnow_target_mac));
         }
+        if (cfg->version < 9) {
+            cfg->gps_enabled = false;
+            cfg->gps_can_start_id = 0x650;
+            memset(cfg->gps_target_mac, 0, sizeof(cfg->gps_target_mac));
+        }
         cfg->version = CONFIG_VERSION;
         if (cfg->can_tx_hz != 25 && cfg->can_tx_hz != 50) {
             cfg->can_tx_hz = 25;
+        }
+        if (cfg->gps_can_start_id > 0x7FC) {
+            cfg->gps_can_start_id = 0x650;
         }
         // update CRC and persist new layout immediately
         cfg->crc32 = 0;
@@ -310,6 +339,9 @@ void config_set_defaults(board_config_t *cfg) {
     cfg->can_enabled = true;
     cfg->espnow_enabled = false;
     memset(cfg->espnow_target_mac, 0, sizeof(cfg->espnow_target_mac));
+    cfg->gps_enabled = false;
+    cfg->gps_can_start_id = 0x650;
+    memset(cfg->gps_target_mac, 0, sizeof(cfg->gps_target_mac));
     cfg->pullup_vref_mv = 5025; // Default live pull-up reference voltage (mV)
     cfg->pullup_vref_divider_high_ohm = 9475;
     

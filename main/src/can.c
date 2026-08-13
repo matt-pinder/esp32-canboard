@@ -111,7 +111,7 @@ esp_err_t can_deinit(void) {
     return first_err;
 }
 
-static void transmit_frame(const twai_message_t *message, const char *label) {
+void can_transmit_frame(const twai_message_t *message, const char *label) {
     static TickType_t last_espnow_warn = 0;
 
     if (board_cfg.can_enabled && can_driver_active) {
@@ -190,7 +190,7 @@ void canTransmit(void *arg)
         msg1.data[6] = voltages_copy[3] & 0xFF;  // input 3 LSB
         msg1.data[7] = (voltages_copy[3] >> 8) & 0xFF; // input 3 MSB
         
-        transmit_frame(&msg1, "analogVoltage_1");
+        can_transmit_frame(&msg1, "analogVoltage_1");
         vTaskDelay(pdMS_TO_TICKS(1));
         
         // Message 2: inputs 4..7 (each uint16 LE)
@@ -204,7 +204,7 @@ void canTransmit(void *arg)
         msg2.data[6] = voltages_copy[7] & 0xFF; // input 7 LSB
         msg2.data[7] = (voltages_copy[7] >> 8) & 0xFF; // input 7 MSB
         
-        transmit_frame(&msg2, "analogVoltage_2");
+        can_transmit_frame(&msg2, "analogVoltage_2");
         vTaskDelay(pdMS_TO_TICKS(1));
         
         // Message 3: inputs 8..9 (each uint16 LE) and first two dynamic signals
@@ -245,7 +245,7 @@ void canTransmit(void *arg)
         msg3.data[6] = dyn[1] & 0xFF;
         msg3.data[7] = (dyn[1] >> 8) & 0xFF;
 
-        transmit_frame(&msg3, "analogVoltage_3/msg3");
+        can_transmit_frame(&msg3, "analogVoltage_3/msg3");
         vTaskDelay(pdMS_TO_TICKS(1));
 
         // Message 4: dynamic signals 2..5 (four uint16)
@@ -259,7 +259,7 @@ void canTransmit(void *arg)
         msg4.data[6] = dyn[5] & 0xFF;
         msg4.data[7] = (dyn[5] >> 8) & 0xFF;
 
-        transmit_frame(&msg4, "dynamic msg4");
+        can_transmit_frame(&msg4, "dynamic msg4");
         vTaskDelay(pdMS_TO_TICKS(1));
 
         // Message 5: dynamic signals 6..9 (four uint16)
@@ -273,7 +273,7 @@ void canTransmit(void *arg)
         msg5.data[6] = dyn[9] & 0xFF;
         msg5.data[7] = (dyn[9] >> 8) & 0xFF;
 
-        transmit_frame(&msg5, "dynamic msg5");
+        can_transmit_frame(&msg5, "dynamic msg5");
 
         bool any_emub = false;
         uint8_t emub_bytes[8] = {0};
@@ -289,7 +289,7 @@ void canTransmit(void *arg)
         if (any_emub) {
             twai_message_t emub_msg = init_twai_message(0x66B);
             memcpy(emub_msg.data, emub_bytes, sizeof(emub_bytes));
-            transmit_frame(&emub_msg, "EMUB TX msg");
+            can_transmit_frame(&emub_msg, "EMUB TX msg");
         }
 
         TickType_t target_period_ticks = pdMS_TO_TICKS((can_tx_hz_snapshot == 50) ? 20 : 40);

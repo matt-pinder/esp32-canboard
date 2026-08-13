@@ -43,6 +43,11 @@ esp_err_t can_init(void);
 /// @return ESP_OK on success, otherwise the first driver error encountered
 esp_err_t can_deinit(void);
 
+/// @brief Transmit one TWAI frame through every enabled output transport.
+/// @param message Frame to send over physical CAN and/or ESP-NOW
+/// @param label Short label used in rate-limited error logs
+void can_transmit_frame(const twai_message_t *message, const char *label);
+
 /// @brief FreeRTOS task for transmitting CAN messages
 /// Periodically transmits 3 multiplexed CAN messages containing voltage data from all 10 channels.
 /// Message format:

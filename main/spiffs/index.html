@@ -199,6 +199,7 @@
       .can-setting,
       .tx-setting,
       .espnow-setting,
+      .gps-setting,
       .generic-setting {
         display: flex;
         align-items: center;
@@ -213,6 +214,28 @@
       .mac-input {
         width: 18ch;
         text-transform: uppercase;
+      }
+      .scan-status {
+        color: #555;
+        font-size: 0.9rem;
+      }
+      .ble-scan-results {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4em;
+      }
+      .ble-device-btn {
+        border: 1px solid #bbb;
+        background: #fff;
+        color: #222;
+        border-radius: 4px;
+        padding: 0.25em 0.45em;
+        cursor: pointer;
+        font-size: 0.88rem;
+        height: 30px;
+      }
+      .ble-device-btn:hover {
+        border-color: #337ab7;
       }
       .small-input {
         width: 5.5ch;
@@ -432,10 +455,51 @@
                   name="espnow_target_mac"
                   class="mac-input"
                   maxlength="17"
+                  pattern="(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12}"
+                  title="Enter a MAC address such as AA:BB:CC:DD:EE:FF"
                   placeholder="AA:BB:CC:DD:EE:FF"
                 />
               </span>
             </div>
+            <div class="transport-option-row">
+              <label class="transport-control" for="gps-enabled">
+                <input id="gps-enabled" name="gps_enabled" type="checkbox" />
+                <span>GPS</span>
+              </label>
+
+              <span class="gps-setting">
+                <label for="gps-can-start-id">GPS Start ID:</label>
+                <span style="display: flex; align-items: center">
+                  <span class="hex-prefix">0x</span>
+                  <input
+                    id="gps-can-start-id"
+                    name="gps_can_start_id"
+                    class="hex-input"
+                    maxlength="3"
+                    value="650"
+                  />
+                </span>
+              </span>
+
+              <span class="gps-setting">
+                <label for="gps-target-mac">BLE MAC:</label>
+                <input
+                  id="gps-target-mac"
+                  name="gps_target_mac"
+                  class="mac-input"
+                  maxlength="17"
+                  pattern="(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12}"
+                  title="Enter a MAC address such as AA:BB:CC:DD:EE:FF"
+                  placeholder="AA:BB:CC:DD:EE:FF"
+                />
+              </span>
+
+              <button id="ble-scan-btn" class="action-btn gps-setting" type="button">
+                Scan BLE
+              </button>
+              <span id="ble-scan-status" class="scan-status gps-setting"></span>
+            </div>
+            <div id="ble-scan-results" class="ble-scan-results gps-setting"></div>
           </div>
         </div>
       </div>
@@ -588,9 +652,22 @@
         );
       }
 
+      function parseCanIdInput(value, fallback) {
+        const trimmed = (value || "").trim();
+        if (/^0x/i.test(trimmed)) {
+          return parseInt(trimmed, 16);
+        }
+        if (/^[0-9A-Fa-f]+$/.test(trimmed)) {
+          return parseInt(trimmed, 16);
+        }
+        const dec = parseInt(trimmed);
+        return isNaN(dec) ? fallback : dec;
+      }
+
       function updateTransportControls() {
         const canEnabled = document.getElementById("can-enabled").checked;
         const espnowEnabled = document.getElementById("espnow-enabled").checked;
+        const gpsEnabled = document.getElementById("gps-enabled").checked;
 
         document.querySelectorAll(".can-setting").forEach((el) => {
           el.style.display = canEnabled ? "flex" : "none";
@@ -598,9 +675,24 @@
         document.querySelectorAll(".espnow-setting").forEach((el) => {
           el.style.display = espnowEnabled ? "flex" : "none";
         });
+        document.querySelectorAll(".gps-setting").forEach((el) => {
+          el.style.display = gpsEnabled ? "flex" : "none";
+        });
+
+        const espnowMac = document.getElementById("espnow-target-mac");
+        const gpsMac = document.getElementById("gps-target-mac");
 
         document.getElementById("can-speed").disabled = !canEnabled;
-        document.getElementById("espnow-target-mac").disabled = !espnowEnabled;
+        espnowMac.disabled = !espnowEnabled;
+        espnowMac.required = espnowEnabled;
+        document.getElementById("gps-can-start-id").disabled = !gpsEnabled;
+        gpsMac.disabled = !gpsEnabled;
+        gpsMac.required = gpsEnabled;
+        document.getElementById("ble-scan-btn").disabled = !gpsEnabled;
+        if (!gpsEnabled) {
+          document.getElementById("ble-scan-status").textContent = "";
+          document.getElementById("ble-scan-results").innerHTML = "";
+        }
       }
 
       function createRow(idx, ch) {
@@ -646,6 +738,21 @@
           !isValidMacAddress(document.getElementById("espnow-target-mac").value)
         ) {
           error += "ESP-NOW target MAC invalid. ";
+        }
+        const gpsEnabled = document.getElementById("gps-enabled").checked;
+        if (gpsEnabled) {
+          if (
+            !isValidMacAddress(document.getElementById("gps-target-mac").value)
+          ) {
+            error += "GPS BLE MAC invalid. ";
+          }
+          const gpsStartId = parseCanIdInput(
+            document.getElementById("gps-can-start-id").value,
+            NaN,
+          );
+          if (isNaN(gpsStartId) || gpsStartId < 0 || gpsStartId > 0x7fc) {
+            error += "GPS Start ID must allow four 11-bit frames. ";
+          }
         }
         const emubSelection = new Array(EMUB_TX_OPTIONS.length).fill(false);
         for (let i = 0; i < 10; ++i) {
@@ -787,6 +894,18 @@
           config.espnow_enabled === true;
         document.getElementById("espnow-target-mac").value =
           normalizeMacAddress(config.espnow_target_mac || "");
+        document.getElementById("gps-enabled").checked =
+          config.gps_enabled === true;
+        document.getElementById("gps-can-start-id").value = (
+          config.gps_can_start_id !== undefined
+            ? config.gps_can_start_id
+            : 0x650
+        )
+          .toString(16)
+          .toUpperCase();
+        document.getElementById("gps-target-mac").value = normalizeMacAddress(
+          config.gps_target_mac || "",
+        );
         updateTransportControls();
         await refreshLiveValues();
       }
@@ -851,6 +970,16 @@
         config.espnow_target_mac = normalizeMacAddress(
           document.getElementById("espnow-target-mac").value,
         );
+        config.gps_enabled = document.getElementById("gps-enabled").checked;
+        config.gps_target_mac = normalizeMacAddress(
+          document.getElementById("gps-target-mac").value,
+        );
+        config.gps_can_start_id = parseCanIdInput(
+          document.getElementById("gps-can-start-id").value,
+          config.gps_can_start_id !== undefined
+            ? config.gps_can_start_id
+            : 0x650,
+        );
         config.can_speed_kbps = parseInt(
           document.getElementById("can-speed").value,
         );
@@ -860,14 +989,10 @@
             : 25;
         // Read base CAN ID from hex input (allow decimal as fallback)
         const baseVal = document.getElementById("base-can-id").value.trim();
-        if (/^0x/i.test(baseVal)) {
-          config.can_start_id = parseInt(baseVal, 16);
-        } else if (/^[0-9A-Fa-f]+$/.test(baseVal)) {
-          config.can_start_id = parseInt(baseVal, 16);
-        } else {
-          const dec = parseInt(baseVal);
-          config.can_start_id = isNaN(dec) ? config.can_start_id || 0x100 : dec;
-        }
+        config.can_start_id = parseCanIdInput(
+          baseVal,
+          config.can_start_id || 0x100,
+        );
         for (let i = 0; i < 10; ++i) {
           config.channels[i].name = form[`name${i}`].value.trim();
           config.channels[i].pullup_ohms = parseInt(form[`pullup${i}`].value);
@@ -1001,8 +1126,50 @@
       document.getElementById("can-enabled").onchange = updateTransportControls;
       document.getElementById("espnow-enabled").onchange =
         updateTransportControls;
+      document.getElementById("gps-enabled").onchange = updateTransportControls;
       document.getElementById("espnow-target-mac").onblur = function (e) {
         e.target.value = normalizeMacAddress(e.target.value);
+      };
+      document.getElementById("gps-target-mac").onblur = function (e) {
+        e.target.value = normalizeMacAddress(e.target.value);
+      };
+      document.getElementById("ble-scan-btn").onclick = async function () {
+        const btn = document.getElementById("ble-scan-btn");
+        const status = document.getElementById("ble-scan-status");
+        const resultsEl = document.getElementById("ble-scan-results");
+        btn.disabled = true;
+        status.textContent = "Scanning...";
+        resultsEl.innerHTML = "";
+        try {
+          const resp = await fetch("/api/ble/dragy_scan", { method: "POST" });
+          if (!resp.ok) {
+            throw new Error(`BLE scan HTTP ${resp.status}`);
+          }
+          const payload = await resp.json();
+          const devices = Array.isArray(payload.devices)
+            ? payload.devices
+            : [];
+          if (!devices.length) {
+            status.textContent = "No likely Dragy devices found.";
+            return;
+          }
+          status.textContent = `${devices.length} likely device${devices.length === 1 ? "" : "s"} found.`;
+          devices.forEach((dev) => {
+            const deviceBtn = document.createElement("button");
+            deviceBtn.className = "ble-device-btn";
+            deviceBtn.type = "button";
+            deviceBtn.textContent = `${dev.name || "BLE"} ${normalizeMacAddress(dev.mac)} ${dev.rssi}dBm`;
+            deviceBtn.onclick = () => {
+              document.getElementById("gps-target-mac").value =
+                normalizeMacAddress(dev.mac || "");
+            };
+            resultsEl.appendChild(deviceBtn);
+          });
+        } catch (e) {
+          status.textContent = "BLE scan failed.";
+        } finally {
+          btn.disabled = !document.getElementById("gps-enabled").checked;
+        }
       };
       updateTransportControls();
       loadConfig();

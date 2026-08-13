@@ -5,6 +5,8 @@
 #include "freertos/task.h"
 #include "inc/config.h"
 #include "inc/can.h"
+#include "inc/ble_scan.h"
+#include "inc/dragy_gps.h"
 #include "inc/espnow_transport.h"
 #include "inc/http_server.h"
 #include "inc/inputs.h"
@@ -88,6 +90,45 @@ static bool read_transport_config(cJSON *root, board_config_t *cfg) {
     return true;
 }
 
+static bool read_gps_config(cJSON *root, board_config_t *cfg) {
+    cJSON *gps_enabled = cJSON_GetObjectItem(root, "gps_enabled");
+    if (gps_enabled && cJSON_IsBool(gps_enabled)) {
+        cfg->gps_enabled = cJSON_IsTrue(gps_enabled);
+    }
+
+    cJSON *gps_start = cJSON_GetObjectItem(root, "gps_can_start_id");
+    if (gps_start) {
+        if (cJSON_IsNumber(gps_start)) {
+            cfg->gps_can_start_id = (uint32_t)gps_start->valueint;
+        } else if (cJSON_IsString(gps_start)) {
+            const char *s = gps_start->valuestring;
+            if (s && strlen(s) > 0) {
+                cfg->gps_can_start_id = (uint32_t)strtoul(s, NULL, 0);
+            }
+        }
+    }
+
+    cJSON *gps_mac = cJSON_GetObjectItem(root, "gps_target_mac");
+    if (gps_mac && cJSON_IsString(gps_mac)) {
+        if (gps_mac->valuestring == NULL || gps_mac->valuestring[0] == '\0') {
+            memset(cfg->gps_target_mac, 0, ESP_NOW_ETH_ALEN);
+        } else if (!parse_mac(gps_mac->valuestring, cfg->gps_target_mac)) {
+            return false;
+        }
+    }
+
+    if (cfg->gps_can_start_id > 0x7FC) {
+        return false;
+    }
+
+    uint8_t zero_mac[ESP_NOW_ETH_ALEN] = {0};
+    if (cfg->gps_enabled && memcmp(cfg->gps_target_mac, zero_mac, ESP_NOW_ETH_ALEN) == 0) {
+        return false;
+    }
+
+    return true;
+}
+
 static bool apply_runtime_config(const board_config_t *cfg) {
     if (cfg == NULL) {
         return false;
@@ -98,6 +139,9 @@ static bool apply_runtime_config(const board_config_t *cfg) {
                        (previous_cfg.can_speed_kbps != cfg->can_speed_kbps);
     bool espnow_changed = (previous_cfg.espnow_enabled != cfg->espnow_enabled) ||
                           (memcmp(previous_cfg.espnow_target_mac, cfg->espnow_target_mac, ESP_NOW_ETH_ALEN) != 0);
+    bool gps_changed = (previous_cfg.gps_enabled != cfg->gps_enabled) ||
+                       (previous_cfg.gps_can_start_id != cfg->gps_can_start_id) ||
+                       (memcmp(previous_cfg.gps_target_mac, cfg->gps_target_mac, ESP_NOW_ETH_ALEN) != 0);
     board_cfg = *cfg;
 
     if (can_changed) {
@@ -136,7 +180,13 @@ static bool apply_runtime_config(const board_config_t *cfg) {
         }
     }
 
-    if (!can_changed && !espnow_changed) {
+    if (gps_changed) {
+        dragy_gps_apply_config();
+        ESP_LOGI(TAG, "Runtime GPS settings updated: enabled=%d start_id=0x%lX",
+                 board_cfg.gps_enabled, (unsigned long)board_cfg.gps_can_start_id);
+    }
+
+    if (!can_changed && !espnow_changed && !gps_changed) {
         return true;
     }
 
@@ -226,17 +276,22 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     size_t json_pos = 0;
     const size_t json_max = 4096;
     char espnow_mac[18];
+    char gps_mac[18];
     format_mac(cfg.espnow_target_mac, espnow_mac, sizeof(espnow_mac));
+    format_mac(cfg.gps_target_mac, gps_mac, sizeof(gps_mac));
     
     // Start JSON object including persisted board and transport configuration.
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg.can_enabled ? "true" : "false",
         (unsigned long)cfg.can_speed_kbps,
         (unsigned long)cfg.can_start_id,
         (unsigned)cfg.can_tx_hz,
         cfg.espnow_enabled ? "true" : "false",
         espnow_mac,
+        cfg.gps_enabled ? "true" : "false",
+        (unsigned long)cfg.gps_can_start_id,
+        gps_mac,
         (unsigned)cfg.pullup_vref_divider_high_ohm);
     
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
@@ -445,6 +500,14 @@ esp_err_t config_post_handler(httpd_req_t *req) {
         cJSON_Delete(root);
         free(buf);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid transport configuration");
+        return ESP_FAIL;
+    }
+
+    if (!read_gps_config(root, &cfg)) {
+        ESP_LOGW(TAG, "Invalid GPS configuration");
+        cJSON_Delete(root);
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid GPS configuration");
         return ESP_FAIL;
     }
 
@@ -682,15 +745,20 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
     size_t json_pos = 0;
     const size_t json_max = 4096;
     char espnow_mac[18];
+    char gps_mac[18];
     format_mac(cfg.espnow_target_mac, espnow_mac, sizeof(espnow_mac));
+    format_mac(cfg.gps_target_mac, gps_mac, sizeof(gps_mac));
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg.can_enabled ? "true" : "false",
         (unsigned long)cfg.can_speed_kbps,
         (unsigned long)cfg.can_start_id,
         (unsigned)cfg.can_tx_hz,
         cfg.espnow_enabled ? "true" : "false",
         espnow_mac,
+        cfg.gps_enabled ? "true" : "false",
+        (unsigned long)cfg.gps_can_start_id,
+        gps_mac,
         (unsigned)cfg.pullup_vref_divider_high_ohm);
 
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
@@ -906,6 +974,14 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid transport configuration");
         return ESP_FAIL;
     }
+
+    if (!read_gps_config(root, &cfg)) {
+        ESP_LOGW(TAG, "Invalid GPS configuration in import");
+        cJSON_Delete(root);
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid GPS configuration");
+        return ESP_FAIL;
+    }
     cfg.pullup_vref_mv = board_cfg.pullup_vref_mv;
 
     // Backup existing config file before overwrite
@@ -942,6 +1018,63 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
 }
 
 /**
+ * @brief HTTP POST handler to scan nearby BLE devices likely to be Dragy devices.
+ */
+esp_err_t ble_dragy_scan_post_handler(httpd_req_t *req) {
+    notify_client_connected();
+
+    ble_scan_result_t results[BLE_SCAN_MAX_RESULTS] = {0};
+    size_t count = 0;
+    esp_err_t err = ble_scan_dragy(5000, results, BLE_SCAN_MAX_RESULTS, &count);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "BLE Dragy scan failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, esp_err_to_name(err));
+        return ESP_FAIL;
+    }
+
+    char *json = malloc(2048);
+    if (!json) {
+        ESP_LOGE(TAG, "Failed to allocate BLE scan JSON buffer");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    size_t json_pos = 0;
+    const size_t json_max = 2048;
+    json_pos += snprintf(json + json_pos, json_max - json_pos, "{\"devices\":[");
+
+    for (size_t i = 0; i < count; ++i) {
+        if (!results[i].potential_dragy) {
+            continue;
+        }
+
+        char mac[18];
+        format_mac(results[i].mac, mac, sizeof(mac));
+        int written = snprintf(json + json_pos, json_max - json_pos,
+            "%s{\"mac\":\"%s\",\"name\":\"%s\",\"rssi\":%d,\"has_dragy_name\":%s,\"has_fd00_service\":%s}",
+            json_pos > strlen("{\"devices\":[") ? "," : "",
+            mac,
+            results[i].name[0] ? results[i].name : "",
+            (int)results[i].rssi,
+            results[i].has_dragy_name ? "true" : "false",
+            results[i].has_fd00_service ? "true" : "false");
+        if (written < 0 || (size_t)written >= (json_max - json_pos)) {
+            ESP_LOGE(TAG, "JSON buffer overflow in BLE scan results");
+            free(json);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        json_pos += (size_t)written;
+    }
+
+    snprintf(json + json_pos, json_max - json_pos, "]}\n");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    free(json);
+    return ESP_OK;
+}
+
+/**
  * @brief Start HTTP server with REST API endpoints and SPIFFS mount
  * Initializes SPIFFS filesystem and starts HTTP server on port 80 (http://192.168.4.1).
  * Registers five URI handlers for configuration management and device control.
@@ -967,6 +1100,7 @@ void start_http_server(void) {
     // Start HTTP server
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
+    config.max_uri_handlers = 12;
     
     ret = httpd_start(&server, &config);
     if (ret != ESP_OK) {
@@ -981,7 +1115,7 @@ void start_http_server(void) {
         .handler = index_get_handler, 
         .user_ctx = NULL 
     };
-    httpd_register_uri_handler(server, &index_uri);
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &index_uri));
     
     httpd_uri_t config_get_uri = { 
         .uri = "/api/config", 
@@ -989,7 +1123,7 @@ void start_http_server(void) {
         .handler = config_get_handler, 
         .user_ctx = NULL 
     };
-    httpd_register_uri_handler(server, &config_get_uri);
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &config_get_uri));
     
     httpd_uri_t config_post_uri = { 
         .uri = "/api/config", 
@@ -997,7 +1131,7 @@ void start_http_server(void) {
         .handler = config_post_handler, 
         .user_ctx = NULL 
     };
-    httpd_register_uri_handler(server, &config_post_uri);
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &config_post_uri));
 
     httpd_uri_t config_export_uri = {
         .uri = "/api/config/export.json",
@@ -1005,7 +1139,7 @@ void start_http_server(void) {
         .handler = config_export_get_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &config_export_uri);
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &config_export_uri));
 
     httpd_uri_t config_import_uri = {
         .uri = "/api/config/import.json",
@@ -1013,7 +1147,7 @@ void start_http_server(void) {
         .handler = config_import_post_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &config_import_uri);
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &config_import_uri));
     
     httpd_uri_t reboot_post_uri = { 
         .uri = "/api/reboot", 
@@ -1021,7 +1155,7 @@ void start_http_server(void) {
         .handler = reboot_post_handler, 
         .user_ctx = NULL 
     };
-    httpd_register_uri_handler(server, &reboot_post_uri);
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &reboot_post_uri));
     
     httpd_uri_t ntc_tables_uri = { 
         .uri = "/api/ntc_tables", 
@@ -1029,7 +1163,7 @@ void start_http_server(void) {
         .handler = ntc_tables_get_handler, 
         .user_ctx = NULL 
     };
-    httpd_register_uri_handler(server, &ntc_tables_uri);
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &ntc_tables_uri));
 
     httpd_uri_t live_values_uri = {
         .uri = "/api/live_values",
@@ -1037,7 +1171,15 @@ void start_http_server(void) {
         .handler = live_values_get_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &live_values_uri);
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &live_values_uri));
+
+    httpd_uri_t ble_dragy_scan_uri = {
+        .uri = "/api/ble/dragy_scan",
+        .method = HTTP_POST,
+        .handler = ble_dragy_scan_post_handler,
+        .user_ctx = NULL
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &ble_dragy_scan_uri));
     
     ESP_LOGI(TAG, "HTTP server started on http://192.168.4.1");
 }

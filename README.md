@@ -65,6 +65,28 @@ Encoding rules for dynamic values (one per input):
 
 Example DBC for signal names and scaling: [dbc/esp32-canboard.dbc](dbc/esp32-canboard.dbc)
 
+## Dragy GPS Output
+
+When GPS is enabled, the board scans for the configured Dragy BLE MAC, connects to service `FD00`, performs the `FD03` challenge response, and decodes checksum-valid UBX NAV-PVT packets from `FD02`. Valid fixes are published at the GPS update rate; a connected no-fix stream publishes only the status frame, limited to 1 Hz. BLE discovery, decoding, and publishing run independently from ADC sampling and the existing sensor transmit task.
+
+GPS uses four standard 11-bit CAN frames starting at the configured GPS base ID. All multi-byte values are little-endian and retain the native UBX scaling.
+
+| CAN ID | Bytes | Type | Value |
+|:---|:---|:---|:---|
+| GPS Base ID | 0 | uint8 | UBX fix type (`0` no fix, `2` 2D, `3` 3D, `4` GNSS + dead reckoning) |
+| GPS Base ID | 1 | uint8 | UBX NAV-PVT flags; bit 0 is `gnssFixOK` |
+| GPS Base ID | 2 | uint8 | Satellite count |
+| GPS Base ID | 3 | uint8 | Dragy battery percent, or `0xFF` when unavailable |
+| GPS Base ID | 4..7 | uint32 | Horizontal accuracy in mm |
+| GPS Base ID + 1 | 0..3 | uint32 | Ground speed in mm/s |
+| GPS Base ID + 1 | 4..7 | int32 | Heading of motion in degrees x 100,000 |
+| GPS Base ID + 2 | 0..3 | int32 | Latitude in degrees x 10,000,000 |
+| GPS Base ID + 2 | 4..7 | int32 | Longitude in degrees x 10,000,000 |
+| GPS Base ID + 3 | 0..3 | int32 | Mean-sea-level altitude in mm |
+| GPS Base ID + 3 | 4..7 | uint32 | GPS time of week in ms |
+
+The Dragy BLE handshake and stream format are based on the experimental [DragyDash ESP32 protocol notes](https://github.com/jremick/dragy-dash-esp32/blob/main/docs/DRAGY_PROTOCOL.md).
+
 ## Schematic
 [View PDF](docs/esp32-canboard-schematic.pdf)
 

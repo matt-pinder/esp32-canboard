@@ -19,6 +19,8 @@
 
 #include "inc/inputs.h"
 #include "inc/can.h"
+#include "inc/ble_scan.h"
+#include "inc/dragy_gps.h"
 #include "inc/espnow_transport.h"
 
 #include "inc/wifi_config.h"
@@ -59,6 +61,10 @@ void app_main(void)
 
     // Start WiFi config mode (AP + HTTP server with timeout)
     wifi_config_mode_start();
+
+    if (ble_scan_init() != ESP_OK) {
+        ESP_LOGW(log_tag, "BLE scan support is not active");
+    }
     
     // Initialize CPU temperature sensor
     esp_err_t err = initCpuTempSensor();
@@ -79,6 +85,9 @@ void app_main(void)
     }
     if (espnow_transport_apply_config() != ESP_OK) {
         ESP_LOGW(log_tag, "ESP-NOW transport is not active");
+    }
+    if (dragy_gps_start() != ESP_OK) {
+        ESP_LOGW(log_tag, "Dragy GPS integration is not active");
     }
 
     // Create mutex for protecting filtered voltage array
