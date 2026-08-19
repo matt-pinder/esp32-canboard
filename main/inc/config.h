@@ -7,7 +7,7 @@
 
 #define CONFIG_CHANNELS 10       ///< Number of ADC input channels
 #define CONFIG_NAME_LEN 32      ///< Maximum characters for channel name
-#define CONFIG_VERSION 9        ///< Configuration structure version number (increment for new fields or layout changes)
+#define CONFIG_VERSION 10       ///< Configuration structure version number (increment for new fields or layout changes)
 
 /// Per-channel median filter strength levels
 /// stored in the 8‑bit `filtering` field below.
@@ -69,9 +69,10 @@ typedef struct {
     uint8_t can_tx_hz;                     ///< CAN transmit loop rate in Hz (supported: 25 or 50)
     bool can_enabled;                      ///< Enable physical CAN/TWAI transmission
     bool espnow_enabled;                   ///< Enable ESP-NOW transmission of TWAI messages
+    bool can_relay_espnow_enabled;         ///< Relay received CAN bus frames to the ESP-NOW peer
     uint8_t espnow_target_mac[ESP_NOW_ETH_ALEN]; ///< ESP-NOW peer MAC address
     bool gps_enabled;                      ///< Enable external BLE GPS integration
-    uint32_t gps_can_start_id;             ///< First CAN ID used by GPS frames; following frames increment from this
+    uint32_t gps_can_start_id;             ///< First CAN ID used by Dragy GPS/IMU frames; following frames increment from this
     uint8_t gps_target_mac[ESP_NOW_ETH_ALEN]; ///< Optional BLE GPS target MAC address
     uint16_t pullup_vref_mv;               ///< Live pull-up reference voltage in millivolts (runtime read-only display)
     uint16_t pullup_vref_divider_high_ohm; ///< Top resistor value of the pull-up Vref divider (persisted)
@@ -79,14 +80,14 @@ typedef struct {
     uint32_t crc32;                        ///< CRC32 checksum of all fields above for integrity verification
 } board_config_t;
 
-/// @brief Persist board configuration to SPIFFS with CRC32 verification
+/// @brief Persist board configuration to the dedicated NVS partition
 /// @param cfg Pointer to configuration structure to save
-/// @return true if save successful, false on SPIFFS error
+/// @return true only after commit and read-back verification succeed
 bool config_save(const board_config_t *cfg);
 
-/// @brief Load and validate board configuration from SPIFFS
+/// @brief Load configuration from NVS, importing legacy SPIFFS once if needed
 /// @param cfg Pointer to configuration structure to populate
-/// @return true if load successful and CRC valid, false on SPIFFS error or corruption
+/// @return true if a valid NVS or legacy configuration was loaded
 bool config_load(board_config_t *cfg);
 
 /// @brief Initialize configuration structure with factory defaults

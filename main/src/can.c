@@ -18,8 +18,9 @@ extern board_config_t board_cfg;
 
 twai_handle_t twai_can = NULL;
 static bool can_driver_active = false;
+static SemaphoreHandle_t can_driver_mutex = NULL;
 twai_timing_config_t t_can_config = TWAI_TIMING_CONFIG_500KBITS();
-/// Filter configuration: reject all incoming messages (TX-only mode)
+/// Default filter rejects incoming messages unless CAN-to-ESP-NOW relay is enabled.
 twai_filter_config_t f_config = { .acceptance_code = 0xFFFFFFFF, .acceptance_mask = 0x00000000, .single_filter = true };
 twai_general_config_t can_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM, TWAI_MODE_NORMAL);
 
@@ -30,12 +31,25 @@ twai_general_config_t can_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, 
  * @return ESP_OK on success, ESP_FAIL on driver initialization error
  */
 esp_err_t can_init(void) {
-    if (!board_cfg.can_enabled) {
-        ESP_LOGI(can_log, "CAN disabled; TWAI driver not started");
+    if (!board_cfg.can_enabled && !board_cfg.can_relay_espnow_enabled) {
+        ESP_LOGI(can_log, "CAN transmission and relay disabled; TWAI driver not started");
         return ESP_OK;
     }
 
+    if (can_driver_mutex == NULL) {
+        can_driver_mutex = xSemaphoreCreateMutex();
+        if (can_driver_mutex == NULL) {
+            ESP_LOGE(can_log, "Failed to create CAN driver mutex");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    if (xSemaphoreTake(can_driver_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
     if (can_driver_active) {
+        xSemaphoreGive(can_driver_mutex);
         return ESP_OK;
     }
 
@@ -53,17 +67,35 @@ esp_err_t can_init(void) {
         memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
         ESP_LOGI(can_log, "CAN speed set to 1000 kbps");
     } else if (board_cfg.can_speed_kbps == 500) {
-        // Default to 500 kbps (already configured above)
+        static const twai_timing_config_t temp_config = TWAI_TIMING_CONFIG_500KBITS();
+        memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
         ESP_LOGI(can_log, "CAN speed set to 500 kbps");
     } else {
         ESP_LOGW(can_log, "Invalid CAN speed %lu, defaulting to 500 kbps", board_cfg.can_speed_kbps);
-        // t_can_config already defaults to 500 kbps
+        static const twai_timing_config_t temp_config = TWAI_TIMING_CONFIG_500KBITS();
+        memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
+    }
+
+    if (board_cfg.can_relay_espnow_enabled) {
+        static const twai_filter_config_t accept_all = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+        memcpy(&f_config, &accept_all, sizeof(f_config));
+        can_config.rx_queue_len = 32;
+        ESP_LOGI(can_log, "CAN receive filter enabled for ESP-NOW relay");
+    } else {
+        static const twai_filter_config_t reject_all = {
+            .acceptance_code = 0xFFFFFFFF,
+            .acceptance_mask = 0x00000000,
+            .single_filter = true
+        };
+        memcpy(&f_config, &reject_all, sizeof(f_config));
+        can_config.rx_queue_len = 5;
     }
 
     // Install TWAI driver
     esp_err_t err = twai_driver_install_v2(&can_config, &t_can_config, &f_config, &twai_can);
     if (err != ESP_OK) {
         ESP_LOGE(can_log, "Failed to install TWAI driver: %s", esp_err_to_name(err));
+        xSemaphoreGive(can_driver_mutex);
         return ESP_FAIL;
     }
     ESP_LOGI(can_log, "TWAI driver installed");
@@ -74,18 +106,34 @@ esp_err_t can_init(void) {
         ESP_LOGE(can_log, "Failed to start TWAI driver: %s", esp_err_to_name(err));
         twai_driver_uninstall_v2(twai_can);
         twai_can = NULL;
+        xSemaphoreGive(can_driver_mutex);
         return ESP_FAIL;
     }
     ESP_LOGI(can_log, "TWAI driver started");
+    if (!board_cfg.can_enabled) {
+        ESP_LOGI(can_log, "CAN sensor transmission disabled; TWAI receive relay remains active");
+    }
 
     can_driver_active = true;
+    xSemaphoreGive(can_driver_mutex);
     return ESP_OK;
 }
 
 esp_err_t can_deinit(void) {
+    if (can_driver_mutex == NULL) {
+        can_driver_active = false;
+        twai_can = NULL;
+        return ESP_OK;
+    }
+
+    if (xSemaphoreTake(can_driver_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
     if (!can_driver_active || twai_can == NULL) {
         can_driver_active = false;
         twai_can = NULL;
+        xSemaphoreGive(can_driver_mutex);
         return ESP_OK;
     }
 
@@ -108,17 +156,22 @@ esp_err_t can_deinit(void) {
         ESP_LOGI(can_log, "TWAI driver stopped");
     }
 
+    xSemaphoreGive(can_driver_mutex);
     return first_err;
 }
 
 void can_transmit_frame(const twai_message_t *message, const char *label) {
     static TickType_t last_espnow_warn = 0;
 
-    if (board_cfg.can_enabled && can_driver_active) {
-        esp_err_t err = twai_transmit(message, pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) {
-            ESP_LOGW(can_log, "Failed to transmit %s via CAN: %s", label, esp_err_to_name(err));
+    if (board_cfg.can_enabled && can_driver_mutex != NULL &&
+        xSemaphoreTake(can_driver_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        if (can_driver_active && twai_can != NULL) {
+            esp_err_t err = twai_transmit_v2(twai_can, message, pdMS_TO_TICKS(1000));
+            if (err != ESP_OK) {
+                ESP_LOGW(can_log, "Failed to transmit %s via CAN: %s", label, esp_err_to_name(err));
+            }
         }
+        xSemaphoreGive(can_driver_mutex);
     }
 
     if (board_cfg.espnow_enabled) {
@@ -129,6 +182,105 @@ void can_transmit_frame(const twai_message_t *message, const char *label) {
                 ESP_LOGW(can_log, "Failed to transmit %s via ESP-NOW: %s", label, esp_err_to_name(err));
                 last_espnow_warn = now;
             }
+        }
+    }
+}
+
+void canRelayEspNow(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(can_log, "CAN to ESP-NOW relay task started");
+    ESP_LOGI(can_log, "CAN relay configuration: can_tx=%d espnow=%d relay=%d driver=%d",
+             board_cfg.can_enabled,
+             board_cfg.espnow_enabled,
+             board_cfg.can_relay_espnow_enabled,
+             can_driver_active);
+
+    twai_message_t pending_message = {0};
+    bool pending_valid = false;
+    bool first_frame_logged = false;
+    uint32_t received_count = 0;
+    uint32_t sent_count = 0;
+    uint32_t radio_busy_count = 0;
+    uint32_t send_error_count = 0;
+    TickType_t last_status_log = xTaskGetTickCount();
+
+    while (true) {
+        if (!board_cfg.espnow_enabled || !board_cfg.can_relay_espnow_enabled ||
+            can_driver_mutex == NULL) {
+            pending_valid = false;
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        esp_err_t receive_err = ESP_ERR_TIMEOUT;
+        if (!pending_valid && xSemaphoreTake(can_driver_mutex, 0) == pdTRUE) {
+            if (can_driver_active && twai_can != NULL) {
+                receive_err = twai_receive_v2(twai_can, &pending_message, 0);
+            }
+            xSemaphoreGive(can_driver_mutex);
+        }
+
+        if (receive_err == ESP_OK) {
+            pending_valid = true;
+            received_count++;
+            if (!first_frame_logged) {
+                ESP_LOGI(can_log, "CAN relay received first frame: id=0x%lX dlc=%u%s",
+                         (unsigned long)pending_message.identifier,
+                         (unsigned)pending_message.data_length_code,
+                         pending_message.extd ? " extended" : "");
+                first_frame_logged = true;
+            }
+        }
+
+        if (pending_valid) {
+            esp_err_t send_err = espnow_transport_try_relay_twai(&pending_message);
+            if (send_err == ESP_OK) {
+                sent_count++;
+                pending_valid = false;
+            } else if (send_err == ESP_ERR_TIMEOUT) {
+                radio_busy_count++;
+                vTaskDelay(pdMS_TO_TICKS(2));
+            } else {
+                send_error_count++;
+                pending_valid = false;
+            }
+        } else if (receive_err != ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        if ((now - last_status_log) >= pdMS_TO_TICKS(5000)) {
+            twai_status_info_t status = {0};
+            bool have_status = false;
+            if (xSemaphoreTake(can_driver_mutex, 0) == pdTRUE) {
+                if (can_driver_active && twai_can != NULL &&
+                    twai_get_status_info_v2(twai_can, &status) == ESP_OK) {
+                    have_status = true;
+                }
+                xSemaphoreGive(can_driver_mutex);
+            }
+
+            if (have_status) {
+                ESP_LOGI(can_log,
+                         "CAN relay status: rx=%lu sent=%lu radio_busy=%lu send_errors=%lu queued=%lu missed=%lu overrun=%lu state=%d",
+                         (unsigned long)received_count,
+                         (unsigned long)sent_count,
+                         (unsigned long)radio_busy_count,
+                         (unsigned long)send_error_count,
+                         (unsigned long)status.msgs_to_rx,
+                         (unsigned long)status.rx_missed_count,
+                         (unsigned long)status.rx_overrun_count,
+                         (int)status.state);
+            } else {
+                ESP_LOGI(can_log,
+                         "CAN relay status: rx=%lu sent=%lu radio_busy=%lu send_errors=%lu",
+                         (unsigned long)received_count,
+                         (unsigned long)sent_count,
+                         (unsigned long)radio_busy_count,
+                         (unsigned long)send_error_count);
+            }
+            last_status_log = now;
         }
     }
 }

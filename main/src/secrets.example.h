@@ -1,0 +1,3 @@
+#pragma once
+
+#define PREFERRED_WIFI_PASS "REPLACE_WITH_WIFI_PASSWORD"

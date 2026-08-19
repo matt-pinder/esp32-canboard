@@ -2,7 +2,7 @@
 #define HTTP_SERVER_H
 
 /// @brief Start HTTP server with REST API endpoints and SPIFFS mount
-/// Serves index.html from SPIFFS and provides REST API for:
+/// Serves index.min.html.gz from SPIFFS and provides REST API for:
 /// - GET /api/config: Retrieve current board configuration
 /// - POST /api/config: Update board configuration
 /// - POST /api/reboot: Reboot the device

@@ -12,6 +12,10 @@
 * Optional per-channel median filtering with selectable strength (none/low/med/high) to reduce noise
 * Small PCB Footprint - 40mm x 60mm
 
+## Build requirement
+
+This project targets ESP-IDF 6.0.2. Activate the 6.0.2 environment before running any `idf.py` command; `main/idf_component.yml` and `dependencies.lock` enforce that toolchain version.
+
 ## Device Configuration
 
 On each boot the board enables a WiFi access point and web configuration interface; this will automatically disable after 120 seconds if no client connects. 
@@ -24,6 +28,7 @@ The web UI allows you to:
 
 - View and edit per-channel settings (name, sensor type, pull-up, **filter level** dropdown, pressure calibration).
 - Configure required CAN parameters - Base ID and bus speed.
+- Configure CAN and ESP-NOW output, including optional CAN bus relay over ESP-NOW.
 - Adjust pullup vref calculation voltage to allow for LDO regulator output/load.
 - View current input voltages and calculated values in real time.
 - Backup the entire configuration to a JSON file.
@@ -33,13 +38,16 @@ The web UI allows you to:
 
 | Function | Description |
 |:----|:----|
-| Save Config | Save current UI settings to device storage (`/spiffs/config.bin`). Changes are validated, persisted and applied immediately. |
+| Save Config | Save current UI settings to the dedicated `config` NVS partition. Changes are validated, persisted and applied immediately. |
 | Backup | Download a JSON snapshot of the current configuration. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
-| Restore | Select a previously exported JSON file. The UI will upload the JSON to the device and validate the payload. The existing configuration is backed up on the device before overwrite; if saving the imported file fails, the device will restore the previous configuration. |
+| Restore | Select a previously exported JSON file. The UI validates it, backs up the previous valid NVS record, commits the replacement, and verifies it by reading it back. |
 | Reboot Device | Reboots the device. |
 
 **Notes:**
-- Configuration is persisted on SPIFFS at `/spiffs/config.bin` (binary) and the web UI uses JSON export/import for human-readable backups.
+- Configuration is persisted in the dedicated `config` NVS partition. The web UI uses JSON export/import for human-readable backups.
+- On boot, firmware automatically imports a valid legacy `/spiffs/config.bin` into NVS when one is still present and verifies the committed record. The legacy file is left untouched.
+- Normal `idf.py flash` updates the application and SPIFFS web assets, but does not write the dedicated `config` partition. Before the first upgrade from a SPIFFS-stored configuration, export a JSON backup (or flash/boot the migration firmware without its SPIFFS target once); a normal project flash replaces the old shared SPIFFS image before firmware can import its config file.
+- `erase-flash`, whole-chip images, or explicitly flashing address `0x200000` will still erase configuration; ordinary application/partition-table flashing will not.
 - After restoring a new configuration via the web UI the changes are applied immediately.
 
 
@@ -65,11 +73,19 @@ Encoding rules for dynamic values (one per input):
 
 Example DBC for signal names and scaling: [dbc/esp32-canboard.dbc](dbc/esp32-canboard.dbc)
 
+### CAN relay over ESP-NOW
+
+When ESP-NOW and **Relay CAN bus** are enabled, externally received CAN frames are sent byte-for-byte to the configured ESP-NOW target as `twai_message_t` values. Physical CAN transmission of the board's own sensor frames may remain disabled; the TWAI controller and CAN speed setting remain active for receiving relay traffic. The CAN receive filter is enabled only while relay mode is active.
+
+Relay traffic is best-effort and lower priority than the board's sensor and GPS output. A received frame remains pending while the ESP-NOW sender is occupied, without blocking ADC sampling or locally generated transmissions. A heavily loaded CAN bus can still produce traffic faster than the receive queue and ESP-NOW link can forward it.
+
+ESP-NOW and the local configuration access point use Wi-Fi channel 1. The receiving ESP-NOW device must also operate on channel 1.
+
 ## Dragy GPS Output
 
 When GPS is enabled, the board scans for the configured Dragy BLE MAC, connects to service `FD00`, performs the `FD03` challenge response, and decodes checksum-valid UBX NAV-PVT packets from `FD02`. Valid fixes are published at the GPS update rate; a connected no-fix stream publishes only the status frame, limited to 1 Hz. BLE discovery, decoding, and publishing run independently from ADC sampling and the existing sensor transmit task.
 
-GPS uses four standard 11-bit CAN frames starting at the configured GPS base ID. All multi-byte values are little-endian and retain the native UBX scaling.
+Dragy output uses six standard 11-bit CAN frames starting at the configured GPS base ID. All multi-byte values are little-endian. GPS fields retain their native UBX scaling and IMU fields contain unscaled signed raw counts.
 
 | CAN ID | Bytes | Type | Value |
 |:---|:---|:---|:---|
@@ -84,8 +100,40 @@ GPS uses four standard 11-bit CAN frames starting at the configured GPS base ID.
 | GPS Base ID + 2 | 4..7 | int32 | Longitude in degrees x 10,000,000 |
 | GPS Base ID + 3 | 0..3 | int32 | Mean-sea-level altitude in mm |
 | GPS Base ID + 3 | 4..7 | uint32 | GPS time of week in ms |
+| GPS Base ID + 4 | 0..2 | uint24 | FD05 sample counter |
+| GPS Base ID + 4 | 3 | uint8 | FD05 record marker (`0xE1`) |
+| GPS Base ID + 4 | 4..5 | int16 | Raw accelerometer X |
+| GPS Base ID + 4 | 6..7 | int16 | Raw accelerometer Y |
+| GPS Base ID + 5 | 0..1 | int16 | Raw accelerometer Z |
+| GPS Base ID + 5 | 2..3 | int16 | Raw gyroscope X |
+| GPS Base ID + 5 | 4..5 | int16 | Raw gyroscope Y |
+| GPS Base ID + 5 | 6..7 | int16 | Raw gyroscope Z |
 
 The Dragy BLE handshake and stream format are based on the experimental [DragyDash ESP32 protocol notes](https://github.com/jremick/dragy-dash-esp32/blob/main/docs/DRAGY_PROTOCOL.md).
+
+### Dragy Pro IMU capture (experimental)
+
+Testing with a Dragy Pro DRG71 found an undocumented IMU notification stream on characteristic `FD05`. Notifications contain one or more 16-byte records:
+
+| Bytes | Encoding | Observed value |
+|:---|:---|:---|
+| 0..2 | uint24, big-endian | Sample counter, increasing by 12 per sample |
+| 3 | uint8 | Record marker (`0xE1`) |
+| 4..9 | 3 x int16, big-endian | Accelerometer X/Y/Z |
+| 10..15 | 3 x int16, big-endian | Gyroscope X/Y/Z |
+
+[`tools/dragy_imu_capture.py`](tools/dragy_imu_capture.py) connects directly from a host using [Bleak](https://github.com/hbldh/bleak), performs the existing `FD03` challenge response, subscribes to `FD05`, and writes the decoded samples to CSV:
+
+```sh
+python3 -m pip install bleak
+python3 tools/dragy_imu_capture.py --duration 20 --output dragy_imu.csv
+```
+
+The observed stream rate is approximately 14.5 Hz. The CSV's acceleration conversion currently uses a provisional scale of 4096 counts/g; gyroscope values remain raw until the scale and axis orientation have been calibrated. Disconnect the Dragy mobile app and ESP32 first because the Dragy may only accept one BLE central connection at a time.
+
+When GPS is enabled in the ESP32 configuration, the firmware subscribes to `FD05` alongside `FD02` and publishes every queued IMU record on CAN IDs `GPS Base ID + 4` and `GPS Base ID + 5`. The full counter, marker, and six raw channels are retained so a CAN log can be aligned with a second Dragy's app output for calibration.
+
+The example DBC includes all six Dragy messages at `0x650` through `0x655`, corresponding to the default GPS base ID of `0x650`. GPS fields are converted to metres, m/s, degrees, and seconds by the DBC, while IMU fields remain raw counts. Update those message IDs if a different GPS base ID is configured.
 
 ## Schematic
 [View PDF](docs/esp32-canboard-schematic.pdf)

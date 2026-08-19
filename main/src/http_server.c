@@ -73,6 +73,11 @@ static bool read_transport_config(cJSON *root, board_config_t *cfg) {
         cfg->espnow_enabled = cJSON_IsTrue(espnow_enabled);
     }
 
+    cJSON *can_relay_espnow_enabled = cJSON_GetObjectItem(root, "can_relay_espnow_enabled");
+    if (can_relay_espnow_enabled && cJSON_IsBool(can_relay_espnow_enabled)) {
+        cfg->can_relay_espnow_enabled = cJSON_IsTrue(can_relay_espnow_enabled);
+    }
+
     cJSON *espnow_mac = cJSON_GetObjectItem(root, "espnow_target_mac");
     if (espnow_mac && cJSON_IsString(espnow_mac)) {
         if (espnow_mac->valuestring == NULL || espnow_mac->valuestring[0] == '\0') {
@@ -84,6 +89,9 @@ static bool read_transport_config(cJSON *root, board_config_t *cfg) {
 
     uint8_t zero_mac[ESP_NOW_ETH_ALEN] = {0};
     if (cfg->espnow_enabled && memcmp(cfg->espnow_target_mac, zero_mac, ESP_NOW_ETH_ALEN) == 0) {
+        return false;
+    }
+    if (cfg->can_relay_espnow_enabled && !cfg->espnow_enabled) {
         return false;
     }
 
@@ -117,7 +125,7 @@ static bool read_gps_config(cJSON *root, board_config_t *cfg) {
         }
     }
 
-    if (cfg->gps_can_start_id > 0x7FC) {
+    if (cfg->gps_can_start_id > 0x7FA) {
         return false;
     }
 
@@ -136,7 +144,8 @@ static bool apply_runtime_config(const board_config_t *cfg) {
 
     board_config_t previous_cfg = board_cfg;
     bool can_changed = (previous_cfg.can_enabled != cfg->can_enabled) ||
-                       (previous_cfg.can_speed_kbps != cfg->can_speed_kbps);
+                       (previous_cfg.can_speed_kbps != cfg->can_speed_kbps) ||
+                       (previous_cfg.can_relay_espnow_enabled != cfg->can_relay_espnow_enabled);
     bool espnow_changed = (previous_cfg.espnow_enabled != cfg->espnow_enabled) ||
                           (memcmp(previous_cfg.espnow_target_mac, cfg->espnow_target_mac, ESP_NOW_ETH_ALEN) != 0);
     bool gps_changed = (previous_cfg.gps_enabled != cfg->gps_enabled) ||
@@ -160,8 +169,9 @@ static bool apply_runtime_config(const board_config_t *cfg) {
             }
             return false;
         }
-        ESP_LOGI(TAG, "Runtime CAN settings updated: enabled=%d speed=%lu kbps",
-                 board_cfg.can_enabled, (unsigned long)board_cfg.can_speed_kbps);
+        ESP_LOGI(TAG, "Runtime CAN settings updated: enabled=%d speed=%lu kbps relay_to_espnow=%d",
+                 board_cfg.can_enabled, (unsigned long)board_cfg.can_speed_kbps,
+                 board_cfg.can_relay_espnow_enabled);
     }
 
     if (espnow_changed) {
@@ -205,54 +215,41 @@ static void delayed_restart_task(void *arg) {
 }
 
 /**
- * @brief HTTP GET handler for index.html
- * Serves the web UI from SPIFFS. Supports both standard requests and wildcard routes.
+ * @brief HTTP GET handler for the pre-compressed web UI
+ * Streams the gzipped HTML asset from SPIFFS for standard and wildcard routes.
  * @param req HTTP request context
- * @return ESP_OK on success, ESP_FAIL on file not found or allocation error
+ * @return ESP_OK on success, ESP_FAIL on file or response errors
  */
 esp_err_t index_get_handler(httpd_req_t *req) {
     notify_client_connected();
-    FILE *f = fopen("/spiffs/index.html", "r");
+    FILE *f = fopen("/spiffs/index.min.html.gz", "rb");
     if (!f) {
-        ESP_LOGW(TAG, "Failed to open index.html");
+        ESP_LOGW(TAG, "Failed to open index.min.html.gz");
         httpd_resp_send_404(req);
         return ESP_FAIL;
     }
-    
-    // Get file size
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    
-    if (size <= 0 || size > 65536) {  // Arbitrary limit to prevent massive allocations
-        ESP_LOGE(TAG, "Invalid file size: %ld", size);
-        fclose(f);
-        httpd_resp_send_404(req);
-        return ESP_FAIL;
-    }
-    
-    char *buf = malloc(size);
-    if (!buf) {
-        ESP_LOGE(TAG, "Failed to allocate memory for file");
-        fclose(f);
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-    
-    size_t read = fread(buf, 1, size, f);
-    fclose(f);
-    
-    if (read != (size_t)size) {
-        ESP_LOGE(TAG, "Failed to read entire file");
-        free(buf);
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-    
+
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, buf, size);
-    free(buf);
-    return ESP_OK;
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+
+    uint8_t chunk[1024];
+    size_t bytes_read;
+    while ((bytes_read = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+        if (httpd_resp_send_chunk(req, (const char *)chunk, bytes_read) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed while streaming compressed web UI");
+            fclose(f);
+            return ESP_FAIL;
+        }
+    }
+
+    if (ferror(f)) {
+        ESP_LOGE(TAG, "Failed while reading compressed web UI");
+        fclose(f);
+        return ESP_FAIL;
+    }
+
+    fclose(f);
+    return httpd_resp_send_chunk(req, NULL, 0);
 }
 
 /**
@@ -282,12 +279,13 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     
     // Start JSON object including persisted board and transport configuration.
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"can_relay_espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg.can_enabled ? "true" : "false",
         (unsigned long)cfg.can_speed_kbps,
         (unsigned long)cfg.can_start_id,
         (unsigned)cfg.can_tx_hz,
         cfg.espnow_enabled ? "true" : "false",
+        cfg.can_relay_espnow_enabled ? "true" : "false",
         espnow_mac,
         cfg.gps_enabled ? "true" : "false",
         (unsigned long)cfg.gps_can_start_id,
@@ -339,7 +337,7 @@ esp_err_t config_get_handler(httpd_req_t *req) {
 
 /**
  * @brief HTTP POST handler for board configuration update (POST /api/config)
- * Accepts JSON configuration and validates all channel settings before persisting to SPIFFS.
+ * Accepts JSON configuration and validates all channel settings before persisting to NVS.
  * @param req HTTP request context
  * @return ESP_OK on successful save, ESP_FAIL on JSON parse error or config validation failure
  */
@@ -729,15 +727,25 @@ esp_err_t live_values_get_handler(httpd_req_t *req) {
  * (GET /api/config/export.json)
  */
 esp_err_t config_export_get_handler(httpd_req_t *req) {
-    board_config_t cfg = {0};
-    if (!config_load(&cfg)) {
+    // Keep the configuration off the HTTP server task's relatively small stack.
+    // config_load() also uses configuration-sized working buffers, and nesting
+    // all of them on this stack can corrupt it when the load path logs details.
+    board_config_t *cfg = calloc(1, sizeof(*cfg));
+    if (!cfg) {
+        ESP_LOGE(TAG, "Failed to allocate export configuration");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    if (!config_load(cfg)) {
         ESP_LOGW(TAG, "Failed to load persisted config for export; using runtime config");
-        cfg = board_cfg;
+        *cfg = board_cfg;
     }
 
     char *json = malloc(4096);
     if (!json) {
         ESP_LOGE(TAG, "Failed to allocate JSON buffer");
+        free(cfg);
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
@@ -746,41 +754,42 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
     const size_t json_max = 4096;
     char espnow_mac[18];
     char gps_mac[18];
-    format_mac(cfg.espnow_target_mac, espnow_mac, sizeof(espnow_mac));
-    format_mac(cfg.gps_target_mac, gps_mac, sizeof(gps_mac));
+    format_mac(cfg->espnow_target_mac, espnow_mac, sizeof(espnow_mac));
+    format_mac(cfg->gps_target_mac, gps_mac, sizeof(gps_mac));
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
-        cfg.can_enabled ? "true" : "false",
-        (unsigned long)cfg.can_speed_kbps,
-        (unsigned long)cfg.can_start_id,
-        (unsigned)cfg.can_tx_hz,
-        cfg.espnow_enabled ? "true" : "false",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"can_relay_espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        cfg->can_enabled ? "true" : "false",
+        (unsigned long)cfg->can_speed_kbps,
+        (unsigned long)cfg->can_start_id,
+        (unsigned)cfg->can_tx_hz,
+        cfg->espnow_enabled ? "true" : "false",
+        cfg->can_relay_espnow_enabled ? "true" : "false",
         espnow_mac,
-        cfg.gps_enabled ? "true" : "false",
-        (unsigned long)cfg.gps_can_start_id,
+        cfg->gps_enabled ? "true" : "false",
+        (unsigned long)cfg->gps_can_start_id,
         gps_mac,
-        (unsigned)cfg.pullup_vref_divider_high_ohm);
+        (unsigned)cfg->pullup_vref_divider_high_ohm);
 
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
         json_pos += snprintf(json + json_pos, json_max - json_pos,
             "%s{\"name\":\"%s\",\"pullup_ohms\":%lu,\"type\":%u,\"filtering\":%d,\"emub_tx\":%u,\"params\":{",
             i ? "," : "",
-            cfg.channels[i].name,
-            (unsigned long)cfg.channels[i].pullup_ohms,
-            cfg.channels[i].type,
-            cfg.channels[i].filtering,
-            cfg.channels[i].emub_tx);
+            cfg->channels[i].name,
+            (unsigned long)cfg->channels[i].pullup_ohms,
+            cfg->channels[i].type,
+            cfg->channels[i].filtering,
+            cfg->channels[i].emub_tx);
 
-        if (cfg.channels[i].type == SENSOR_NTC) {
+        if (cfg->channels[i].type == SENSOR_NTC) {
             json_pos += snprintf(json + json_pos, json_max - json_pos,
-                "\"ntc\":{\"table_id\":%u}}}", cfg.channels[i].params.ntc.table_id);
-        } else if (cfg.channels[i].type == SENSOR_PRESSURE) {
+                "\"ntc\":{\"table_id\":%u}}}", cfg->channels[i].params.ntc.table_id);
+        } else if (cfg->channels[i].type == SENSOR_PRESSURE) {
             json_pos += snprintf(json + json_pos, json_max - json_pos,
                 "\"pressure\":{\"min_mv\":%u,\"max_mv\":%u,\"min_kpa\":%.2f,\"max_kpa\":%.2f}}}",
-                cfg.channels[i].params.pressure.min_mv,
-                cfg.channels[i].params.pressure.max_mv,
-                cfg.channels[i].params.pressure.min_kpa,
-                cfg.channels[i].params.pressure.max_kpa);
+                cfg->channels[i].params.pressure.min_mv,
+                cfg->channels[i].params.pressure.max_mv,
+                cfg->channels[i].params.pressure.min_kpa,
+                cfg->channels[i].params.pressure.max_kpa);
         } else {
             json_pos += snprintf(json + json_pos, json_max - json_pos, "\"raw\":{}}}");
         }
@@ -788,6 +797,7 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
         if (json_pos >= json_max - 100) {
             ESP_LOGE(TAG, "JSON buffer overflow (export)");
             free(json);
+            free(cfg);
             httpd_resp_send_500(req);
             return ESP_FAIL;
         }
@@ -800,6 +810,7 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
     httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=esp32-canboard-config.json");
     httpd_resp_send(req, json, strlen(json));
     free(json);
+    free(cfg);
     return ESP_OK;
 }
 
@@ -984,23 +995,11 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
     }
     cfg.pullup_vref_mv = board_cfg.pullup_vref_mv;
 
-    // Backup existing config file before overwrite
-    const char *path = "/spiffs/config.bin";
-    const char *bak = "/spiffs/config.bin.bak";
-    // Remove any stale backup
-    remove(bak);
-    if (rename(path, bak) != 0) {
-        ESP_LOGW(TAG, "No existing config to backup or rename failed (non-fatal)");
-    } else {
-        ESP_LOGI(TAG, "Existing config backed up to %s", bak);
-    }
-
-    // Try to save new config
+    // config_save() commits the previous valid NVS record to its backup key
+    // before replacing the active record.
     bool saved = config_save(&cfg);
     if (!saved) {
-        ESP_LOGE(TAG, "Failed to save imported configuration; attempting restore");
-        // Attempt restore from backup
-        rename(bak, path);
+        ESP_LOGE(TAG, "Failed to save imported configuration");
         cJSON_Delete(root);
         free(buf);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save imported config");
@@ -1085,7 +1084,7 @@ void start_http_server(void) {
         .base_path = "/spiffs",
         .partition_label = NULL,
         .max_files = 5,
-        .format_if_mount_failed = true
+        .format_if_mount_failed = false
     });
 
     if (ret == ESP_ERR_INVALID_STATE) {
@@ -1101,6 +1100,9 @@ void start_http_server(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_uri_handlers = 12;
+    // Allow larger responses, such as the configuration UI, to traverse a
+    // slower infrastructure WiFi path without hitting the 5-second default.
+    config.send_wait_timeout = 15;
     
     ret = httpd_start(&server, &config);
     if (ret != ESP_OK) {

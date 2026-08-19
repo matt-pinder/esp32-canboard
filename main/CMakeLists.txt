@@ -23,5 +23,7 @@ idf_component_register(SRCS "main.c"
                              spiffs
                              espressif__cjson)
 
-# Create SPIFFS image from spiffs folder
+# Web assets remain part of the normal project flash. Persistent board settings
+# live in the separate `config` NVS partition, which has no FLASH_IN_PROJECT
+# image and is initialized/mounted by config.c at runtime.
 spiffs_create_partition_image(spiffs ./spiffs FLASH_IN_PROJECT)

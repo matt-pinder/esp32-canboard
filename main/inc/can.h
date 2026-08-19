@@ -57,3 +57,6 @@ void can_transmit_frame(const twai_message_t *message, const char *label);
 /// All voltages encoded as uint16_t little-endian, 0.001V scale.
 /// @param arg Unused FreeRTOS task parameter
 void canTransmit(void *arg);
+
+/// @brief Low-priority task that relays received CAN frames through ESP-NOW.
+void canRelayEspNow(void *arg);

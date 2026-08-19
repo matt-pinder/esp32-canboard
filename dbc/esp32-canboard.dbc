@@ -74,8 +74,41 @@ BO_ 20 dynamicSignals_2: 8 Vector__XXX
  SG_ dyn8_value : 32|16@1+ (0.01,0) [0|655.35] "kPa" Vector__XXX
  SG_ dyn9_value : 48|16@1+ (0.01,0) [0|655.35] "kPa" Vector__XXX
 
+BO_ 1616 dragyGpsStatus: 8 Vector__XXX
+ SG_ dragyFixType : 0|8@1+ (1,0) [0|5] "" Vector__XXX
+ SG_ dragyUbxFlags : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ dragySatelliteCount : 16|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ dragyBatteryPercent : 24|8@1+ (1,0) [0|255] "%" Vector__XXX
+ SG_ dragyHorizontalAccuracy : 32|32@1+ (0.001,0) [0|4294967.295] "m" Vector__XXX
+
+BO_ 1617 dragyGpsMotion: 8 Vector__XXX
+ SG_ dragyGroundSpeed : 0|32@1+ (0.001,0) [0|4294967.295] "m/s" Vector__XXX
+ SG_ dragyHeadingOfMotion : 32|32@1- (0.00001,0) [-21474.83648|21474.83647] "deg" Vector__XXX
+
+BO_ 1618 dragyGpsPosition: 8 Vector__XXX
+ SG_ dragyLatitude : 0|32@1- (0.0000001,0) [-214.7483648|214.7483647] "deg" Vector__XXX
+ SG_ dragyLongitude : 32|32@1- (0.0000001,0) [-214.7483648|214.7483647] "deg" Vector__XXX
+
+BO_ 1619 dragyGpsAltitudeTime: 8 Vector__XXX
+ SG_ dragyAltitudeMsl : 0|32@1- (0.001,0) [-2147483.648|2147483.647] "m" Vector__XXX
+ SG_ dragyGpsTimeOfWeek : 32|32@1+ (0.001,0) [0|4294967.295] "s" Vector__XXX
+
+BO_ 1620 dragyImuAccelXY: 8 Vector__XXX
+ SG_ dragyImuCounter : 0|24@1+ (1,0) [0|16777215] "" Vector__XXX
+ SG_ dragyImuMarker : 24|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ dragyAccelXRaw : 32|16@1- (1,0) [-32768|32767] "count" Vector__XXX
+ SG_ dragyAccelYRaw : 48|16@1- (1,0) [-32768|32767] "count" Vector__XXX
+
+BO_ 1621 dragyImuAccelZGyro: 8 Vector__XXX
+ SG_ dragyAccelZRaw : 0|16@1- (1,0) [-32768|32767] "count" Vector__XXX
+ SG_ dragyGyroXRaw : 16|16@1- (1,0) [-32768|32767] "count" Vector__XXX
+ SG_ dragyGyroYRaw : 32|16@1- (1,0) [-32768|32767] "count" Vector__XXX
+ SG_ dragyGyroZRaw : 48|16@1- (1,0) [-32768|32767] "count" Vector__XXX
+
 
 
 CM_ SG_ 18 dyn0_value "Example: Pressure";
 CM_ SG_ 18 dyn1_value "Example: NTC";
-
+CM_ SG_ 1616 dragyUbxFlags "UBX NAV-PVT flags; bit 0 is gnssFixOK.";
+CM_ SG_ 1616 dragyBatteryPercent "A raw value of 255 means the battery value is unavailable.";
+VAL_ 1616 dragyFixType 0 "No Fix" 1 "Dead Reckoning Only" 2 "2D Fix" 3 "3D Fix" 4 "GNSS + Dead Reckoning" 5 "Time Only";

@@ -67,7 +67,25 @@ esp_err_t espnow_transport_start(void)
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_err_t err = ESP_OK;
+    esp_err_t err = esp_wifi_set_channel(ESPNOW_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to set ESP-NOW WiFi channel %d: %s",
+                 ESPNOW_WIFI_CHANNEL, esp_err_to_name(err));
+        return err;
+    }
+
+    uint8_t primary_channel = 0;
+    wifi_second_chan_t secondary_channel = WIFI_SECOND_CHAN_NONE;
+    err = esp_wifi_get_channel(&primary_channel, &secondary_channel);
+    if (err != ESP_OK || primary_channel != ESPNOW_WIFI_CHANNEL)
+    {
+        ESP_LOGE(TAG, "ESP-NOW WiFi channel verification failed: expected=%d actual=%u error=%s",
+                 ESPNOW_WIFI_CHANNEL, (unsigned)primary_channel, esp_err_to_name(err));
+        return err == ESP_OK ? ESP_ERR_INVALID_STATE : err;
+    }
+    ESP_LOGI(TAG, "ESP-NOW WiFi channel fixed to %u", (unsigned)primary_channel);
+
     if (!espnow_started)
     {
         if (send_done_sem == NULL)
@@ -117,7 +135,7 @@ esp_err_t espnow_transport_start(void)
 
     esp_now_peer_info_t peer_info = {0};
     memcpy(peer_info.peer_addr, board_cfg.espnow_target_mac, ESP_NOW_ETH_ALEN);
-    peer_info.channel = 0;
+    peer_info.channel = ESPNOW_WIFI_CHANNEL;
     peer_info.ifidx = WIFI_IF_STA;
     peer_info.encrypt = false;
 
@@ -214,5 +232,28 @@ esp_err_t espnow_transport_send_twai(const twai_message_t *message)
     }
 
     xSemaphoreGive(send_done_sem);
+    return err;
+}
+
+esp_err_t espnow_transport_try_relay_twai(const twai_message_t *message)
+{
+    if (!board_cfg.espnow_enabled || !board_cfg.can_relay_espnow_enabled ||
+        !espnow_started || message == NULL || send_done_sem == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (xSemaphoreTake(send_done_sem, 0) != pdTRUE)
+    {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    esp_err_t err = esp_now_send(board_cfg.espnow_target_mac,
+                                 (const uint8_t *)message,
+                                 sizeof(*message));
+    if (err != ESP_OK)
+    {
+        xSemaphoreGive(send_done_sem);
+    }
     return err;
 }
