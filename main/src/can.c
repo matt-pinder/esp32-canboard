@@ -31,7 +31,7 @@ twai_general_config_t can_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, 
  * @return ESP_OK on success, ESP_FAIL on driver initialization error
  */
 esp_err_t can_init(void) {
-    if (!board_cfg.can_enabled && !board_cfg.can_relay_espnow_enabled) {
+    if (!board_cfg.can_enabled && !config_has_espnow_relay_client(&board_cfg)) {
         ESP_LOGI(can_log, "CAN transmission and relay disabled; TWAI driver not started");
         return ESP_OK;
     }
@@ -76,10 +76,10 @@ esp_err_t can_init(void) {
         memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
     }
 
-    if (board_cfg.can_relay_espnow_enabled) {
+    if (config_has_espnow_relay_client(&board_cfg)) {
         static const twai_filter_config_t accept_all = TWAI_FILTER_CONFIG_ACCEPT_ALL();
         memcpy(&f_config, &accept_all, sizeof(f_config));
-        can_config.rx_queue_len = 32;
+        can_config.rx_queue_len = 128;
         ESP_LOGI(can_log, "CAN receive filter enabled for ESP-NOW relay");
     } else {
         static const twai_filter_config_t reject_all = {
@@ -175,7 +175,7 @@ void can_transmit_frame(const twai_message_t *message, const char *label) {
     }
 
     if (board_cfg.espnow_enabled) {
-        esp_err_t err = espnow_transport_send_twai(message);
+        esp_err_t err = espnow_transport_enqueue_twai(message);
         if (err != ESP_OK) {
             TickType_t now = xTaskGetTickCount();
             if (last_espnow_warn == 0 || (now - last_espnow_warn) >= pdMS_TO_TICKS(1000)) {
@@ -193,60 +193,50 @@ void canRelayEspNow(void *arg)
     ESP_LOGI(can_log, "CAN relay configuration: can_tx=%d espnow=%d relay=%d driver=%d",
              board_cfg.can_enabled,
              board_cfg.espnow_enabled,
-             board_cfg.can_relay_espnow_enabled,
+             config_has_espnow_relay_client(&board_cfg),
              can_driver_active);
 
-    twai_message_t pending_message = {0};
-    bool pending_valid = false;
     bool first_frame_logged = false;
     uint32_t received_count = 0;
-    uint32_t sent_count = 0;
-    uint32_t radio_busy_count = 0;
-    uint32_t send_error_count = 0;
+    uint32_t enqueue_error_count = 0;
     TickType_t last_status_log = xTaskGetTickCount();
 
     while (true) {
-        if (!board_cfg.espnow_enabled || !board_cfg.can_relay_espnow_enabled ||
+        if (!config_has_espnow_relay_client(&board_cfg) ||
             can_driver_mutex == NULL) {
-            pending_valid = false;
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
-        esp_err_t receive_err = ESP_ERR_TIMEOUT;
-        if (!pending_valid && xSemaphoreTake(can_driver_mutex, 0) == pdTRUE) {
+        uint32_t drained = 0U;
+        while (drained < 32U) {
+            twai_message_t message = {0};
+            esp_err_t receive_err = ESP_ERR_TIMEOUT;
+            if (xSemaphoreTake(can_driver_mutex, 0) != pdTRUE) {
+                break;
+            }
             if (can_driver_active && twai_can != NULL) {
-                receive_err = twai_receive_v2(twai_can, &pending_message, 0);
+                receive_err = twai_receive_v2(twai_can, &message, 0);
             }
             xSemaphoreGive(can_driver_mutex);
-        }
-
-        if (receive_err == ESP_OK) {
-            pending_valid = true;
+            if (receive_err != ESP_OK) {
+                break;
+            }
+            drained++;
             received_count++;
             if (!first_frame_logged) {
                 ESP_LOGI(can_log, "CAN relay received first frame: id=0x%lX dlc=%u%s",
-                         (unsigned long)pending_message.identifier,
-                         (unsigned)pending_message.data_length_code,
-                         pending_message.extd ? " extended" : "");
+                         (unsigned long)message.identifier,
+                         (unsigned)message.data_length_code,
+                         message.extd ? " extended" : "");
                 first_frame_logged = true;
             }
-        }
-
-        if (pending_valid) {
-            esp_err_t send_err = espnow_transport_try_relay_twai(&pending_message);
-            if (send_err == ESP_OK) {
-                sent_count++;
-                pending_valid = false;
-            } else if (send_err == ESP_ERR_TIMEOUT) {
-                radio_busy_count++;
-                vTaskDelay(pdMS_TO_TICKS(2));
-            } else {
-                send_error_count++;
-                pending_valid = false;
+            if (espnow_transport_enqueue_relay_twai(&message) != ESP_OK) {
+                enqueue_error_count++;
             }
-        } else if (receive_err != ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+        if (drained == 0U || drained == 32U) {
+            vTaskDelay(1);
         }
 
         TickType_t now = xTaskGetTickCount();
@@ -263,22 +253,18 @@ void canRelayEspNow(void *arg)
 
             if (have_status) {
                 ESP_LOGI(can_log,
-                         "CAN relay status: rx=%lu sent=%lu radio_busy=%lu send_errors=%lu queued=%lu missed=%lu overrun=%lu state=%d",
+                         "CAN relay status: rx=%lu enqueue_errors=%lu queued=%lu missed=%lu overrun=%lu state=%d",
                          (unsigned long)received_count,
-                         (unsigned long)sent_count,
-                         (unsigned long)radio_busy_count,
-                         (unsigned long)send_error_count,
+                         (unsigned long)enqueue_error_count,
                          (unsigned long)status.msgs_to_rx,
                          (unsigned long)status.rx_missed_count,
                          (unsigned long)status.rx_overrun_count,
                          (int)status.state);
             } else {
                 ESP_LOGI(can_log,
-                         "CAN relay status: rx=%lu sent=%lu radio_busy=%lu send_errors=%lu",
+                         "CAN relay status: rx=%lu enqueue_errors=%lu",
                          (unsigned long)received_count,
-                         (unsigned long)sent_count,
-                         (unsigned long)radio_busy_count,
-                         (unsigned long)send_error_count);
+                         (unsigned long)enqueue_error_count);
             }
             last_status_log = now;
         }

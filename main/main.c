@@ -113,9 +113,9 @@ void app_main(void)
         abort();
     }
 
-    // Relay external CAN traffic below the priority of sensor and GPS publishing.
+    // Rapidly drain physical CAN below sensor publishing and above radio batching.
     task_result = xTaskCreatePinnedToCore(
-        canRelayEspNow, "canRelayEspNow", 4096, NULL, 4, NULL, 0);
+        canRelayEspNow, "canRelayEspNow", 4096, NULL, 9, NULL, 0);
     if (task_result != pdPASS) {
         ESP_LOGE(log_tag, "Failed to create CAN relay task!");
         abort();

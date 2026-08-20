@@ -7,7 +7,8 @@
 
 #define CONFIG_CHANNELS 10       ///< Number of ADC input channels
 #define CONFIG_NAME_LEN 32      ///< Maximum characters for channel name
-#define CONFIG_VERSION 10       ///< Configuration structure version number (increment for new fields or layout changes)
+#define CONFIG_VERSION 11       ///< Configuration structure version number (increment for new fields or layout changes)
+#define ESPNOW_MAX_CLIENTS 4    ///< Maximum number of unencrypted ESP-NOW destinations
 
 /// Per-channel median filter strength levels
 /// stored in the 8‑bit `filtering` field below.
@@ -60,6 +61,11 @@ typedef struct {
     } params;
 } channel_config_t;
 
+typedef struct {
+    uint8_t mac[ESP_NOW_ETH_ALEN]; ///< Destination STA MAC address
+    bool relay_can;                ///< Include frames received from the physical CAN bus
+} espnow_client_config_t;
+
 /// Runtime board configuration used by the firmware.
 /// `pullup_vref_mv` is a live ADC-derived measurement and is not persisted.
 typedef struct {
@@ -69,8 +75,8 @@ typedef struct {
     uint8_t can_tx_hz;                     ///< CAN transmit loop rate in Hz (supported: 25 or 50)
     bool can_enabled;                      ///< Enable physical CAN/TWAI transmission
     bool espnow_enabled;                   ///< Enable ESP-NOW transmission of TWAI messages
-    bool can_relay_espnow_enabled;         ///< Relay received CAN bus frames to the ESP-NOW peer
-    uint8_t espnow_target_mac[ESP_NOW_ETH_ALEN]; ///< ESP-NOW peer MAC address
+    uint8_t espnow_client_count;           ///< Number of configured entries in espnow_clients
+    espnow_client_config_t espnow_clients[ESPNOW_MAX_CLIENTS]; ///< ESP-NOW destinations and per-client relay policy
     bool gps_enabled;                      ///< Enable external BLE GPS integration
     uint32_t gps_can_start_id;             ///< First CAN ID used by Dragy GPS/IMU frames; following frames increment from this
     uint8_t gps_target_mac[ESP_NOW_ETH_ALEN]; ///< Optional BLE GPS target MAC address
@@ -93,5 +99,8 @@ bool config_load(board_config_t *cfg);
 /// @brief Initialize configuration structure with factory defaults
 /// @param cfg Pointer to configuration structure to initialize
 void config_set_defaults(board_config_t *cfg);
+
+/// @brief Return true when at least one active ESP-NOW client accepts relayed CAN frames.
+bool config_has_espnow_relay_client(const board_config_t *cfg);
 
 #endif // CONFIG_H

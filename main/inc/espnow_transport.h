@@ -15,10 +15,10 @@ esp_err_t espnow_transport_stop(void);
 /// @brief Apply current board_cfg ESP-NOW settings at runtime.
 esp_err_t espnow_transport_apply_config(void);
 
-/// @brief Send a TWAI message byte-for-byte over ESP-NOW.
-esp_err_t espnow_transport_send_twai(const twai_message_t *message);
+/// @brief Enqueue a TWAI frame for freshness-first batched ESP-NOW transport.
+esp_err_t espnow_transport_enqueue_twai(const twai_message_t *message);
 
-/// @brief Best-effort nonblocking send for lower-priority relayed CAN traffic.
-esp_err_t espnow_transport_try_relay_twai(const twai_message_t *message);
+/// @brief Enqueue a frame received from the physical CAN bus for relay-enabled clients only.
+esp_err_t espnow_transport_enqueue_relay_twai(const twai_message_t *message);
 
 #endif // ESPNOW_TRANSPORT_H

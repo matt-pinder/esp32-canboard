@@ -215,6 +215,24 @@
         width: 18ch;
         text-transform: uppercase;
       }
+      .espnow-clients {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.35em;
+        width: 100%;
+        padding-left: 1.4em;
+      }
+      .espnow-client-row {
+        display: flex;
+        align-items: center;
+        gap: 0.65em;
+        flex-wrap: wrap;
+      }
+      .remove-client-btn {
+        height: 30px;
+        padding: 0.2em 0.55em;
+      }
       .scan-status {
         color: #555;
         font-size: 0.9rem;
@@ -439,42 +457,6 @@
               </span>
             </div>
             <div class="transport-option-row">
-              <label class="transport-control" for="espnow-enabled">
-                <input
-                  id="espnow-enabled"
-                  name="espnow_enabled"
-                  type="checkbox"
-                />
-                <span>ESP-NOW</span>
-              </label>
-
-              <span class="espnow-setting">
-                <label for="espnow-target-mac">Target MAC:</label>
-                <input
-                  id="espnow-target-mac"
-                  name="espnow_target_mac"
-                  class="mac-input"
-                  maxlength="17"
-                  pattern="(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12}"
-                  title="Enter a MAC address such as AA:BB:CC:DD:EE:FF"
-                  placeholder="AA:BB:CC:DD:EE:FF"
-                />
-              </span>
-
-              <label
-                id="can-relay-espnow-control"
-                class="transport-control espnow-setting"
-                for="can-relay-espnow-enabled"
-              >
-                <input
-                  id="can-relay-espnow-enabled"
-                  name="can_relay_espnow_enabled"
-                  type="checkbox"
-                />
-                <span>Relay CAN bus</span>
-              </label>
-            </div>
-            <div class="transport-option-row">
               <label class="transport-control" for="gps-enabled">
                 <input id="gps-enabled" name="gps_enabled" type="checkbox" />
                 <span>GPS</span>
@@ -513,6 +495,20 @@
               <span id="ble-scan-status" class="scan-status gps-setting"></span>
             </div>
             <div id="ble-scan-results" class="ble-scan-results gps-setting"></div>
+            <div class="transport-option-row">
+              <label class="transport-control" for="espnow-enabled">
+                <input
+                  id="espnow-enabled"
+                  name="espnow_enabled"
+                  type="checkbox"
+                />
+                <span>ESP-NOW</span>
+              </label>
+              <button id="add-espnow-client" class="action-btn espnow-setting" type="button">
+                Add Client
+              </button>
+            </div>
+            <div id="espnow-clients" class="espnow-clients espnow-setting"></div>
           </div>
         </div>
       </div>
@@ -603,6 +599,7 @@
         "Bosch 0280130055",
         "Custom NTC",
       ];
+      const ESPNOW_MAX_CLIENTS = 4;
       let config = null;
       const loadingOverlay = document.getElementById("loading-overlay");
       const overlayText = document.getElementById("overlay-text");
@@ -677,16 +674,59 @@
         return isNaN(dec) ? fallback : dec;
       }
 
+      function getEspnowClientsFromForm() {
+        return Array.from(document.querySelectorAll(".espnow-client-row")).map(
+          (row) => ({
+            mac: normalizeMacAddress(row.querySelector(".espnow-client-mac").value),
+            relay_can: row.querySelector(".espnow-client-relay").checked,
+          }),
+        );
+      }
+
+      function renderEspnowClients(clients) {
+        const container = document.getElementById("espnow-clients");
+        container.innerHTML = (clients || [])
+          .slice(0, ESPNOW_MAX_CLIENTS)
+          .map(
+            (client, index) => `<div class="espnow-client-row">
+              <label>Client ${index + 1} MAC:</label>
+              <input class="mac-input espnow-client-mac" maxlength="17"
+                pattern="(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12}"
+                title="Enter a MAC address such as AA:BB:CC:DD:EE:FF"
+                placeholder="AA:BB:CC:DD:EE:FF" value="${normalizeMacAddress(client.mac || "")}">
+              <label class="transport-control">
+                <input class="espnow-client-relay" type="checkbox"${client.relay_can ? " checked" : ""}>
+                <span>Relay CAN bus</span>
+              </label>
+              <button class="action-btn negative remove-client-btn" type="button" data-index="${index}">Remove</button>
+            </div>`,
+          )
+          .join("");
+        container.querySelectorAll(".espnow-client-mac").forEach((input) => {
+          input.onblur = (event) => {
+            event.target.value = normalizeMacAddress(event.target.value);
+          };
+        });
+        container.querySelectorAll(".espnow-client-relay").forEach((input) => {
+          input.onchange = updateTransportControls;
+        });
+        container.querySelectorAll(".remove-client-btn").forEach((button) => {
+          button.onclick = () => {
+            const clientsNow = getEspnowClientsFromForm();
+            clientsNow.splice(parseInt(button.dataset.index), 1);
+            renderEspnowClients(clientsNow);
+            updateTransportControls();
+          };
+        });
+      }
+
       function updateTransportControls() {
         const canEnabled = document.getElementById("can-enabled").checked;
         const espnowEnabled = document.getElementById("espnow-enabled").checked;
         const gpsEnabled = document.getElementById("gps-enabled").checked;
-        const canRelayEspnow = document.getElementById(
-          "can-relay-espnow-enabled",
-        );
-        const canRelayAvailable = espnowEnabled;
-        if (!canRelayAvailable) canRelayEspnow.checked = false;
-        const canBusActive = canEnabled || canRelayEspnow.checked;
+        const espnowClients = getEspnowClientsFromForm();
+        const canBusActive =
+          canEnabled || (espnowEnabled && espnowClients.some((client) => client.relay_can));
 
         document.querySelectorAll(".can-setting").forEach((el) => {
           el.style.display = canBusActive ? "flex" : "none";
@@ -698,19 +738,14 @@
           el.style.display = gpsEnabled ? "flex" : "none";
         });
 
-        const espnowMac = document.getElementById("espnow-target-mac");
         const gpsMac = document.getElementById("gps-target-mac");
-        const canRelayEspnowControl = document.getElementById(
-          "can-relay-espnow-control",
-        );
 
         document.getElementById("can-speed").disabled = !canBusActive;
-        espnowMac.disabled = !espnowEnabled;
-        espnowMac.required = espnowEnabled;
-        canRelayEspnowControl.style.display = canRelayAvailable
-          ? "flex"
-          : "none";
-        canRelayEspnow.disabled = !canRelayAvailable;
+        document.querySelectorAll(".espnow-client-row input, .espnow-client-row button").forEach((el) => {
+          el.disabled = !espnowEnabled;
+        });
+        const addClient = document.getElementById("add-espnow-client");
+        addClient.disabled = !espnowEnabled || espnowClients.length >= ESPNOW_MAX_CLIENTS;
         document.getElementById("gps-can-start-id").disabled = !gpsEnabled;
         gpsMac.disabled = !gpsEnabled;
         gpsMac.required = gpsEnabled;
@@ -756,20 +791,25 @@
         let error = "";
         const canEnabled = document.getElementById("can-enabled").checked;
         const espnowEnabled = document.getElementById("espnow-enabled").checked;
-        const canRelayEspnowEnabled = document.getElementById(
-          "can-relay-espnow-enabled",
-        ).checked;
+        const espnowClients = getEspnowClientsFromForm();
         if (!canEnabled && !espnowEnabled) {
           error += "Enable CAN, ESP-NOW, or both. ";
         }
-        if (
-          espnowEnabled &&
-          !isValidMacAddress(document.getElementById("espnow-target-mac").value)
-        ) {
-          error += "ESP-NOW target MAC invalid. ";
+        if (espnowEnabled && espnowClients.length === 0) {
+          error += "Add at least one ESP-NOW client. ";
         }
-        if (canRelayEspnowEnabled && !espnowEnabled) {
-          error += "CAN relay requires ESP-NOW. ";
+        const espnowMacSet = new Set();
+        espnowClients.forEach((client, index) => {
+          if (!isValidMacAddress(client.mac)) {
+            error += `ESP-NOW client ${index + 1} MAC invalid. `;
+          } else if (espnowMacSet.has(client.mac)) {
+            error += `ESP-NOW client ${index + 1} duplicates another client. `;
+          } else {
+            espnowMacSet.add(client.mac);
+          }
+        });
+        if (espnowClients.length > ESPNOW_MAX_CLIENTS) {
+          error += `ESP-NOW supports up to ${ESPNOW_MAX_CLIENTS} clients. `;
         }
         const gpsEnabled = document.getElementById("gps-enabled").checked;
         if (gpsEnabled) {
@@ -924,10 +964,15 @@
           config.can_enabled !== false;
         document.getElementById("espnow-enabled").checked =
           config.espnow_enabled === true;
-        document.getElementById("can-relay-espnow-enabled").checked =
-          config.can_relay_espnow_enabled === true;
-        document.getElementById("espnow-target-mac").value =
-          normalizeMacAddress(config.espnow_target_mac || "");
+        const espnowClients = Array.isArray(config.espnow_clients)
+          ? config.espnow_clients
+          : config.espnow_target_mac
+            ? [{
+                mac: config.espnow_target_mac,
+                relay_can: config.can_relay_espnow_enabled === true,
+              }]
+            : [];
+        renderEspnowClients(espnowClients);
         document.getElementById("gps-enabled").checked =
           config.gps_enabled === true;
         document.getElementById("gps-can-start-id").value = (
@@ -1001,12 +1046,9 @@
         config.can_enabled = document.getElementById("can-enabled").checked;
         config.espnow_enabled =
           document.getElementById("espnow-enabled").checked;
-        config.can_relay_espnow_enabled = document.getElementById(
-          "can-relay-espnow-enabled",
-        ).checked;
-        config.espnow_target_mac = normalizeMacAddress(
-          document.getElementById("espnow-target-mac").value,
-        );
+        config.espnow_clients = getEspnowClientsFromForm();
+        delete config.can_relay_espnow_enabled;
+        delete config.espnow_target_mac;
         config.gps_enabled = document.getElementById("gps-enabled").checked;
         config.gps_target_mac = normalizeMacAddress(
           document.getElementById("gps-target-mac").value,
@@ -1163,11 +1205,13 @@
       document.getElementById("can-enabled").onchange = updateTransportControls;
       document.getElementById("espnow-enabled").onchange =
         updateTransportControls;
-      document.getElementById("can-relay-espnow-enabled").onchange =
-        updateTransportControls;
       document.getElementById("gps-enabled").onchange = updateTransportControls;
-      document.getElementById("espnow-target-mac").onblur = function (e) {
-        e.target.value = normalizeMacAddress(e.target.value);
+      document.getElementById("add-espnow-client").onclick = function () {
+        const clients = getEspnowClientsFromForm();
+        if (clients.length >= ESPNOW_MAX_CLIENTS) return;
+        clients.push({ mac: "", relay_can: false });
+        renderEspnowClients(clients);
+        updateTransportControls();
       };
       document.getElementById("gps-target-mac").onblur = function (e) {
         e.target.value = normalizeMacAddress(e.target.value);

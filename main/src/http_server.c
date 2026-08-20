@@ -73,29 +73,62 @@ static bool read_transport_config(cJSON *root, board_config_t *cfg) {
         cfg->espnow_enabled = cJSON_IsTrue(espnow_enabled);
     }
 
-    cJSON *can_relay_espnow_enabled = cJSON_GetObjectItem(root, "can_relay_espnow_enabled");
-    if (can_relay_espnow_enabled && cJSON_IsBool(can_relay_espnow_enabled)) {
-        cfg->can_relay_espnow_enabled = cJSON_IsTrue(can_relay_espnow_enabled);
-    }
-
-    cJSON *espnow_mac = cJSON_GetObjectItem(root, "espnow_target_mac");
-    if (espnow_mac && cJSON_IsString(espnow_mac)) {
-        if (espnow_mac->valuestring == NULL || espnow_mac->valuestring[0] == '\0') {
-            memset(cfg->espnow_target_mac, 0, ESP_NOW_ETH_ALEN);
-        } else if (!parse_mac(espnow_mac->valuestring, cfg->espnow_target_mac)) {
-            return false;
+    cJSON *clients = cJSON_GetObjectItem(root, "espnow_clients");
+    if (clients != NULL) {
+        if (!cJSON_IsArray(clients)) return false;
+        const int client_count = cJSON_GetArraySize(clients);
+        if (client_count < 0 || client_count > ESPNOW_MAX_CLIENTS) return false;
+        cfg->espnow_client_count = (uint8_t)client_count;
+        memset(cfg->espnow_clients, 0, sizeof(cfg->espnow_clients));
+        for (int i = 0; i < client_count; ++i) {
+            cJSON *client = cJSON_GetArrayItem(clients, i);
+            cJSON *mac = cJSON_GetObjectItem(client, "mac");
+            cJSON *relay_can = cJSON_GetObjectItem(client, "relay_can");
+            if (!cJSON_IsObject(client) || !cJSON_IsString(mac) || mac->valuestring == NULL ||
+                !parse_mac(mac->valuestring, cfg->espnow_clients[i].mac) ||
+                (relay_can != NULL && !cJSON_IsBool(relay_can))) {
+                return false;
+            }
+            cfg->espnow_clients[i].relay_can = relay_can != NULL && cJSON_IsTrue(relay_can);
+            for (int j = 0; j < i; ++j) {
+                if (memcmp(cfg->espnow_clients[i].mac, cfg->espnow_clients[j].mac, ESP_NOW_ETH_ALEN) == 0) {
+                    return false;
+                }
+            }
+        }
+    } else {
+        // Backward-compatible import of the former single-client fields.
+        cJSON *espnow_mac = cJSON_GetObjectItem(root, "espnow_target_mac");
+        if (espnow_mac && cJSON_IsString(espnow_mac) && espnow_mac->valuestring != NULL &&
+            espnow_mac->valuestring[0] != '\0') {
+            cfg->espnow_client_count = 1U;
+            if (!parse_mac(espnow_mac->valuestring, cfg->espnow_clients[0].mac)) return false;
+            cJSON *relay = cJSON_GetObjectItem(root, "can_relay_espnow_enabled");
+            if (relay != NULL && !cJSON_IsBool(relay)) return false;
+            cfg->espnow_clients[0].relay_can = relay != NULL && cJSON_IsTrue(relay);
         }
     }
 
-    uint8_t zero_mac[ESP_NOW_ETH_ALEN] = {0};
-    if (cfg->espnow_enabled && memcmp(cfg->espnow_target_mac, zero_mac, ESP_NOW_ETH_ALEN) == 0) {
-        return false;
-    }
-    if (cfg->can_relay_espnow_enabled && !cfg->espnow_enabled) {
-        return false;
-    }
+    return !cfg->espnow_enabled || cfg->espnow_client_count > 0U;
+}
 
-    return true;
+static bool format_espnow_clients_json(const board_config_t *cfg, char *out, size_t out_len) {
+    size_t pos = 0U;
+    int written = snprintf(out, out_len, "[");
+    if (written < 0 || (size_t)written >= out_len) return false;
+    pos = (size_t)written;
+    for (uint8_t i = 0; i < cfg->espnow_client_count; ++i) {
+        char mac[18];
+        format_mac(cfg->espnow_clients[i].mac, mac, sizeof(mac));
+        written = snprintf(out + pos, out_len - pos,
+                           "%s{\"mac\":\"%s\",\"relay_can\":%s}",
+                           i == 0U ? "" : ",", mac,
+                           cfg->espnow_clients[i].relay_can ? "true" : "false");
+        if (written < 0 || (size_t)written >= out_len - pos) return false;
+        pos += (size_t)written;
+    }
+    written = snprintf(out + pos, out_len - pos, "]");
+    return written >= 0 && (size_t)written < out_len - pos;
 }
 
 static bool read_gps_config(cJSON *root, board_config_t *cfg) {
@@ -145,9 +178,11 @@ static bool apply_runtime_config(const board_config_t *cfg) {
     board_config_t previous_cfg = board_cfg;
     bool can_changed = (previous_cfg.can_enabled != cfg->can_enabled) ||
                        (previous_cfg.can_speed_kbps != cfg->can_speed_kbps) ||
-                       (previous_cfg.can_relay_espnow_enabled != cfg->can_relay_espnow_enabled);
+                       (config_has_espnow_relay_client(&previous_cfg) != config_has_espnow_relay_client(cfg));
     bool espnow_changed = (previous_cfg.espnow_enabled != cfg->espnow_enabled) ||
-                          (memcmp(previous_cfg.espnow_target_mac, cfg->espnow_target_mac, ESP_NOW_ETH_ALEN) != 0);
+                          (previous_cfg.espnow_client_count != cfg->espnow_client_count) ||
+                          (memcmp(previous_cfg.espnow_clients, cfg->espnow_clients,
+                                  sizeof(cfg->espnow_clients)) != 0);
     bool gps_changed = (previous_cfg.gps_enabled != cfg->gps_enabled) ||
                        (previous_cfg.gps_can_start_id != cfg->gps_can_start_id) ||
                        (memcmp(previous_cfg.gps_target_mac, cfg->gps_target_mac, ESP_NOW_ETH_ALEN) != 0);
@@ -171,7 +206,7 @@ static bool apply_runtime_config(const board_config_t *cfg) {
         }
         ESP_LOGI(TAG, "Runtime CAN settings updated: enabled=%d speed=%lu kbps relay_to_espnow=%d",
                  board_cfg.can_enabled, (unsigned long)board_cfg.can_speed_kbps,
-                 board_cfg.can_relay_espnow_enabled);
+                 config_has_espnow_relay_client(&board_cfg));
     }
 
     if (espnow_changed) {
@@ -272,21 +307,24 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     
     size_t json_pos = 0;
     const size_t json_max = 4096;
-    char espnow_mac[18];
+    char espnow_clients[384];
     char gps_mac[18];
-    format_mac(cfg.espnow_target_mac, espnow_mac, sizeof(espnow_mac));
+    if (!format_espnow_clients_json(&cfg, espnow_clients, sizeof(espnow_clients))) {
+        free(json);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
     format_mac(cfg.gps_target_mac, gps_mac, sizeof(gps_mac));
     
     // Start JSON object including persisted board and transport configuration.
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"can_relay_espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg.can_enabled ? "true" : "false",
         (unsigned long)cfg.can_speed_kbps,
         (unsigned long)cfg.can_start_id,
         (unsigned)cfg.can_tx_hz,
         cfg.espnow_enabled ? "true" : "false",
-        cfg.can_relay_espnow_enabled ? "true" : "false",
-        espnow_mac,
+        espnow_clients,
         cfg.gps_enabled ? "true" : "false",
         (unsigned long)cfg.gps_can_start_id,
         gps_mac,
@@ -342,7 +380,7 @@ esp_err_t config_get_handler(httpd_req_t *req) {
  * @return ESP_OK on successful save, ESP_FAIL on JSON parse error or config validation failure
  */
 esp_err_t config_post_handler(httpd_req_t *req) {
-    const size_t REQ_BUF_SIZE = 2048;
+    const size_t REQ_BUF_SIZE = 4096;
     char *buf = malloc(REQ_BUF_SIZE);
     if (!buf) {
         ESP_LOGE(TAG, "Failed to allocate request buffer");
@@ -752,19 +790,23 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
 
     size_t json_pos = 0;
     const size_t json_max = 4096;
-    char espnow_mac[18];
+    char espnow_clients[384];
     char gps_mac[18];
-    format_mac(cfg->espnow_target_mac, espnow_mac, sizeof(espnow_mac));
+    if (!format_espnow_clients_json(cfg, espnow_clients, sizeof(espnow_clients))) {
+        free(json);
+        free(cfg);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
     format_mac(cfg->gps_target_mac, gps_mac, sizeof(gps_mac));
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"can_relay_espnow_enabled\":%s,\"espnow_target_mac\":\"%s\",\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg->can_enabled ? "true" : "false",
         (unsigned long)cfg->can_speed_kbps,
         (unsigned long)cfg->can_start_id,
         (unsigned)cfg->can_tx_hz,
         cfg->espnow_enabled ? "true" : "false",
-        cfg->can_relay_espnow_enabled ? "true" : "false",
-        espnow_mac,
+        espnow_clients,
         cfg->gps_enabled ? "true" : "false",
         (unsigned long)cfg->gps_can_start_id,
         gps_mac,

@@ -33,6 +33,23 @@ typedef struct {
     uint8_t gps_target_mac[ESP_NOW_ETH_ALEN];
     bool can_relay_espnow_enabled;
     uint32_t crc32;
+} board_config_persist_v10_t;
+
+typedef struct {
+    uint32_t version;
+    uint32_t can_start_id;
+    uint32_t can_speed_kbps;
+    uint8_t can_tx_hz;
+    bool can_enabled;
+    bool espnow_enabled;
+    uint16_t pullup_vref_divider_high_ohm;
+    channel_config_t channels[CONFIG_CHANNELS];
+    bool gps_enabled;
+    uint32_t gps_can_start_id;
+    uint8_t gps_target_mac[ESP_NOW_ETH_ALEN];
+    uint8_t espnow_client_count;
+    espnow_client_config_t espnow_clients[ESPNOW_MAX_CLIENTS];
+    uint32_t crc32;
 } board_config_persist_t;
 
 typedef enum {
@@ -57,11 +74,18 @@ static void log_board_config(const board_config_t *cfg) {
              (unsigned long)cfg->can_start_id,
              (unsigned long)cfg->can_speed_kbps,
              (unsigned)cfg->can_tx_hz);
-    ESP_LOGI(TAG, "  espnow_enabled=%d can_relay_espnow_enabled=%d espnow_target_mac=%02X:%02X:%02X:%02X:%02X:%02X",
+    ESP_LOGI(TAG, "  espnow_enabled=%d espnow_clients=%u relay_clients=%d",
              cfg->espnow_enabled,
-             cfg->can_relay_espnow_enabled,
-             cfg->espnow_target_mac[0], cfg->espnow_target_mac[1], cfg->espnow_target_mac[2],
-             cfg->espnow_target_mac[3], cfg->espnow_target_mac[4], cfg->espnow_target_mac[5]);
+             (unsigned)cfg->espnow_client_count,
+             config_has_espnow_relay_client(cfg));
+    for (uint8_t i = 0; i < cfg->espnow_client_count; ++i) {
+        const espnow_client_config_t *client = &cfg->espnow_clients[i];
+        ESP_LOGI(TAG, "    client[%u]=%02X:%02X:%02X:%02X:%02X:%02X relay_can=%d",
+                 (unsigned)i,
+                 client->mac[0], client->mac[1], client->mac[2],
+                 client->mac[3], client->mac[4], client->mac[5],
+                 client->relay_can);
+    }
     ESP_LOGI(TAG, "  pullup_vref_divider_high_ohm=%u crc32=0x%08lX",
              (unsigned)cfg->pullup_vref_divider_high_ohm,
              (unsigned long)cfg->crc32);
@@ -134,13 +158,13 @@ static void persist_from_runtime(const board_config_t *cfg, board_config_persist
     persisted->can_tx_hz = cfg->can_tx_hz;
     persisted->can_enabled = cfg->can_enabled;
     persisted->espnow_enabled = cfg->espnow_enabled;
-    memcpy(persisted->espnow_target_mac, cfg->espnow_target_mac, sizeof(persisted->espnow_target_mac));
     persisted->pullup_vref_divider_high_ohm = cfg->pullup_vref_divider_high_ohm;
     memcpy(persisted->channels, cfg->channels, sizeof(persisted->channels));
     persisted->gps_enabled = cfg->gps_enabled;
     persisted->gps_can_start_id = cfg->gps_can_start_id;
     memcpy(persisted->gps_target_mac, cfg->gps_target_mac, sizeof(persisted->gps_target_mac));
-    persisted->can_relay_espnow_enabled = cfg->can_relay_espnow_enabled;
+    persisted->espnow_client_count = cfg->espnow_client_count;
+    memcpy(persisted->espnow_clients, cfg->espnow_clients, sizeof(persisted->espnow_clients));
     persisted->crc32 = crc32(persisted, offsetof(board_config_persist_t, crc32));
 }
 
@@ -152,15 +176,48 @@ static void runtime_from_persist(const board_config_persist_t *persisted, board_
     cfg->can_tx_hz = persisted->can_tx_hz;
     cfg->can_enabled = persisted->can_enabled;
     cfg->espnow_enabled = persisted->espnow_enabled;
-    memcpy(cfg->espnow_target_mac, persisted->espnow_target_mac, sizeof(cfg->espnow_target_mac));
     cfg->pullup_vref_divider_high_ohm = persisted->pullup_vref_divider_high_ohm;
     memcpy(cfg->channels, persisted->channels, sizeof(cfg->channels));
     cfg->gps_enabled = persisted->gps_enabled;
     cfg->gps_can_start_id = persisted->gps_can_start_id;
     memcpy(cfg->gps_target_mac, persisted->gps_target_mac, sizeof(cfg->gps_target_mac));
-    cfg->can_relay_espnow_enabled = persisted->can_relay_espnow_enabled;
+    cfg->espnow_client_count = persisted->espnow_client_count;
+    memcpy(cfg->espnow_clients, persisted->espnow_clients, sizeof(cfg->espnow_clients));
     cfg->pullup_vref_mv = 5025;
     cfg->crc32 = persisted->crc32;
+}
+
+static void runtime_from_v10(const board_config_persist_v10_t *persisted, board_config_t *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->version = persisted->version;
+    cfg->can_start_id = persisted->can_start_id;
+    cfg->can_speed_kbps = persisted->can_speed_kbps;
+    cfg->can_tx_hz = persisted->can_tx_hz;
+    cfg->can_enabled = persisted->can_enabled;
+    cfg->espnow_enabled = persisted->espnow_enabled;
+    cfg->pullup_vref_divider_high_ohm = persisted->pullup_vref_divider_high_ohm;
+    memcpy(cfg->channels, persisted->channels, sizeof(cfg->channels));
+    cfg->gps_enabled = persisted->gps_enabled;
+    cfg->gps_can_start_id = persisted->gps_can_start_id;
+    memcpy(cfg->gps_target_mac, persisted->gps_target_mac, sizeof(cfg->gps_target_mac));
+    if (cfg->espnow_enabled) {
+        const uint8_t zero_mac[ESP_NOW_ETH_ALEN] = {0};
+        if (memcmp(persisted->espnow_target_mac, zero_mac, sizeof(zero_mac)) != 0) {
+            cfg->espnow_client_count = 1;
+            memcpy(cfg->espnow_clients[0].mac, persisted->espnow_target_mac, ESP_NOW_ETH_ALEN);
+            cfg->espnow_clients[0].relay_can = persisted->can_relay_espnow_enabled;
+        }
+    }
+    cfg->pullup_vref_mv = 5025;
+    cfg->crc32 = persisted->crc32;
+}
+
+bool config_has_espnow_relay_client(const board_config_t *cfg) {
+    if (cfg == NULL || !cfg->espnow_enabled) return false;
+    for (uint8_t i = 0; i < cfg->espnow_client_count && i < ESPNOW_MAX_CLIENTS; ++i) {
+        if (cfg->espnow_clients[i].relay_can) return true;
+    }
+    return false;
 }
 
 static bool config_semantically_valid(const board_config_t *cfg) {
@@ -168,8 +225,19 @@ static bool config_semantically_valid(const board_config_t *cfg) {
         (cfg->can_speed_kbps != 125 && cfg->can_speed_kbps != 250 &&
          cfg->can_speed_kbps != 500 && cfg->can_speed_kbps != 1000) ||
         (cfg->can_tx_hz != 25 && cfg->can_tx_hz != 50) ||
-        (cfg->can_relay_espnow_enabled && !cfg->espnow_enabled)) {
+        cfg->espnow_client_count > ESPNOW_MAX_CLIENTS ||
+        (cfg->espnow_enabled && cfg->espnow_client_count == 0)) {
         return false;
+    }
+
+    const uint8_t zero_mac[ESP_NOW_ETH_ALEN] = {0};
+    for (uint8_t i = 0; i < cfg->espnow_client_count; ++i) {
+        if (memcmp(cfg->espnow_clients[i].mac, zero_mac, sizeof(zero_mac)) == 0) return false;
+        for (uint8_t j = 0; j < i; ++j) {
+            if (memcmp(cfg->espnow_clients[i].mac, cfg->espnow_clients[j].mac, ESP_NOW_ETH_ALEN) == 0) {
+                return false;
+            }
+        }
     }
 
     bool emub_seen[EMUB_TX_CAN_ANALOG_16 + 1] = {false};
@@ -216,14 +284,15 @@ static bool normalize_config(board_config_t *cfg) {
         if (old_version < 8) {
             cfg->can_enabled = true;
             cfg->espnow_enabled = false;
-            memset(cfg->espnow_target_mac, 0, sizeof(cfg->espnow_target_mac));
+            cfg->espnow_client_count = 0;
+            memset(cfg->espnow_clients, 0, sizeof(cfg->espnow_clients));
         }
         if (old_version < 9) {
             cfg->gps_enabled = false;
             cfg->gps_can_start_id = 0x650;
             memset(cfg->gps_target_mac, 0, sizeof(cfg->gps_target_mac));
         }
-        if (old_version < 10) cfg->can_relay_espnow_enabled = false;
+        if (old_version < 10 && cfg->espnow_client_count > 0) cfg->espnow_clients[0].relay_can = false;
         cfg->version = CONFIG_VERSION;
         changed = true;
     }
@@ -233,11 +302,6 @@ static bool normalize_config(board_config_t *cfg) {
     }
     if (cfg->gps_can_start_id > 0x7FA) {
         cfg->gps_can_start_id = 0x650;
-        changed = true;
-    }
-    if (cfg->can_relay_espnow_enabled && !cfg->espnow_enabled) {
-        ESP_LOGW(TAG, "Disabling CAN relay because ESP-NOW is not enabled");
-        cfg->can_relay_espnow_enabled = false;
         changed = true;
     }
     if (!config_semantically_valid(cfg)) {
@@ -277,8 +341,10 @@ static size_t config_record_size(void) {
 static bool encode_record(const board_config_t *cfg, uint8_t *record, size_t record_size) {
     if (!config_semantically_valid(cfg) || record_size != config_record_size()) return false;
 
-    board_config_persist_t persisted;
-    persist_from_runtime(cfg, &persisted);
+    board_config_persist_t *persisted = malloc(sizeof(*persisted));
+    if (persisted == NULL) return false;
+
+    persist_from_runtime(cfg, persisted);
     memset(record, 0, record_size);
     // Header offsets are explicit so its on-flash layout never depends on compiler padding.
     // The payload deliberately retains the legacy structure layout for one-time
@@ -286,28 +352,44 @@ static bool encode_record(const board_config_t *cfg, uint8_t *record, size_t rec
     record_write_u32(record + 0, CONFIG_RECORD_MAGIC);
     record_write_u16(record + 4, CONFIG_RECORD_SCHEMA_VERSION);
     record_write_u16(record + 6, CONFIG_RECORD_HEADER_SIZE);
-    record_write_u32(record + 8, sizeof(persisted));
-    memcpy(record + CONFIG_RECORD_HEADER_SIZE, &persisted, sizeof(persisted));
-    record_write_u32(record + 12, crc32(record + CONFIG_RECORD_HEADER_SIZE, sizeof(persisted)));
+    record_write_u32(record + 8, sizeof(*persisted));
+    memcpy(record + CONFIG_RECORD_HEADER_SIZE, persisted, sizeof(*persisted));
+    record_write_u32(record + 12, crc32(record + CONFIG_RECORD_HEADER_SIZE, sizeof(*persisted)));
+    free(persisted);
     return true;
 }
 
 static bool decode_record(const uint8_t *record, size_t record_size, board_config_t *cfg) {
-    if (record_size != config_record_size() ||
+    if (record_size < CONFIG_RECORD_HEADER_SIZE ||
         record_read_u32(record + 0) != CONFIG_RECORD_MAGIC ||
         record_read_u16(record + 4) != CONFIG_RECORD_SCHEMA_VERSION ||
-        record_read_u16(record + 6) != CONFIG_RECORD_HEADER_SIZE ||
-        record_read_u32(record + 8) != sizeof(board_config_persist_t)) {
+        record_read_u16(record + 6) != CONFIG_RECORD_HEADER_SIZE) {
         return false;
     }
+    const size_t payload_size = record_read_u32(record + 8);
+    if (payload_size != record_size - CONFIG_RECORD_HEADER_SIZE) return false;
     const uint8_t *payload = record + CONFIG_RECORD_HEADER_SIZE;
-    if (record_read_u32(record + 12) != crc32(payload, sizeof(board_config_persist_t))) return false;
+    if (record_read_u32(record + 12) != crc32(payload, payload_size)) return false;
 
-    board_config_persist_t persisted;
-    memcpy(&persisted, payload, sizeof(persisted));
-    if (persisted.crc32 != crc32(&persisted, offsetof(board_config_persist_t, crc32))) return false;
-    runtime_from_persist(&persisted, cfg);
-    return normalize_config(cfg);
+    if (payload_size != sizeof(board_config_persist_t) &&
+        payload_size != sizeof(board_config_persist_v10_t)) return false;
+
+    void *persisted = malloc(payload_size);
+    if (persisted == NULL) return false;
+    memcpy(persisted, payload, payload_size);
+
+    bool valid = false;
+    if (payload_size == sizeof(board_config_persist_t)) {
+        board_config_persist_t *current = persisted;
+        valid = current->crc32 == crc32(current, offsetof(board_config_persist_t, crc32));
+        if (valid) runtime_from_persist(current, cfg);
+    } else {
+        board_config_persist_v10_t *v10 = persisted;
+        valid = v10->crc32 == crc32(v10, offsetof(board_config_persist_v10_t, crc32));
+        if (valid) runtime_from_v10(v10, cfg);
+    }
+    free(persisted);
+    return valid && normalize_config(cfg);
 }
 
 static config_read_result_t load_nvs_record(const char *key, board_config_t *cfg) {
@@ -324,7 +406,11 @@ static config_read_result_t load_nvs_record(const char *key, board_config_t *cfg
         nvs_close(handle);
         return CONFIG_READ_NOT_FOUND;
     }
-    if (err != ESP_OK || size != config_record_size()) {
+    const size_t max_payload_size = sizeof(board_config_persist_t) > sizeof(board_config_persist_v10_t)
+                                      ? sizeof(board_config_persist_t)
+                                      : sizeof(board_config_persist_v10_t);
+    if (err != ESP_OK || size < CONFIG_RECORD_HEADER_SIZE ||
+        size > CONFIG_RECORD_HEADER_SIZE + max_payload_size) {
         nvs_close(handle);
         return CONFIG_READ_INVALID;
     }
@@ -350,17 +436,29 @@ static bool load_legacy_spiffs_config(board_config_t *cfg) {
         return false;
     }
     long file_size = ftell(file);
-    if (file_size < (long)(sizeof(uint32_t) * 2) || file_size > (long)sizeof(board_config_persist_t) ||
+    if (file_size < (long)(sizeof(uint32_t) * 2) || file_size > (long)sizeof(board_config_persist_v10_t) ||
         fseek(file, 0, SEEK_SET) != 0) {
         ESP_LOGE(TAG, "Unexpected legacy config size: %ld bytes", file_size);
         fclose(file);
         return false;
     }
 
-    uint8_t raw[sizeof(board_config_persist_t)] = {0};
+    uint8_t *raw = calloc(1, sizeof(board_config_persist_v10_t));
+    board_config_persist_v10_t *persisted = calloc(1, sizeof(*persisted));
+    if (raw == NULL || persisted == NULL) {
+        free(raw);
+        free(persisted);
+        fclose(file);
+        return false;
+    }
+
     size_t read = fread(raw, 1, (size_t)file_size, file);
     fclose(file);
-    if (read != (size_t)file_size) return false;
+    if (read != (size_t)file_size) {
+        free(raw);
+        free(persisted);
+        return false;
+    }
 
     uint32_t stored_crc;
     memcpy(&stored_crc, raw + file_size - sizeof(stored_crc), sizeof(stored_crc));
@@ -368,13 +466,16 @@ static bool load_legacy_spiffs_config(board_config_t *cfg) {
     if (calculated_crc != stored_crc) {
         ESP_LOGE(TAG, "Legacy config CRC mismatch: expected 0x%08lX, got 0x%08lX",
                  (unsigned long)calculated_crc, (unsigned long)stored_crc);
+        free(raw);
+        free(persisted);
         return false;
     }
 
-    board_config_persist_t persisted = {0};
-    memcpy(&persisted, raw, (size_t)file_size - sizeof(stored_crc));
-    persisted.crc32 = stored_crc;
-    runtime_from_persist(&persisted, cfg);
+    memcpy(persisted, raw, (size_t)file_size - sizeof(stored_crc));
+    persisted->crc32 = stored_crc;
+    runtime_from_v10(persisted, cfg);
+    free(raw);
+    free(persisted);
     return normalize_config(cfg);
 }
 
@@ -387,32 +488,56 @@ bool config_save(const board_config_t *cfg) {
 
     size_t record_size = config_record_size();
     uint8_t *record = malloc(record_size);
-    uint8_t *existing = malloc(record_size);
     uint8_t *readback = malloc(record_size);
-    if (record == NULL || existing == NULL || readback == NULL || !encode_record(cfg, record, record_size)) {
-        free(record); free(existing); free(readback);
+    if (record == NULL || readback == NULL || !encode_record(cfg, record, record_size)) {
+        free(record); free(readback);
         return false;
     }
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open_from_partition(CONFIG_NVS_PARTITION, CONFIG_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
-        free(record); free(existing); free(readback);
+        free(record); free(readback);
         return false;
     }
 
-    size_t existing_size = record_size;
-    err = nvs_get_blob(handle, CONFIG_NVS_KEY, existing, &existing_size);
-    board_config_t existing_cfg;
-    bool had_valid_existing = err == ESP_OK && existing_size == record_size &&
-                              decode_record(existing, existing_size, &existing_cfg);
+    size_t existing_size = 0;
+    err = nvs_get_blob(handle, CONFIG_NVS_KEY, NULL, &existing_size);
+    if (err == ESP_OK && existing_size > CONFIG_RECORD_HEADER_SIZE + sizeof(board_config_persist_t)) {
+        ESP_LOGE(TAG, "Refusing to replace unsupported NVS record size %zu", existing_size);
+        nvs_close(handle);
+        free(record); free(readback);
+        return false;
+    }
+    uint8_t *existing = err == ESP_OK && existing_size > 0 ? malloc(existing_size) : NULL;
+    if (err == ESP_OK && existing_size > 0 && existing == NULL) {
+        nvs_close(handle);
+        free(record); free(readback);
+        return false;
+    }
+    board_config_t *existing_cfg = existing != NULL ? malloc(sizeof(*existing_cfg)) : NULL;
+    if (existing != NULL && existing_cfg == NULL) {
+        nvs_close(handle);
+        free(existing); free(record); free(readback);
+        return false;
+    }
+    esp_err_t existing_read_err = err;
+    if (existing != NULL) {
+        existing_read_err = nvs_get_blob(handle, CONFIG_NVS_KEY, existing, &existing_size);
+    }
+    bool had_valid_existing = existing != NULL &&
+                              existing_read_err == ESP_OK &&
+                              decode_record(existing, existing_size, existing_cfg);
     if (had_valid_existing) {
         err = nvs_set_blob(handle, CONFIG_NVS_BACKUP_KEY, existing, existing_size);
         if (err == ESP_OK) err = nvs_commit(handle);
-    } else if (err == ESP_ERR_NVS_NOT_FOUND || err == ESP_OK || err == ESP_ERR_NVS_INVALID_LENGTH) {
+    } else if (existing_read_err == ESP_ERR_NVS_NOT_FOUND || existing_read_err == ESP_OK ||
+               existing_read_err == ESP_ERR_NVS_INVALID_LENGTH) {
         // No valid active record exists to back up. This path is also used by
         // the verified legacy-import recovery flow.
         err = ESP_OK;
+    } else {
+        err = existing_read_err;
     }
     if (err == ESP_OK) err = nvs_set_blob(handle, CONFIG_NVS_KEY, record, record_size);
     if (err == ESP_OK) err = nvs_commit(handle);
@@ -430,7 +555,7 @@ bool config_save(const board_config_t *cfg) {
         }
     }
     nvs_close(handle);
-    free(existing); free(readback);
+    free(existing_cfg); free(existing); free(readback);
     if (!verified) {
         ESP_LOGE(TAG, "Config NVS commit/read-back failed: %s", esp_err_to_name(err));
         free(record);
@@ -463,29 +588,36 @@ bool config_load(board_config_t *cfg) {
         ESP_LOGE(TAG, "Active NVS config record is invalid or uses an unsupported schema; preserving it");
     }
 
-    board_config_t legacy_cfg;
-    if (!load_legacy_spiffs_config(&legacy_cfg)) {
+    board_config_t *migration_cfg = malloc(sizeof(*migration_cfg));
+    if (migration_cfg == NULL) {
+        ESP_LOGE(TAG, "Unable to allocate config migration workspace");
+        return false;
+    }
+    if (!load_legacy_spiffs_config(migration_cfg)) {
         ESP_LOGW(TAG, "No valid config in NVS or legacy SPIFFS");
+        free(migration_cfg);
         return false;
     }
 
     // A verified legacy record is an authorized recovery source for a corrupt
     // destination record. Keep the legacy file until NVS read-back succeeds.
     protect_existing_nvs_record = false;
-    if (!config_save(&legacy_cfg)) {
+    if (!config_save(migration_cfg)) {
         ESP_LOGE(TAG, "Legacy config is valid but NVS migration failed; using it for this boot");
-        *cfg = legacy_cfg;
+        *cfg = *migration_cfg;
+        free(migration_cfg);
         log_board_config(cfg);
         return true;
     }
 
-    board_config_t verified_cfg;
-    if (load_nvs_record(CONFIG_NVS_KEY, &verified_cfg) != CONFIG_READ_OK) {
+    if (load_nvs_record(CONFIG_NVS_KEY, migration_cfg) != CONFIG_READ_OK) {
         ESP_LOGE(TAG, "Legacy config migration read-back failed; using legacy config for this boot");
-        *cfg = legacy_cfg;
+        *cfg = *migration_cfg;
+        free(migration_cfg);
         return true;
     }
-    *cfg = verified_cfg;
+    *cfg = *migration_cfg;
+    free(migration_cfg);
     ESP_LOGI(TAG, "Migrated legacy %s to NVS; legacy file retained", LEGACY_CONFIG_FILE_PATH);
     log_board_config(cfg);
     return true;
@@ -527,8 +659,8 @@ void config_set_defaults(board_config_t *cfg) {
     cfg->can_tx_hz = 25; // Default CAN transmit rate 25 Hz
     cfg->can_enabled = true;
     cfg->espnow_enabled = false;
-    cfg->can_relay_espnow_enabled = false;
-    memset(cfg->espnow_target_mac, 0, sizeof(cfg->espnow_target_mac));
+    cfg->espnow_client_count = 0;
+    memset(cfg->espnow_clients, 0, sizeof(cfg->espnow_clients));
     cfg->gps_enabled = false;
     cfg->gps_can_start_id = 0x650;
     memset(cfg->gps_target_mac, 0, sizeof(cfg->gps_target_mac));
