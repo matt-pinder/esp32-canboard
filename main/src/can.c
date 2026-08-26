@@ -15,6 +15,8 @@
 #include "inc/inputs.h"
 #include "inc/espnow_transport.h"
 #include "inc/mk60_emulator.h"
+#include "inc/relay_command_protocol.h"
+#include "inc/relay_rule_engine.h"
 
 extern board_config_t board_cfg;
 
@@ -34,6 +36,7 @@ twai_general_config_t can_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, 
  */
 esp_err_t can_init(void) {
     if (!board_cfg.can_enabled && !config_has_espnow_relay_client(&board_cfg) &&
+        !relay_rule_engine_has_external_sources() &&
         !board_cfg.mk60_emulator.enabled) {
         ESP_LOGI(can_log, "CAN transmission, relay, and MK60 emulator disabled; TWAI driver not started");
         return ESP_OK;
@@ -79,7 +82,8 @@ esp_err_t can_init(void) {
         memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
     }
 
-    if (config_has_espnow_relay_client(&board_cfg) || board_cfg.mk60_emulator.enabled) {
+    if (config_has_espnow_relay_client(&board_cfg) || board_cfg.mk60_emulator.enabled ||
+        relay_rule_engine_has_external_sources()) {
         static const twai_filter_config_t accept_all = TWAI_FILTER_CONFIG_ACCEPT_ALL();
         memcpy(&f_config, &accept_all, sizeof(f_config));
         can_config.rx_queue_len = 128;
@@ -184,6 +188,11 @@ esp_err_t can_deinit(void) {
 void can_transmit_frame(const twai_message_t *message, const char *label) {
     static TickType_t last_espnow_warn = 0;
 
+    if (!message->extd && message->identifier != relay_command_can_id(board_cfg.can_start_id)) {
+        relay_rule_engine_ingest_can(message,
+                                     (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
+    }
+
     if (board_cfg.can_enabled && can_driver_mutex != NULL &&
         xSemaphoreTake(can_driver_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
         if (can_driver_active && twai_can != NULL) {
@@ -237,7 +246,8 @@ void canReceiveDispatch(void *arg)
     TickType_t last_status_log = xTaskGetTickCount();
 
     while (true) {
-        if ((!config_has_espnow_relay_client(&board_cfg) && !board_cfg.mk60_emulator.enabled) ||
+        if ((!config_has_espnow_relay_client(&board_cfg) && !board_cfg.mk60_emulator.enabled &&
+             !relay_rule_engine_has_external_sources()) ||
             can_driver_mutex == NULL) {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
@@ -259,6 +269,11 @@ void canReceiveDispatch(void *arg)
             }
             drained++;
             received_count++;
+            if (!message.extd && message.identifier == relay_command_can_id(board_cfg.can_start_id)) {
+                continue;
+            }
+            relay_rule_engine_ingest_can(&message,
+                                         (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
             if (!first_frame_logged) {
                 ESP_LOGI(can_log, "CAN relay received first frame: id=0x%lX dlc=%u%s",
                          (unsigned long)message.identifier,
@@ -346,6 +361,7 @@ void canTransmit(void *arg)
     while(1) {
         TickType_t loop_start = xTaskGetTickCount();
         uint8_t can_tx_hz_snapshot = board_cfg.can_tx_hz;
+        relay_rule_engine_set_publish_rate(can_tx_hz_snapshot);
         uint16_t voltages_copy[NUM_ADC_CHANNELS];
         
         // Safely copy voltage data
@@ -417,6 +433,17 @@ void canTransmit(void *arg)
             }
         }
 
+        const uint32_t rules_now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        for (int i = 0; i < 10; ++i) {
+            relay_rule_engine_ingest_local((uint8_t)i, false,
+                                           (float)voltages_copy[i] / 1000.0f,
+                                           rules_now_ms);
+            float converted = (float)voltages_copy[i] / 1000.0f;
+            if (board_cfg.channels[i].type == SENSOR_PRESSURE) converted = (float)dyn[i] / 100.0f;
+            else if (board_cfg.channels[i].type == SENSOR_NTC) converted = (float)(int16_t)dyn[i];
+            relay_rule_engine_ingest_local((uint8_t)i, true, converted, rules_now_ms);
+        }
+
         // Place first two dynamic signals into msg3 bytes 4..7
         msg3.data[4] = dyn[0] & 0xFF;
         msg3.data[5] = (dyn[0] >> 8) & 0xFF;
@@ -452,6 +479,13 @@ void canTransmit(void *arg)
         msg5.data[7] = (dyn[9] >> 8) & 0xFF;
 
         can_transmit_frame(&msg5, "dynamic msg5");
+
+        relay_command_t relay_command;
+        relay_rule_engine_make_command(rules_now_ms, &relay_command);
+        twai_message_t relay_command_message = init_twai_message(
+            relay_command_can_id(board_cfg.can_start_id));
+        relay_command_encode(relay_command_message.data, &relay_command);
+        can_transmit_frame(&relay_command_message, "relay rules");
 
         bool any_emub = false;
         uint8_t emub_bytes[8] = {0};
