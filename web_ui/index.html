@@ -345,6 +345,223 @@
           transform: rotate(360deg);
         }
       }
+      #relay-rules-card {
+        margin: 1.5rem 0 2.5rem;
+        padding: 1.1rem;
+        border: 1px solid #ccd6e0;
+        border-radius: 8px;
+        background: #f7f9fb;
+      }
+      #relay-rules-card h2 {
+        margin: 0 0 0.2rem;
+      }
+      .rules-intro {
+        margin: 0.25rem 0 0.9rem;
+        color: #536271;
+      }
+      .rules-toolbar,
+      .dbc-picker,
+      .section-heading,
+      .case-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        flex-wrap: wrap;
+      }
+      .dbc-picker input[type="file"] {
+        width: auto;
+        margin-left: 0.4rem;
+      }
+      .rules-toolbar {
+        margin-bottom: 0.75rem;
+      }
+      #relay-rules-card button {
+        border: 1px solid #b8c4d0;
+        border-radius: 4px;
+        background: #fff;
+        color: #263746;
+        padding: 0.42rem 0.7rem;
+        cursor: pointer;
+        font: inherit;
+      }
+      #relay-rules-card button:hover {
+        background: #edf3f8;
+      }
+      #relay-rules-card .primary-button {
+        background: #337ab7;
+        border-color: #337ab7;
+        color: #fff;
+      }
+      #relay-rules-card .primary-button:hover {
+        background: #286698;
+      }
+      #relay-rules-card .danger-button {
+        color: #a33a35;
+      }
+      #rules-status {
+        min-height: 1.2em;
+        color: #536271;
+      }
+      .rule-section {
+        margin-top: 0.75rem;
+        border: 1px solid #d5dde5;
+        border-radius: 6px;
+        background: #fff;
+        overflow: hidden;
+      }
+      .rule-section > summary {
+        padding: 0.75rem 0.9rem;
+        background: #edf2f6;
+        cursor: pointer;
+        user-select: none;
+      }
+      .rule-section-body {
+        padding: 0.85rem;
+      }
+      #rule-dbc-status {
+        display: block;
+        margin: -0.25rem 0 0.65rem;
+      }
+      .rules-table-wrap {
+        overflow-x: auto;
+      }
+      #relay-rules-card table {
+        width: 100%;
+        min-width: 760px;
+        margin: 0;
+        table-layout: auto;
+        border-collapse: collapse;
+      }
+      #relay-rules-card th,
+      #relay-rules-card td {
+        padding: 0.55rem 0.6rem;
+        border: 1px solid #d8e0e7;
+        text-align: left;
+        vertical-align: middle;
+      }
+      #relay-rules-card th {
+        background: #eef2f5;
+        color: #394957;
+        font-size: 0.86rem;
+      }
+      #relay-rules-card tbody > tr:nth-child(odd):not(.rule-detail-row) {
+        background: #fbfcfd;
+      }
+      #relay-rules-card input[type="checkbox"] {
+        width: auto;
+      }
+      .rule-number {
+        width: 3rem;
+        text-align: center !important;
+        font-weight: 700;
+        color: #536271;
+      }
+      .rule-enabled {
+        width: 5.5rem;
+        text-align: center !important;
+      }
+      .rule-command {
+        white-space: nowrap;
+        font-family: monospace;
+        font-size: 0.88rem;
+      }
+      .row-actions {
+        display: flex;
+        gap: 0.35rem;
+        justify-content: flex-end;
+        white-space: nowrap;
+      }
+      .rule-detail-row > td {
+        padding: 0 !important;
+        background: #f4f7fa;
+      }
+      .rule-detail {
+        padding: 0.9rem 1rem 1rem;
+        border-left: 4px solid #337ab7;
+      }
+      .rule-detail-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 1rem;
+        margin-bottom: 0.45rem;
+      }
+      .logic-case {
+        margin: 0.65rem 0;
+        padding: 0.75rem;
+        border: 1px solid #ccd7e0;
+        border-radius: 5px;
+        background: #fff;
+      }
+      .logic-case-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.55rem;
+      }
+      .logic-test {
+        display: grid;
+        grid-template-columns:
+          105px minmax(140px, 1.35fr) minmax(105px, 1fr)
+          70px minmax(85px, 0.7fr) auto minmax(75px, 0.6fr) auto;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.4rem;
+        margin: 0.3rem 0;
+        border-radius: 4px;
+        background: #f5f7f9;
+      }
+      .logic-test .hysteresis-label {
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+        white-space: nowrap;
+        font-size: 0.86rem;
+      }
+      .case-result {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        margin-top: 0.65rem;
+        padding-top: 0.6rem;
+        border-top: 1px solid #e1e6eb;
+      }
+      .case-result select {
+        width: 125px;
+      }
+      .pulse-panel {
+        margin-top: 0.65rem;
+        padding: 0.7rem;
+        border-radius: 4px;
+        background: #eef5fb;
+      }
+      .pulse-header {
+        display: flex;
+        align-items: end;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+        margin-bottom: 0.5rem;
+      }
+      .pulse-header label {
+        min-width: 230px;
+      }
+      .pulse-table {
+        min-width: 560px !important;
+        max-width: 760px;
+      }
+      .empty-row {
+        padding: 1rem !important;
+        color: #697887;
+        text-align: center !important;
+      }
+      @media (max-width: 900px) {
+        .logic-test {
+          grid-template-columns: 1fr 1fr;
+        }
+        .logic-test button {
+          justify-self: start;
+        }
+      }
     </style>
   </head>
   <body>
@@ -489,12 +706,19 @@
                 />
               </span>
 
-              <button id="ble-scan-btn" class="action-btn gps-setting" type="button">
+              <button
+                id="ble-scan-btn"
+                class="action-btn gps-setting"
+                type="button"
+              >
                 Scan BLE
               </button>
               <span id="ble-scan-status" class="scan-status gps-setting"></span>
             </div>
-            <div id="ble-scan-results" class="ble-scan-results gps-setting"></div>
+            <div
+              id="ble-scan-results"
+              class="ble-scan-results gps-setting"
+            ></div>
             <div class="transport-option-row">
               <label class="transport-control" for="espnow-enabled">
                 <input
@@ -504,11 +728,18 @@
                 />
                 <span>ESP-NOW</span>
               </label>
-              <button id="add-espnow-client" class="action-btn espnow-setting" type="button">
+              <button
+                id="add-espnow-client"
+                class="action-btn espnow-setting"
+                type="button"
+              >
                 Add Client
               </button>
             </div>
-            <div id="espnow-clients" class="espnow-clients espnow-setting"></div>
+            <div
+              id="espnow-clients"
+              class="espnow-clients espnow-setting"
+            ></div>
           </div>
         </div>
       </div>
@@ -563,6 +794,93 @@
         </tbody>
       </table>
     </form>
+    <section class="card" id="relay-rules-card">
+      <h2>Relay rules</h2>
+      <p class="rules-intro">
+        Build named output commands from local sensors or imported CAN signals.
+        Outputs are broadcast on <code>CAN base + 5</code>.
+      </p>
+      <div class="rules-toolbar">
+        <button type="button" id="rules-save" class="primary-button">
+          Save and apply</button
+        ><button type="button" id="rules-load">Discard changes</button
+        ><button type="button" id="rules-dbc">Download output DBC</button
+        ><span id="rules-status"></span>
+      </div>
+      <p class="hint">
+        The first matching case wins. Tests inside one case are ANDed;
+        additional cases provide ELSE-IF/OR behavior. Missing or stale required
+        data forces the output safely OFF.
+      </p>
+      <details class="rule-section" open>
+        <summary>
+          <strong>1. DBC import</strong> — required only for CAN tests
+        </summary>
+        <div class="rule-section-body">
+          <div class="dbc-picker">
+            <label
+              ><strong>DBC file</strong>
+              <input
+                id="rule-dbc-file"
+                type="file"
+                accept=".dbc,text/plain" /></label
+            ><span id="rule-dbc-status" class="hint"
+              >Import a DBC to populate CAN message and field choices inside
+              rule tests.</span
+            >
+          </div>
+        </div>
+      </details>
+      <details class="rule-section" open>
+        <summary>
+          <strong>2. Output rules</strong> — up to 16 broadcast command bits
+        </summary>
+        <div class="rule-section-body">
+          <div class="rules-table-wrap">
+            <table class="output-rules-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Output label</th>
+                  <th>Enabled</th>
+                  <th>Logic</th>
+                  <th>Published as</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="rule-editor"></tbody>
+            </table>
+          </div>
+          <div class="section-heading">
+            <button type="button" id="rule-add" class="primary-button">
+              Add rule</button
+            ><span class="hint"
+              >Configure expands the rule's ordered cases and optional pulse
+              table.</span
+            >
+          </div>
+        </div>
+      </details>
+      <details class="rule-section">
+        <summary><strong>Advanced</strong> — JSON backup/import</summary>
+        <div class="rule-section-body">
+          <p class="hint">
+            Only use this to save a backup or paste a configuration prepared
+            elsewhere.
+          </p>
+          <textarea
+            id="rules-json"
+            rows="12"
+            style="width: 100%; font-family: monospace"
+            spellcheck="false"
+            aria-label="Relay rule JSON"
+          ></textarea>
+          <p>
+            <button type="button" id="rules-import-json">Apply JSON</button>
+          </p>
+        </div>
+      </details>
+    </section>
     <div id="status-toast" class="toast" role="status" aria-live="polite">
       <span id="status-toast-icon" class="toast-icon">✓</span>
       <span id="status-toast-text"></span>
@@ -677,7 +995,9 @@
       function getEspnowClientsFromForm() {
         return Array.from(document.querySelectorAll(".espnow-client-row")).map(
           (row) => ({
-            mac: normalizeMacAddress(row.querySelector(".espnow-client-mac").value),
+            mac: normalizeMacAddress(
+              row.querySelector(".espnow-client-mac").value,
+            ),
             relay_can: row.querySelector(".espnow-client-relay").checked,
           }),
         );
@@ -726,7 +1046,8 @@
         const gpsEnabled = document.getElementById("gps-enabled").checked;
         const espnowClients = getEspnowClientsFromForm();
         const canBusActive =
-          canEnabled || (espnowEnabled && espnowClients.some((client) => client.relay_can));
+          canEnabled ||
+          (espnowEnabled && espnowClients.some((client) => client.relay_can));
 
         document.querySelectorAll(".can-setting").forEach((el) => {
           el.style.display = canBusActive ? "flex" : "none";
@@ -741,11 +1062,16 @@
         const gpsMac = document.getElementById("gps-target-mac");
 
         document.getElementById("can-speed").disabled = !canBusActive;
-        document.querySelectorAll(".espnow-client-row input, .espnow-client-row button").forEach((el) => {
-          el.disabled = !espnowEnabled;
-        });
+        document
+          .querySelectorAll(
+            ".espnow-client-row input, .espnow-client-row button",
+          )
+          .forEach((el) => {
+            el.disabled = !espnowEnabled;
+          });
         const addClient = document.getElementById("add-espnow-client");
-        addClient.disabled = !espnowEnabled || espnowClients.length >= ESPNOW_MAX_CLIENTS;
+        addClient.disabled =
+          !espnowEnabled || espnowClients.length >= ESPNOW_MAX_CLIENTS;
         document.getElementById("gps-can-start-id").disabled = !gpsEnabled;
         gpsMac.disabled = !gpsEnabled;
         gpsMac.required = gpsEnabled;
@@ -967,10 +1293,12 @@
         const espnowClients = Array.isArray(config.espnow_clients)
           ? config.espnow_clients
           : config.espnow_target_mac
-            ? [{
-                mac: config.espnow_target_mac,
-                relay_can: config.can_relay_espnow_enabled === true,
-              }]
+            ? [
+                {
+                  mac: config.espnow_target_mac,
+                  relay_can: config.can_relay_espnow_enabled === true,
+                },
+              ]
             : [];
         renderEspnowClients(espnowClients);
         document.getElementById("gps-enabled").checked =
@@ -1229,9 +1557,7 @@
             throw new Error(`BLE scan HTTP ${resp.status}`);
           }
           const payload = await resp.json();
-          const devices = Array.isArray(payload.devices)
-            ? payload.devices
-            : [];
+          const devices = Array.isArray(payload.devices) ? payload.devices : [];
           if (!devices.length) {
             status.textContent = "No likely Dragy devices found.";
             return;
@@ -1254,8 +1580,570 @@
           btn.disabled = !document.getElementById("gps-enabled").checked;
         }
       };
+      let relayRules = null;
+      let dbcMessages = [];
+      let visibleRuleRows = [];
+      const expandedRuleRows = new Set();
+      const testSourceModes = new Map();
+      const ruleStatus = (text) =>
+        (document.getElementById("rules-status").textContent = text);
+      const html = (value) =>
+        String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      const num = (value, fallback = 0) =>
+        Number.isFinite(Number(value)) ? Number(value) : fallback;
+      const sourceLabel = (source) => {
+        if (source.type === 2 || source.type === 3) {
+          const channel = Number(source.local_channel || 0);
+          const configuredName = config?.channels?.[channel]?.name;
+          return `Input ${channel + 1}${configuredName ? ` — ${configuredName}` : ""} (${source.type === 2 ? "Voltage" : "Value"})`;
+        }
+        return (
+          source.name ||
+          `CAN 0x${Number(source.can_id || 0)
+            .toString(16)
+            .toUpperCase()}`
+        );
+      };
+      const sourceChoices = (selected) =>
+        (relayRules?.sources || [])
+          .map((source, index) =>
+            source.type === 0
+              ? ""
+              : `<option value="${index}" ${index === Number(selected) ? "selected" : ""}>${html(sourceLabel(source))}</option>`,
+          )
+          .join("");
+      const comparisonChoices = (selected) =>
+        [">", ">=", "<", "<=", "=", "≠"]
+          .map(
+            (name, value) =>
+              `<option value="${value}" ${value === Number(selected) ? "selected" : ""}>${name}</option>`,
+          )
+          .join("");
+      const actionChoices = (selected) =>
+        ["OFF", "ON", "PULSE"]
+          .map(
+            (name, value) =>
+              `<option value="${value}" ${value === Number(selected) ? "selected" : ""}>${name}</option>`,
+          )
+          .join("");
+      const testKey = (rule, caseIndex, testIndex) =>
+        `${rule}:${caseIndex}:${testIndex}`;
+      function testSourceMode(test, key) {
+        if (testSourceModes.has(key)) return testSourceModes.get(key);
+        if (test.type === 1) return "timer";
+        return relayRules?.sources?.[test.source_index]?.type === 1
+          ? "can"
+          : "sensor";
+      }
+      function dbcSelectionForSource(source) {
+        for (
+          let messageIndex = 0;
+          messageIndex < dbcMessages.length;
+          ++messageIndex
+        ) {
+          const message = dbcMessages[messageIndex];
+          if (
+            message.id !== Number(source?.can_id) ||
+            message.extended !== Boolean(source?.extended)
+          )
+            continue;
+          const signalIndex = message.signals.findIndex(
+            (signal) =>
+              signal.start_bit === Number(source.start_bit) &&
+              signal.bit_length === Number(source.bit_length) &&
+              signal.little_endian === Boolean(source.little_endian) &&
+              signal.is_signed === Boolean(source.is_signed) &&
+              signal.factor === Number(source.factor) &&
+              signal.offset === Number(source.offset),
+          );
+          if (signalIndex >= 0) return { messageIndex, signalIndex };
+        }
+        return null;
+      }
+      function testEditor(test, rule, caseIndex, testIndex) {
+        const key = testKey(rule, caseIndex, testIndex),
+          mode = testSourceMode(test, key),
+          source = relayRules?.sources?.[test.source_index];
+        const localChannel = Number(source?.local_channel || 0),
+          localValue = source?.type === 3;
+        const dbcSelection =
+          mode === "can" ? dbcSelectionForSource(source) : null;
+        const messageOptions = dbcMessages
+          .map(
+            (message, index) =>
+              `<option value="${index}" ${dbcSelection?.messageIndex === index ? "selected" : ""}>0x${message.id.toString(16).toUpperCase()} — ${html(message.name)}</option>`,
+          )
+          .join("");
+        const selectedMessage = dbcMessages[dbcSelection?.messageIndex ?? 0];
+        const fieldOptions = (selectedMessage?.signals || [])
+          .map(
+            (signal, index) =>
+              `<option value="${index}" ${dbcSelection?.signalIndex === index ? "selected" : ""}>${html(signal.name)}${signal.unit ? ` (${html(signal.unit)})` : ""}</option>`,
+          )
+          .join("");
+        return `<div class="logic-test">
+          <select aria-label="Test source type" data-change="test-mode" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}"><option value="sensor" ${mode === "sensor" ? "selected" : ""}>Sensor input</option><option value="can" ${mode === "can" ? "selected" : ""}>CAN</option><option value="timer" ${mode === "timer" ? "selected" : ""}>Timer</option></select>
+          ${mode === "sensor" ? `<select aria-label="Sensor input" data-change="sensor-channel" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${Array.from({ length: 10 }, (_, index) => `<option value="${index}" ${localChannel === index ? "selected" : ""}>Input ${index + 1}${config?.channels?.[index]?.name ? ` — ${html(config.channels[index].name)}` : ""}</option>`).join("")}</select><select aria-label="Sensor measurement" data-change="sensor-measurement" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}"><option value="voltage" ${!localValue ? "selected" : ""}>Voltage</option><option value="value" ${localValue ? "selected" : ""}>Value</option></select>` : mode === "can" ? `<select aria-label="CAN message" data-change="can-message" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${messageOptions || `<option value="">Import a DBC first</option>`}</select><select aria-label="CAN field" data-change="can-field" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${fieldOptions || `<option value="">Select a DBC message</option>`}</select>` : `<span class="hint">Milliseconds since startup</span><span></span>`}
+          <select data-change="test-comparison" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${comparisonChoices(test.comparison)}</select>
+          <input type="number" step="any" value="${test.threshold}" aria-label="Threshold" data-change="test-threshold" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}" placeholder="Threshold">
+          <label class="hysteresis-label"><input type="checkbox" data-change="test-hyst-enabled" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}" ${test.hysteresis_enabled ? "checked" : ""}> Hysteresis</label>
+          <input type="number" step="any" value="${test.hysteresis}" aria-label="Hysteresis amount" data-change="test-hyst" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}" placeholder="Amount" ${test.hysteresis_enabled ? "" : "disabled"}>
+          <button class="danger-button" type="button" data-click="remove-test" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">Remove</button></div>`;
+      }
+      function caseEditor(entry, rule, caseIndex) {
+        const pulseRows = entry.pulse_points
+          .map(
+            (point, p) =>
+              `<tr><td><input type="number" step="any" value="${point.input_value}" data-change="point-input" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="Signal value"></td><td><input type="number" min="0" step="0.001" value="${Number(point.on_time_ms) / 1000}" data-change="point-on" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="ON seconds"></td><td><input type="number" min="0.001" step="0.001" value="${Number(point.period_ms) / 1000}" data-change="point-period" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="Cycle seconds"></td><td><button class="danger-button" type="button" data-click="remove-point" data-r="${rule}" data-c="${caseIndex}" data-p="${p}">Remove</button></td></tr>`,
+          )
+          .join("");
+        const pulse =
+          entry.action === 2
+            ? `<div class="pulse-panel"><div class="pulse-header"><label>Pulse lookup source<select data-change="pulse-source" data-r="${rule}" data-c="${caseIndex}">${sourceChoices(entry.pulse_source_index)}</select></label><button type="button" data-click="add-point" data-r="${rule}" data-c="${caseIndex}">Add lookup row</button><span class="hint">Values between rows are interpolated.</span></div><div class="rules-table-wrap"><table class="pulse-table"><thead><tr><th>Signal value</th><th>ON time (seconds)</th><th>Cycle period (seconds)</th><th></th></tr></thead><tbody>${pulseRows || `<tr><td class="empty-row" colspan="4">Add at least one pulse lookup row.</td></tr>`}</tbody></table></div></div>`
+            : "";
+        return `<section class="logic-case"><div class="logic-case-header"><strong>${caseIndex === 0 ? "IF" : "ELSE IF"} — Case ${caseIndex + 1}</strong><button class="danger-button" type="button" data-click="remove-case" data-r="${rule}" data-c="${caseIndex}">Remove case</button></div>${entry.tests.map((test, t) => testEditor(test, rule, caseIndex, t)).join("")}<div class="case-actions"><button type="button" data-click="add-test" data-r="${rule}" data-c="${caseIndex}">Add AND test</button><span class="hint">All tests above must pass.</span></div><div class="case-result"><strong>THEN</strong><select data-change="case-action" data-r="${rule}" data-c="${caseIndex}">${actionChoices(entry.action)}</select></div>${pulse}</section>`;
+      }
+      function renderRuleEditor() {
+        if (!relayRules) return;
+        const sparseBackup = {
+          ...relayRules,
+          rules: relayRules.rules
+            .map((rule, index) => ({ ...rule, rule: index + 1 }))
+            .filter((rule) => rule.enabled || rule.cases.length),
+        };
+        document.getElementById("rules-json").value = JSON.stringify(
+          sparseBackup,
+          null,
+          2,
+        );
+        document.getElementById("rule-editor").innerHTML =
+          visibleRuleRows
+            .map((r) => {
+              const rule = relayRules.rules[r];
+              const actions = rule.cases
+                .map((entry) => ["OFF", "ON", "PULSE"][entry.action])
+                .join(" → ");
+              const summary = rule.cases.length
+                ? `${rule.cases.length} case${rule.cases.length === 1 ? "" : "s"} · ${actions}`
+                : "No cases · defaults OFF";
+              const expanded = expandedRuleRows.has(r);
+              return `<tr class="rule-summary-row"><td class="rule-number">${r + 1}</td><td><input aria-label="Rule ${r + 1} output label" data-change="rule-label" data-r="${r}" value="${html(rule.label)}"></td><td class="rule-enabled"><input aria-label="Rule ${r + 1} enabled" type="checkbox" data-change="rule-enabled" data-r="${r}" ${rule.enabled ? "checked" : ""}></td><td>${summary}</td><td class="rule-command">Bit ${r + 1}</td><td><div class="row-actions"><button type="button" data-click="toggle-detail" data-r="${r}">${expanded ? "Close" : "Configure"}</button><button class="danger-button" type="button" data-click="remove-rule" data-r="${r}">Remove</button></div></td></tr><tr class="rule-detail-row" id="rule-detail-${r}" ${expanded ? "" : "hidden"}><td colspan="6"><div class="rule-detail"><div class="rule-detail-title"><strong>${html(rule.label)} — ordered logic</strong><span class="hint">No matching case means valid OFF.</span></div>${rule.cases.map((entry, c) => caseEditor(entry, r, c)).join("")}${rule.cases.length < 4 ? `<button type="button" data-click="add-case" data-r="${r}">Add ELSE-IF case</button>` : ""}</div></td></tr>`;
+            })
+            .join("") ||
+          '<tr><td class="empty-row" colspan="6">No output rules yet. Select Add rule to create the first command bit.</td></tr>';
+      }
+      const defaultTest = () => ({
+        type: 0,
+        source_index: 0,
+        comparison: 0,
+        hysteresis_enabled: false,
+        threshold: 0,
+        hysteresis: 0,
+      });
+      const defaultCase = () => ({
+        tests: [defaultTest()],
+        action: 0,
+        pulse_source_index: 0,
+        pulse_points: [],
+      });
+      function ensureCanSource(messageIndex, signalIndex) {
+        const message = dbcMessages[messageIndex],
+          signal = message?.signals?.[signalIndex];
+        if (!message || !signal || !relayRules) return null;
+        let index = relayRules.sources.findIndex(
+          (source) =>
+            source.type === 1 &&
+            source.can_id === message.id &&
+            source.extended === message.extended &&
+            source.start_bit === signal.start_bit &&
+            source.bit_length === signal.bit_length &&
+            source.little_endian === signal.little_endian &&
+            source.is_signed === signal.is_signed &&
+            Number(source.factor) === signal.factor &&
+            Number(source.offset) === signal.offset,
+        );
+        if (index < 0) {
+          index = relayRules.sources.findIndex((source) => source.type === 0);
+          if (index < 0) return null;
+          relayRules.sources[index] = {
+            name: `${message.name}.${signal.name}`,
+            type: 1,
+            local_channel: 0,
+            can_id: message.id,
+            extended: message.extended,
+            start_bit: signal.start_bit,
+            bit_length: signal.bit_length,
+            little_endian: signal.little_endian,
+            is_signed: signal.is_signed,
+            factor: signal.factor,
+            offset: signal.offset,
+            zero_confirm_samples: 11,
+          };
+        }
+        return index;
+      }
+      function changeRuleEditor(event) {
+        const el = event.target,
+          kind = el.dataset.change;
+        if (!kind || !relayRules) return;
+        const r = Number(el.dataset.r),
+          c = Number(el.dataset.c),
+          t = Number(el.dataset.t),
+          p = Number(el.dataset.p),
+          s = Number(el.dataset.s);
+        const rule = relayRules.rules[r],
+          entry = rule?.cases?.[c],
+          test = entry?.tests?.[t],
+          source = relayRules.sources[s];
+        const checked = el.checked;
+        if (kind === "rule-enabled") rule.enabled = checked;
+        else if (kind === "rule-label") rule.label = el.value;
+        else if (kind === "case-action") entry.action = num(el.value);
+        else if (kind === "pulse-source")
+          entry.pulse_source_index = num(el.value);
+        else if (kind === "test-mode") {
+          const key = testKey(r, c, t);
+          testSourceModes.set(key, el.value);
+          if (el.value === "timer") test.type = 1;
+          else {
+            test.type = 0;
+            if (el.value === "sensor") test.source_index = 0;
+            else {
+              const canIndex = ensureCanSource(0, 0);
+              if (canIndex !== null) test.source_index = canIndex;
+            }
+          }
+        } else if (kind === "sensor-channel") {
+          const measurement =
+            relayRules.sources[test.source_index]?.type === 3 ? 10 : 0;
+          test.type = 0;
+          test.source_index = measurement + num(el.value);
+        } else if (kind === "sensor-measurement") {
+          const channel = Number(
+            relayRules.sources[test.source_index]?.local_channel || 0,
+          );
+          test.type = 0;
+          test.source_index = (el.value === "value" ? 10 : 0) + channel;
+        } else if (kind === "can-message") {
+          const canIndex = ensureCanSource(num(el.value), 0);
+          if (canIndex !== null) test.source_index = canIndex;
+        } else if (kind === "can-field") {
+          const current = dbcSelectionForSource(
+            relayRules.sources[test.source_index],
+          );
+          const canIndex = ensureCanSource(
+            current?.messageIndex ?? 0,
+            num(el.value),
+          );
+          if (canIndex !== null) test.source_index = canIndex;
+        } else if (kind === "test-comparison") test.comparison = num(el.value);
+        else if (kind === "test-threshold") test.threshold = num(el.value);
+        else if (kind === "test-hyst-enabled")
+          test.hysteresis_enabled = checked;
+        else if (kind === "test-hyst") test.hysteresis = num(el.value);
+        else if (kind === "point-input")
+          entry.pulse_points[p].input_value = num(el.value);
+        else if (kind === "point-on")
+          entry.pulse_points[p].on_time_ms = Math.round(num(el.value) * 1000);
+        else if (kind === "point-period")
+          entry.pulse_points[p].period_ms = Math.round(
+            num(el.value, 0.001) * 1000,
+          );
+        else if (kind === "source-name") source.name = el.value;
+        else if (kind === "source-id")
+          source.can_id = Number.parseInt(el.value, 0) || 0;
+        else if (kind === "source-start") source.start_bit = num(el.value);
+        else if (kind === "source-length") source.bit_length = num(el.value);
+        else if (kind === "source-factor") source.factor = num(el.value);
+        else if (kind === "source-offset") source.offset = num(el.value);
+        else if (kind === "source-extended") source.extended = checked;
+        else if (kind === "source-signed") source.is_signed = checked;
+        else if (kind === "source-little") source.little_endian = checked;
+        else if (kind === "source-zero")
+          source.zero_confirm_samples = num(el.value, 11);
+        renderRuleEditor();
+      }
+      function clickRuleEditor(event) {
+        const el = event.target,
+          kind = el.dataset.click;
+        if (!kind || !relayRules) return;
+        const r = Number(el.dataset.r),
+          c = Number(el.dataset.c),
+          t = Number(el.dataset.t),
+          p = Number(el.dataset.p),
+          s = Number(el.dataset.s),
+          rule = relayRules.rules[r],
+          entry = rule?.cases?.[c];
+        if (kind === "add-case" && rule.cases.length < 4)
+          rule.cases.push(defaultCase());
+        else if (kind === "remove-case") rule.cases.splice(c, 1);
+        else if (kind === "add-test" && entry.tests.length < 4)
+          entry.tests.push(defaultTest());
+        else if (kind === "remove-test" && entry.tests.length > 1)
+          entry.tests.splice(t, 1);
+        else if (kind === "add-point" && entry.pulse_points.length < 8)
+          entry.pulse_points.push({
+            input_value: entry.pulse_points.length,
+            on_time_ms: 100,
+            period_ms: 1000,
+          });
+        else if (kind === "remove-point") entry.pulse_points.splice(p, 1);
+        else if (kind === "remove-source")
+          relayRules.sources[s] = {
+            name: "",
+            type: 0,
+            local_channel: 0,
+            can_id: 0,
+            extended: false,
+            start_bit: 0,
+            bit_length: 0,
+            little_endian: true,
+            is_signed: false,
+            factor: 1,
+            offset: 0,
+            zero_confirm_samples: 11,
+          };
+        else if (kind === "remove-rule") {
+          relayRules.rules[r] = {
+            label: `Rule ${r + 1}`,
+            enabled: false,
+            cases: [],
+          };
+          visibleRuleRows = visibleRuleRows.filter((value) => value !== r);
+          expandedRuleRows.delete(r);
+        } else if (kind === "toggle-detail") {
+          expandedRuleRows.has(r)
+            ? expandedRuleRows.delete(r)
+            : expandedRuleRows.add(r);
+        }
+        renderRuleEditor();
+      }
+      document
+        .getElementById("rule-editor")
+        .addEventListener("change", changeRuleEditor);
+      document
+        .getElementById("rule-editor")
+        .addEventListener("click", clickRuleEditor);
+      function parseRuleDbc(text) {
+        const messages = [];
+        let current = null;
+        for (const line of text.split(/\r?\n/)) {
+          const message = line.match(/^BO_\s+(\d+)\s+([^\s:]+)\s*:\s*(\d+)/);
+          if (message) {
+            const encoded = Number(message[1]),
+              extended = encoded >= 0x80000000,
+              id = extended ? encoded - 0x80000000 : encoded;
+            current =
+              id <= (extended ? 0x1fffffff : 0x7ff)
+                ? { id, extended, name: message[2], signals: [] }
+                : null;
+            if (current) messages.push(current);
+            continue;
+          }
+          const signal = line.match(
+            /^\s*SG_\s+([^\s:]+)(?:\s+(?:M|m\d+M?))?\s*:\s*(\d+)\|(\d+)@([01])([+-])\s*\(([-+\d.eE]+),([-+\d.eE]+)\)\s*\[[^\]]*\]\s*"([^"]*)"/,
+          );
+          if (current && signal)
+            current.signals.push({
+              name: signal[1],
+              start_bit: Number(signal[2]),
+              bit_length: Number(signal[3]),
+              little_endian: signal[4] === "1",
+              is_signed: signal[5] === "-",
+              factor: Number(signal[6]),
+              offset: Number(signal[7]),
+              unit: signal[8],
+            });
+        }
+        if (!messages.some((message) => message.signals.length))
+          throw new Error("No supported BO_/SG_ definitions found.");
+        return messages;
+      }
+      document.getElementById("rule-dbc-file").onchange = async (event) => {
+        try {
+          const file = event.target.files[0];
+          if (!file) return;
+          dbcMessages = parseRuleDbc(await file.text());
+          const count = dbcMessages.reduce(
+            (total, message) => total + message.signals.length,
+            0,
+          );
+          document.getElementById("rule-dbc-status").textContent =
+            `Loaded ${dbcMessages.length} messages and ${count} fields from ${file.name}. CAN tests now provide message and field dropdowns.`;
+          renderRuleEditor();
+        } catch (error) {
+          dbcMessages = [];
+          document.getElementById("rule-dbc-status").textContent =
+            `DBC import failed: ${error.message}`;
+          renderRuleEditor();
+        }
+      };
+      document.getElementById("rule-add").onclick = () => {
+        if (!relayRules) return;
+        const slot = relayRules.rules.findIndex(
+          (rule, index) =>
+            !visibleRuleRows.includes(index) &&
+            !rule.enabled &&
+            !rule.cases.length,
+        );
+        if (slot < 0)
+          return ruleStatus("All 16 output rules are already in use.");
+        relayRules.rules[slot] = {
+          label: `Rule ${slot + 1}`,
+          enabled: true,
+          cases: [defaultCase()],
+        };
+        visibleRuleRows.push(slot);
+        expandedRuleRows.add(slot);
+        renderRuleEditor();
+      };
+      function expandSparseRules(payload) {
+        const expanded = Array.from({ length: 16 }, (_, index) => ({
+          rule: index + 1,
+          label: `Rule ${index + 1}`,
+          enabled: false,
+          cases: [],
+        }));
+        for (
+          let position = 0;
+          position < (payload.rules || []).length;
+          ++position
+        ) {
+          const saved = payload.rules[position],
+            slot = Number(saved.rule || position + 1) - 1;
+          if (slot >= 0 && slot < expanded.length)
+            expanded[slot] = { ...saved, rule: slot + 1 };
+        }
+        return { ...payload, rules: expanded };
+      }
+      async function loadRules() {
+        const response = await fetch("/api/rules", { cache: "no-store" });
+        if (!response.ok) throw new Error(await response.text());
+        relayRules = expandSparseRules(await response.json());
+        visibleRuleRows = relayRules.rules
+          .map((rule, index) =>
+            rule.enabled || rule.cases.length ? index : -1,
+          )
+          .filter((index) => index >= 0);
+        expandedRuleRows.clear();
+        renderRuleEditor();
+        ruleStatus("Loaded.");
+      }
+      function validateRulesForSave() {
+        const publishIntervalMs = config?.can_tx_hz === 50 ? 20 : 40;
+        for (let r = 0; r < relayRules.rules.length; ++r) {
+          const rule = relayRules.rules[r];
+          if (!rule.enabled) continue;
+          if (!rule.cases.length)
+            return `Rule ${r + 1} (${rule.label}) needs at least one case.`;
+          for (let c = 0; c < rule.cases.length; ++c) {
+            const entry = rule.cases[c];
+            if (!entry.tests.length)
+              return `Rule ${r + 1}, case ${c + 1} needs at least one test.`;
+            if (entry.action !== 2) continue;
+            if (!entry.pulse_points.length)
+              return `Rule ${r + 1}, case ${c + 1} uses PULSE but has no lookup rows.`;
+            for (let p = 0; p < entry.pulse_points.length; ++p) {
+              const point = entry.pulse_points[p],
+                location = `Rule ${r + 1}, case ${c + 1}, pulse row ${p + 1}`;
+              if (point.period_ms <= 0)
+                return `${location}: cycle period must be greater than zero.`;
+              if (point.on_time_ms > point.period_ms)
+                return `${location}: ON time (${point.on_time_ms / 1000}s) cannot exceed cycle period (${point.period_ms / 1000}s).`;
+              if (
+                p > 0 &&
+                point.input_value <= entry.pulse_points[p - 1].input_value
+              )
+                return `${location}: signal values must increase from one row to the next.`;
+              if (point.on_time_ms > 0 && point.on_time_ms < publishIntervalMs)
+                return `${location}: ON time must be at least ${publishIntervalMs / 1000}s at the configured publish rate.`;
+              const offTime = point.period_ms - point.on_time_ms;
+              if (offTime > 0 && offTime < publishIntervalMs)
+                return `${location}: OFF time must be at least ${publishIntervalMs / 1000}s at the configured publish rate.`;
+            }
+          }
+        }
+        return "";
+      }
+      async function saveRules() {
+        const validationError = validateRulesForSave();
+        if (validationError) throw new Error(validationError);
+        const payload = {
+          ...relayRules,
+          rules: relayRules.rules
+            .map((rule, index) => ({ ...rule, rule: index + 1 }))
+            .filter((rule) => rule.enabled || rule.cases.length),
+        };
+        const response = await fetch("/api/rules", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        relayRules = expandSparseRules(await response.json());
+        visibleRuleRows = relayRules.rules
+          .map((rule, index) =>
+            rule.enabled || rule.cases.length ? index : -1,
+          )
+          .filter((index) => index >= 0);
+        renderRuleEditor();
+        ruleStatus("Saved and applied.");
+      }
+      document.getElementById("rules-load").onclick = () =>
+        loadRules().catch((e) => ruleStatus(`Load failed: ${e.message}`));
+      document.getElementById("rules-save").onclick = () =>
+        saveRules().catch((e) => ruleStatus(`Save failed: ${e.message}`));
+      document.getElementById("rules-import-json").onclick = () => {
+        try {
+          relayRules = expandSparseRules(
+            JSON.parse(document.getElementById("rules-json").value),
+          );
+          visibleRuleRows = relayRules.rules
+            .map((rule, index) =>
+              rule.enabled || rule.cases.length ? index : -1,
+            )
+            .filter((index) => index >= 0);
+          renderRuleEditor();
+          saveRules().catch((e) => ruleStatus(`Save failed: ${e.message}`));
+        } catch (e) {
+          ruleStatus("Invalid JSON.");
+        }
+      };
+      document.getElementById("rules-dbc").onclick = () => {
+        try {
+          const rules = relayRules;
+          const base = Number(config?.can_start_id || 0x100),
+            id = base + 5;
+          const clean = (name, index) =>
+            String(name || `Rule${index + 1}`)
+              .replace(/[^A-Za-z0-9_]/g, "_")
+              .replace(/^([^A-Za-z_])/, "R_$1");
+          let dbc = `VERSION ""\n\nBO_ ${id} relayRuleOutputs: 8 Vector__XXX\n`;
+          (rules.rules || []).forEach((rule, index) => {
+            const name = clean(rule.label, index);
+            dbc += ` SG_ ${name}_state : ${index}|1@1+ (1,0) [0|1] "" Vector__XXX\n SG_ ${name}_valid : ${16 + index}|1@1+ (1,0) [0|1] "" Vector__XXX\n SG_ ${name}_pulse : ${32 + index}|1@1+ (1,0) [0|1] "" Vector__XXX\n`;
+          });
+          dbc +=
+            ' SG_ relayRuleCounter : 48|8@1+ (1,0) [0|255] "" Vector__XXX\n SG_ relayRuleProtocolVersion : 56|8@1+ (1,0) [0|255] "" Vector__XXX\n';
+          const link = document.createElement("a");
+          link.href = URL.createObjectURL(
+            new Blob([dbc], { type: "text/plain" }),
+          );
+          link.download = "esp32-canboard-relay-rules.dbc";
+          link.click();
+          URL.revokeObjectURL(link.href);
+        } catch (e) {
+          document.getElementById("rules-status").textContent =
+            `DBC generation failed: ${e.message}`;
+        }
+      };
       updateTransportControls();
       loadConfig();
+      loadRules().catch(() => {});
       setInterval(refreshLiveValues, 1000);
     </script>
   </body>
