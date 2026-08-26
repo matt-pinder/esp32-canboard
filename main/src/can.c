@@ -11,8 +11,10 @@
 #include "driver/twai.h"
 #include "inc/config.h"
 #include "inc/can.h"
+#include "inc/can_receive_dispatch.h"
 #include "inc/inputs.h"
 #include "inc/espnow_transport.h"
+#include "inc/mk60_emulator.h"
 
 extern board_config_t board_cfg;
 
@@ -31,8 +33,9 @@ twai_general_config_t can_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, 
  * @return ESP_OK on success, ESP_FAIL on driver initialization error
  */
 esp_err_t can_init(void) {
-    if (!board_cfg.can_enabled && !config_has_espnow_relay_client(&board_cfg)) {
-        ESP_LOGI(can_log, "CAN transmission and relay disabled; TWAI driver not started");
+    if (!board_cfg.can_enabled && !config_has_espnow_relay_client(&board_cfg) &&
+        !board_cfg.mk60_emulator.enabled) {
+        ESP_LOGI(can_log, "CAN transmission, relay, and MK60 emulator disabled; TWAI driver not started");
         return ESP_OK;
     }
 
@@ -76,11 +79,11 @@ esp_err_t can_init(void) {
         memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
     }
 
-    if (config_has_espnow_relay_client(&board_cfg)) {
+    if (config_has_espnow_relay_client(&board_cfg) || board_cfg.mk60_emulator.enabled) {
         static const twai_filter_config_t accept_all = TWAI_FILTER_CONFIG_ACCEPT_ALL();
         memcpy(&f_config, &accept_all, sizeof(f_config));
         can_config.rx_queue_len = 128;
-        ESP_LOGI(can_log, "CAN receive filter enabled for ESP-NOW relay");
+        ESP_LOGI(can_log, "CAN receive filter enabled for dispatcher");
     } else {
         static const twai_filter_config_t reject_all = {
             .acceptance_code = 0xFFFFFFFF,
@@ -111,12 +114,30 @@ esp_err_t can_init(void) {
     }
     ESP_LOGI(can_log, "TWAI driver started");
     if (!board_cfg.can_enabled) {
-        ESP_LOGI(can_log, "CAN sensor transmission disabled; TWAI receive relay remains active");
+        ESP_LOGI(can_log, "CAN sensor transmission disabled; requested CAN services remain active");
     }
 
     can_driver_active = true;
     xSemaphoreGive(can_driver_mutex);
     return ESP_OK;
+}
+
+esp_err_t can_transmit_service_frame(const twai_message_t *message) {
+    if (message == NULL || can_driver_mutex == NULL) return ESP_ERR_INVALID_ARG;
+    if (xSemaphoreTake(can_driver_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return ESP_ERR_TIMEOUT;
+
+    esp_err_t err = ESP_ERR_INVALID_STATE;
+    if (can_driver_active && twai_can != NULL) {
+        twai_status_info_t status = {0};
+        err = twai_get_status_info_v2(twai_can, &status);
+        if (err == ESP_OK && status.state == TWAI_STATE_RUNNING) {
+            err = twai_transmit_v2(twai_can, message, pdMS_TO_TICKS(20));
+        } else if (err == ESP_OK) {
+            err = ESP_ERR_INVALID_STATE;
+        }
+    }
+    xSemaphoreGive(can_driver_mutex);
+    return err;
 }
 
 esp_err_t can_deinit(void) {
@@ -186,23 +207,37 @@ void can_transmit_frame(const twai_message_t *message, const char *label) {
     }
 }
 
-void canRelayEspNow(void *arg)
+static bool dispatch_to_espnow(const void *frame, void *context)
+{
+    (void)context;
+    return espnow_transport_enqueue_relay_twai(frame) == ESP_OK;
+}
+
+static bool dispatch_to_mk60(const void *frame, void *context)
+{
+    (void)context;
+    return mk60_emulator_dispatch_frame(frame);
+}
+
+void canReceiveDispatch(void *arg)
 {
     (void)arg;
-    ESP_LOGI(can_log, "CAN to ESP-NOW relay task started");
-    ESP_LOGI(can_log, "CAN relay configuration: can_tx=%d espnow=%d relay=%d driver=%d",
+    ESP_LOGI(can_log, "CAN receive dispatcher task started");
+    ESP_LOGI(can_log, "CAN receive configuration: can_tx=%d espnow=%d relay=%d mk60=%d driver=%d",
              board_cfg.can_enabled,
              board_cfg.espnow_enabled,
              config_has_espnow_relay_client(&board_cfg),
+             board_cfg.mk60_emulator.enabled,
              can_driver_active);
 
     bool first_frame_logged = false;
     uint32_t received_count = 0;
     uint32_t enqueue_error_count = 0;
+    uint32_t emulator_error_count = 0;
     TickType_t last_status_log = xTaskGetTickCount();
 
     while (true) {
-        if (!config_has_espnow_relay_client(&board_cfg) ||
+        if ((!config_has_espnow_relay_client(&board_cfg) && !board_cfg.mk60_emulator.enabled) ||
             can_driver_mutex == NULL) {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
@@ -231,9 +266,12 @@ void canRelayEspNow(void *arg)
                          message.extd ? " extended" : "");
                 first_frame_logged = true;
             }
-            if (espnow_transport_enqueue_relay_twai(&message) != ESP_OK) {
-                enqueue_error_count++;
-            }
+            can_receive_dispatch_result_t dispatch = can_receive_dispatch_fanout(
+                &message,
+                config_has_espnow_relay_client(&board_cfg), dispatch_to_espnow, NULL,
+                board_cfg.mk60_emulator.enabled, dispatch_to_mk60, NULL);
+            if (dispatch.relay_called && !dispatch.relay_ok) ++enqueue_error_count;
+            if (dispatch.emulator_called && !dispatch.emulator_ok) ++emulator_error_count;
         }
         if (drained == 0U || drained == 32U) {
             vTaskDelay(1);
@@ -253,18 +291,20 @@ void canRelayEspNow(void *arg)
 
             if (have_status) {
                 ESP_LOGI(can_log,
-                         "CAN relay status: rx=%lu enqueue_errors=%lu queued=%lu missed=%lu overrun=%lu state=%d",
+                         "CAN dispatcher status: rx=%lu relay_errors=%lu emulator_errors=%lu queued=%lu missed=%lu overrun=%lu state=%d",
                          (unsigned long)received_count,
                          (unsigned long)enqueue_error_count,
+                         (unsigned long)emulator_error_count,
                          (unsigned long)status.msgs_to_rx,
                          (unsigned long)status.rx_missed_count,
                          (unsigned long)status.rx_overrun_count,
                          (int)status.state);
             } else {
                 ESP_LOGI(can_log,
-                         "CAN relay status: rx=%lu enqueue_errors=%lu",
+                         "CAN dispatcher status: rx=%lu relay_errors=%lu emulator_errors=%lu",
                          (unsigned long)received_count,
-                         (unsigned long)enqueue_error_count);
+                         (unsigned long)enqueue_error_count,
+                         (unsigned long)emulator_error_count);
             }
             last_status_log = now;
         }

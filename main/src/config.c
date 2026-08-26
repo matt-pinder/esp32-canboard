@@ -50,6 +50,24 @@ typedef struct {
     uint8_t espnow_client_count;
     espnow_client_config_t espnow_clients[ESPNOW_MAX_CLIENTS];
     uint32_t crc32;
+} board_config_persist_v11_t;
+
+typedef struct {
+    uint32_t version;
+    uint32_t can_start_id;
+    uint32_t can_speed_kbps;
+    uint8_t can_tx_hz;
+    bool can_enabled;
+    bool espnow_enabled;
+    uint16_t pullup_vref_divider_high_ohm;
+    channel_config_t channels[CONFIG_CHANNELS];
+    bool gps_enabled;
+    uint32_t gps_can_start_id;
+    uint8_t gps_target_mac[ESP_NOW_ETH_ALEN];
+    uint8_t espnow_client_count;
+    espnow_client_config_t espnow_clients[ESPNOW_MAX_CLIENTS];
+    mk60_emulator_config_t mk60_emulator;
+    uint32_t crc32;
 } board_config_persist_t;
 
 typedef enum {
@@ -94,6 +112,11 @@ static void log_board_config(const board_config_t *cfg) {
              (unsigned long)cfg->gps_can_start_id,
              cfg->gps_target_mac[0], cfg->gps_target_mac[1], cfg->gps_target_mac[2],
              cfg->gps_target_mac[3], cfg->gps_target_mac[4], cfg->gps_target_mac[5]);
+    ESP_LOGI(TAG, "  mk60_emulator_enabled=%d trigger=0x%lX dlc=%u responses=%u",
+             cfg->mk60_emulator.enabled,
+             (unsigned long)cfg->mk60_emulator.trigger_id,
+             (unsigned)cfg->mk60_emulator.trigger_dlc,
+             (unsigned)cfg->mk60_emulator.response_count);
 
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
         const channel_config_t *ch = &cfg->channels[i];
@@ -165,10 +188,31 @@ static void persist_from_runtime(const board_config_t *cfg, board_config_persist
     memcpy(persisted->gps_target_mac, cfg->gps_target_mac, sizeof(persisted->gps_target_mac));
     persisted->espnow_client_count = cfg->espnow_client_count;
     memcpy(persisted->espnow_clients, cfg->espnow_clients, sizeof(persisted->espnow_clients));
+    persisted->mk60_emulator = cfg->mk60_emulator;
     persisted->crc32 = crc32(persisted, offsetof(board_config_persist_t, crc32));
 }
 
 static void runtime_from_persist(const board_config_persist_t *persisted, board_config_t *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->version = persisted->version;
+    cfg->can_start_id = persisted->can_start_id;
+    cfg->can_speed_kbps = persisted->can_speed_kbps;
+    cfg->can_tx_hz = persisted->can_tx_hz;
+    cfg->can_enabled = persisted->can_enabled;
+    cfg->espnow_enabled = persisted->espnow_enabled;
+    cfg->pullup_vref_divider_high_ohm = persisted->pullup_vref_divider_high_ohm;
+    memcpy(cfg->channels, persisted->channels, sizeof(cfg->channels));
+    cfg->gps_enabled = persisted->gps_enabled;
+    cfg->gps_can_start_id = persisted->gps_can_start_id;
+    memcpy(cfg->gps_target_mac, persisted->gps_target_mac, sizeof(cfg->gps_target_mac));
+    cfg->espnow_client_count = persisted->espnow_client_count;
+    memcpy(cfg->espnow_clients, persisted->espnow_clients, sizeof(cfg->espnow_clients));
+    cfg->mk60_emulator = persisted->mk60_emulator;
+    cfg->pullup_vref_mv = 5025;
+    cfg->crc32 = persisted->crc32;
+}
+
+static void runtime_from_v11(const board_config_persist_v11_t *persisted, board_config_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
     cfg->version = persisted->version;
     cfg->can_start_id = persisted->can_start_id;
@@ -226,7 +270,9 @@ static bool config_semantically_valid(const board_config_t *cfg) {
          cfg->can_speed_kbps != 500 && cfg->can_speed_kbps != 1000) ||
         (cfg->can_tx_hz != 25 && cfg->can_tx_hz != 50) ||
         cfg->espnow_client_count > ESPNOW_MAX_CLIENTS ||
-        (cfg->espnow_enabled && cfg->espnow_client_count == 0)) {
+        (cfg->espnow_enabled && cfg->espnow_client_count == 0) ||
+        (cfg->mk60_emulator.enabled && cfg->can_speed_kbps != 500) ||
+        !mk60_emulator_profile_valid(&cfg->mk60_emulator)) {
         return false;
     }
 
@@ -293,6 +339,11 @@ static bool normalize_config(board_config_t *cfg) {
             memset(cfg->gps_target_mac, 0, sizeof(cfg->gps_target_mac));
         }
         if (old_version < 10 && cfg->espnow_client_count > 0) cfg->espnow_clients[0].relay_can = false;
+        if (old_version < 12) {
+            memset(&cfg->mk60_emulator, 0, sizeof(cfg->mk60_emulator));
+            cfg->mk60_emulator.trigger_id = MK60_TRIGGER_ID;
+            cfg->mk60_emulator.trigger_dlc = 8U;
+        }
         cfg->version = CONFIG_VERSION;
         changed = true;
     }
@@ -372,6 +423,7 @@ static bool decode_record(const uint8_t *record, size_t record_size, board_confi
     if (record_read_u32(record + 12) != crc32(payload, payload_size)) return false;
 
     if (payload_size != sizeof(board_config_persist_t) &&
+        payload_size != sizeof(board_config_persist_v11_t) &&
         payload_size != sizeof(board_config_persist_v10_t)) return false;
 
     void *persisted = malloc(payload_size);
@@ -383,6 +435,10 @@ static bool decode_record(const uint8_t *record, size_t record_size, board_confi
         board_config_persist_t *current = persisted;
         valid = current->crc32 == crc32(current, offsetof(board_config_persist_t, crc32));
         if (valid) runtime_from_persist(current, cfg);
+    } else if (payload_size == sizeof(board_config_persist_v11_t)) {
+        board_config_persist_v11_t *v11 = persisted;
+        valid = v11->crc32 == crc32(v11, offsetof(board_config_persist_v11_t, crc32));
+        if (valid) runtime_from_v11(v11, cfg);
     } else {
         board_config_persist_v10_t *v10 = persisted;
         valid = v10->crc32 == crc32(v10, offsetof(board_config_persist_v10_t, crc32));
@@ -406,9 +462,7 @@ static config_read_result_t load_nvs_record(const char *key, board_config_t *cfg
         nvs_close(handle);
         return CONFIG_READ_NOT_FOUND;
     }
-    const size_t max_payload_size = sizeof(board_config_persist_t) > sizeof(board_config_persist_v10_t)
-                                      ? sizeof(board_config_persist_t)
-                                      : sizeof(board_config_persist_v10_t);
+    const size_t max_payload_size = sizeof(board_config_persist_t);
     if (err != ESP_OK || size < CONFIG_RECORD_HEADER_SIZE ||
         size > CONFIG_RECORD_HEADER_SIZE + max_payload_size) {
         nvs_close(handle);
@@ -664,6 +718,10 @@ void config_set_defaults(board_config_t *cfg) {
     cfg->gps_enabled = false;
     cfg->gps_can_start_id = 0x650;
     memset(cfg->gps_target_mac, 0, sizeof(cfg->gps_target_mac));
+    cfg->mk60_emulator.enabled = false;
+    cfg->mk60_emulator.trigger_id = MK60_TRIGGER_ID;
+    cfg->mk60_emulator.trigger_dlc = 8U;
+    cfg->mk60_emulator.response_count = 0U;
     cfg->pullup_vref_mv = 5025; // Default live pull-up reference voltage (mV)
     cfg->pullup_vref_divider_high_ohm = 9475;
     

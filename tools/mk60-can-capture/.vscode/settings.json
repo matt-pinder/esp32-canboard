@@ -1,0 +1,12 @@
+{
+  "idf.currentSetup": "/Users/matthew.pinder/.espressif/v6.0.2/esp-idf",
+  "idf.port": "/dev/tty.usbserial-0001",
+  "idf.flashType": "UART",
+  "idf.customExtraVars": {},
+  "clangd.path": "/Users/matthew.pinder/.espressif/tools/esp-clang/esp-20.1.1_20250829/esp-clang/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=/Users/matthew.pinder/Documents/projects/personal/esp32-canboard/tools/mk60-can-capture/build"
+  ]
+}

@@ -73,6 +73,35 @@ Encoding rules for dynamic values (one per input):
 
 Example DBC for signal names and scaling: [dbc/esp32-canboard.dbc](dbc/esp32-canboard.dbc)
 
+### E46 M3 MK60 cluster emulator (capture-first)
+
+The firmware contains an opt-in MK60 request/response service for cars where
+the original instrument cluster has been removed. It is disabled by default
+and has no factory response payload: capture the car first with the standalone
+listen-only logger in [`tools/mk60-can-capture`](tools/mk60-can-capture).
+
+The `mk60_emulator` object is included in configuration backup/import JSON. A
+profile contains the exact standard data frames observed after the MK60's
+standard `0x610` RTR request. Only `0x610`, `0x613`, `0x615`, `0x316`, and
+`0x329` are accepted, the first response must be `0x610`, and emulation can
+only be enabled with a complete profile at 500 kbit/s.
+
+```json
+"mk60_emulator": {
+  "enabled": false,
+  "trigger_id": 1552,
+  "trigger_dlc": 8,
+  "responses": []
+}
+```
+
+Populate `responses` from repeatable connected/disconnected captures. Each
+entry has `id`, `dlc`, `delay_before_ms`, and an eight-element `data` byte
+array. Do not copy example payloads from the internet or enable the feature
+until the bytes and timing have been verified on the target MK60. A CAN
+transmit error or bus-off condition latches the emulator off until its profile
+is reapplied or the board restarts.
+
 ### CAN relay over ESP-NOW
 
 When ESP-NOW and **Relay CAN bus** are enabled, externally received CAN frames are sent byte-for-byte to the configured ESP-NOW target as `twai_message_t` values. Physical CAN transmission of the board's own sensor frames may remain disabled; the TWAI controller and CAN speed setting remain active for receiving relay traffic. The CAN receive filter is enabled only while relay mode is active.

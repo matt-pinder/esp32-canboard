@@ -22,6 +22,7 @@
 #include "inc/ble_scan.h"
 #include "inc/dragy_gps.h"
 #include "inc/espnow_transport.h"
+#include "inc/mk60_emulator.h"
 
 #include "inc/wifi_config.h"
 #include "inc/config.h"
@@ -57,6 +58,11 @@ void app_main(void)
         }
     } else {
         ESP_LOGI(log_tag, "Config loaded and CRC valid");
+    }
+
+    if (mk60_emulator_start(&board_cfg.mk60_emulator) != ESP_OK) {
+        ESP_LOGE(log_tag, "Failed to initialize MK60 emulator task");
+        abort();
     }
 
     // Start WiFi config mode (AP + HTTP server with timeout)
@@ -113,11 +119,11 @@ void app_main(void)
         abort();
     }
 
-    // Rapidly drain physical CAN below sensor publishing and above radio batching.
+    // Sole physical CAN receiver, below sensor publishing and above radio batching.
     task_result = xTaskCreatePinnedToCore(
-        canRelayEspNow, "canRelayEspNow", 4096, NULL, 9, NULL, 0);
+        canReceiveDispatch, "canRxDispatch", 4096, NULL, 12, NULL, 0);
     if (task_result != pdPASS) {
-        ESP_LOGE(log_tag, "Failed to create CAN relay task!");
+        ESP_LOGE(log_tag, "Failed to create CAN receive dispatcher task!");
         abort();
     }
     

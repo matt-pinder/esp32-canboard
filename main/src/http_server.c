@@ -8,6 +8,7 @@
 #include "inc/ble_scan.h"
 #include "inc/dragy_gps.h"
 #include "inc/espnow_transport.h"
+#include "inc/mk60_emulator.h"
 #include "inc/http_server.h"
 #include "inc/inputs.h"
 #include "inc/wifi_config.h"
@@ -60,6 +61,12 @@ static bool parse_mac(const char *text, uint8_t mac[ESP_NOW_ETH_ALEN]) {
         mac[i] = (uint8_t)bytes[i];
     }
     return true;
+}
+
+static bool json_is_uint_in_range(const cJSON *item, int maximum)
+{
+    return cJSON_IsNumber(item) && item->valuedouble >= 0 &&
+           item->valuedouble <= maximum && item->valuedouble == item->valueint;
 }
 
 static bool read_transport_config(cJSON *root, board_config_t *cfg) {
@@ -131,6 +138,78 @@ static bool format_espnow_clients_json(const board_config_t *cfg, char *out, siz
     return written >= 0 && (size_t)written < out_len - pos;
 }
 
+static bool read_mk60_config(cJSON *root, board_config_t *cfg) {
+    cJSON *mk60 = cJSON_GetObjectItem(root, "mk60_emulator");
+    if (mk60 == NULL) return true;
+    if (!cJSON_IsObject(mk60)) return false;
+
+    mk60_emulator_config_t parsed = {0};
+    cJSON *enabled = cJSON_GetObjectItem(mk60, "enabled");
+    cJSON *trigger_id = cJSON_GetObjectItem(mk60, "trigger_id");
+    cJSON *trigger_dlc = cJSON_GetObjectItem(mk60, "trigger_dlc");
+    cJSON *responses = cJSON_GetObjectItem(mk60, "responses");
+    if (!cJSON_IsBool(enabled) || !json_is_uint_in_range(trigger_id, 0x7FF) ||
+        !json_is_uint_in_range(trigger_dlc, 8) ||
+        !cJSON_IsArray(responses)) return false;
+
+    const int response_count = cJSON_GetArraySize(responses);
+    if (response_count < 0 || response_count > MK60_MAX_RESPONSE_FRAMES) return false;
+
+    parsed.enabled = cJSON_IsTrue(enabled);
+    parsed.trigger_id = (uint32_t)trigger_id->valueint;
+    parsed.trigger_dlc = (uint8_t)trigger_dlc->valueint;
+    parsed.response_count = (uint8_t)response_count;
+    for (int i = 0; i < response_count; ++i) {
+        cJSON *entry = cJSON_GetArrayItem(responses, i);
+        cJSON *id = cJSON_GetObjectItem(entry, "id");
+        cJSON *dlc = cJSON_GetObjectItem(entry, "dlc");
+        cJSON *delay = cJSON_GetObjectItem(entry, "delay_before_ms");
+        cJSON *data = cJSON_GetObjectItem(entry, "data");
+        if (!cJSON_IsObject(entry) || !json_is_uint_in_range(id, 0x7FF) ||
+            !json_is_uint_in_range(dlc, 8) ||
+            !json_is_uint_in_range(delay, MK60_MAX_INTERFRAME_DELAY_MS) ||
+            !cJSON_IsArray(data) || cJSON_GetArraySize(data) != 8) return false;
+
+        mk60_response_frame_config_t *response = &parsed.responses[i];
+        response->identifier = (uint32_t)id->valueint;
+        response->data_length_code = (uint8_t)dlc->valueint;
+        response->delay_before_ms = (uint8_t)delay->valueint;
+        for (int byte = 0; byte < 8; ++byte) {
+            cJSON *value = cJSON_GetArrayItem(data, byte);
+            if (!json_is_uint_in_range(value, 255)) return false;
+            response->data[byte] = (uint8_t)value->valueint;
+        }
+    }
+    if (!mk60_emulator_profile_valid(&parsed)) return false;
+    cfg->mk60_emulator = parsed;
+    return true;
+}
+
+static bool format_mk60_json(const board_config_t *cfg, char *out, size_t out_len) {
+    size_t pos = 0U;
+    int written = snprintf(out, out_len,
+                           "{\"enabled\":%s,\"trigger_id\":%lu,\"trigger_dlc\":%u,\"responses\":[",
+                           cfg->mk60_emulator.enabled ? "true" : "false",
+                           (unsigned long)cfg->mk60_emulator.trigger_id,
+                           (unsigned)cfg->mk60_emulator.trigger_dlc);
+    if (written < 0 || (size_t)written >= out_len) return false;
+    pos = (size_t)written;
+    for (uint8_t i = 0; i < cfg->mk60_emulator.response_count; ++i) {
+        const mk60_response_frame_config_t *response = &cfg->mk60_emulator.responses[i];
+        written = snprintf(out + pos, out_len - pos,
+                           "%s{\"id\":%lu,\"dlc\":%u,\"delay_before_ms\":%u,"
+                           "\"data\":[%u,%u,%u,%u,%u,%u,%u,%u]}",
+                           i == 0U ? "" : ",", (unsigned long)response->identifier,
+                           (unsigned)response->data_length_code, (unsigned)response->delay_before_ms,
+                           response->data[0], response->data[1], response->data[2], response->data[3],
+                           response->data[4], response->data[5], response->data[6], response->data[7]);
+        if (written < 0 || (size_t)written >= out_len - pos) return false;
+        pos += (size_t)written;
+    }
+    written = snprintf(out + pos, out_len - pos, "]}");
+    return written >= 0 && (size_t)written < out_len - pos;
+}
+
 static bool read_gps_config(cJSON *root, board_config_t *cfg) {
     cJSON *gps_enabled = cJSON_GetObjectItem(root, "gps_enabled");
     if (gps_enabled && cJSON_IsBool(gps_enabled)) {
@@ -178,7 +257,10 @@ static bool apply_runtime_config(const board_config_t *cfg) {
     board_config_t previous_cfg = board_cfg;
     bool can_changed = (previous_cfg.can_enabled != cfg->can_enabled) ||
                        (previous_cfg.can_speed_kbps != cfg->can_speed_kbps) ||
-                       (config_has_espnow_relay_client(&previous_cfg) != config_has_espnow_relay_client(cfg));
+                       (config_has_espnow_relay_client(&previous_cfg) != config_has_espnow_relay_client(cfg)) ||
+                       (previous_cfg.mk60_emulator.enabled != cfg->mk60_emulator.enabled);
+    bool mk60_changed = memcmp(&previous_cfg.mk60_emulator, &cfg->mk60_emulator,
+                               sizeof(cfg->mk60_emulator)) != 0;
     bool espnow_changed = (previous_cfg.espnow_enabled != cfg->espnow_enabled) ||
                           (previous_cfg.espnow_client_count != cfg->espnow_client_count) ||
                           (memcmp(previous_cfg.espnow_clients, cfg->espnow_clients,
@@ -188,18 +270,25 @@ static bool apply_runtime_config(const board_config_t *cfg) {
                        (memcmp(previous_cfg.gps_target_mac, cfg->gps_target_mac, ESP_NOW_ETH_ALEN) != 0);
     board_cfg = *cfg;
 
+    if (mk60_changed) {
+        mk60_emulator_apply_config(&board_cfg.mk60_emulator);
+    }
+
     if (can_changed) {
         esp_err_t err = can_deinit();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to stop CAN before config update: %s", esp_err_to_name(err));
             board_cfg = previous_cfg;
+            mk60_emulator_apply_config(&board_cfg.mk60_emulator);
             return false;
         }
         if (can_init() != ESP_OK) {
             ESP_LOGE(TAG, "Failed to reinitialize CAN after config update, restoring previous config");
             board_cfg = previous_cfg;
+            mk60_emulator_apply_config(&board_cfg.mk60_emulator);
             can_deinit();
-            if (previous_cfg.can_enabled && can_init() != ESP_OK) {
+            if ((previous_cfg.can_enabled || config_has_espnow_relay_client(&previous_cfg) ||
+                 previous_cfg.mk60_emulator.enabled) && can_init() != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to restore previous CAN configuration");
             }
             return false;
@@ -214,9 +303,11 @@ static bool apply_runtime_config(const board_config_t *cfg) {
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to apply ESP-NOW config: %s", esp_err_to_name(err));
             board_cfg = previous_cfg;
+            mk60_emulator_apply_config(&board_cfg.mk60_emulator);
             if (can_changed) {
                 can_deinit();
-                if (previous_cfg.can_enabled && can_init() != ESP_OK) {
+                if ((previous_cfg.can_enabled || config_has_espnow_relay_client(&previous_cfg) ||
+                     previous_cfg.mk60_emulator.enabled) && can_init() != ESP_OK) {
                     ESP_LOGE(TAG, "Failed to restore previous CAN configuration");
                 }
             }
@@ -231,7 +322,7 @@ static bool apply_runtime_config(const board_config_t *cfg) {
                  board_cfg.gps_enabled, (unsigned long)board_cfg.gps_can_start_id);
     }
 
-    if (!can_changed && !espnow_changed && !gps_changed) {
+    if (!can_changed && !espnow_changed && !gps_changed && !mk60_changed) {
         return true;
     }
 
@@ -298,7 +389,7 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     board_config_t cfg = board_cfg;
     
     // Use larger buffer for JSON output
-    char *json = malloc(4096);
+    char *json = malloc(8192);
     if (!json) {
         ESP_LOGE(TAG, "Failed to allocate JSON buffer");
         httpd_resp_send_500(req);
@@ -306,10 +397,16 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     }
     
     size_t json_pos = 0;
-    const size_t json_max = 4096;
+    const size_t json_max = 8192;
     char espnow_clients[384];
+    char mk60_json[768];
     char gps_mac[18];
     if (!format_espnow_clients_json(&cfg, espnow_clients, sizeof(espnow_clients))) {
+        free(json);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    if (!format_mk60_json(&cfg, mk60_json, sizeof(mk60_json))) {
         free(json);
         httpd_resp_send_500(req);
         return ESP_FAIL;
@@ -318,7 +415,7 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     
     // Start JSON object including persisted board and transport configuration.
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg.can_enabled ? "true" : "false",
         (unsigned long)cfg.can_speed_kbps,
         (unsigned long)cfg.can_start_id,
@@ -328,6 +425,7 @@ esp_err_t config_get_handler(httpd_req_t *req) {
         cfg.gps_enabled ? "true" : "false",
         (unsigned long)cfg.gps_can_start_id,
         gps_mac,
+        mk60_json,
         (unsigned)cfg.pullup_vref_divider_high_ohm);
     
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
@@ -380,7 +478,7 @@ esp_err_t config_get_handler(httpd_req_t *req) {
  * @return ESP_OK on successful save, ESP_FAIL on JSON parse error or config validation failure
  */
 esp_err_t config_post_handler(httpd_req_t *req) {
-    const size_t REQ_BUF_SIZE = 4096;
+    const size_t REQ_BUF_SIZE = 8192;
     char *buf = malloc(REQ_BUF_SIZE);
     if (!buf) {
         ESP_LOGE(TAG, "Failed to allocate request buffer");
@@ -406,6 +504,9 @@ esp_err_t config_post_handler(httpd_req_t *req) {
     
     board_config_t cfg;
     config_set_defaults(&cfg);
+    // The current web asset predates this safety-critical setting. Preserve an
+    // existing profile when that UI posts a configuration without the field.
+    cfg.mk60_emulator = board_cfg.mk60_emulator;
     
     cJSON *channels = cJSON_GetObjectItem(root, "channels");
     if (!channels || !cJSON_IsArray(channels) || cJSON_GetArraySize(channels) != CONFIG_CHANNELS) {
@@ -546,6 +647,13 @@ esp_err_t config_post_handler(httpd_req_t *req) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid GPS configuration");
         return ESP_FAIL;
     }
+    if (!read_mk60_config(root, &cfg)) {
+        ESP_LOGW(TAG, "Invalid MK60 emulator configuration");
+        cJSON_Delete(root);
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid MK60 emulator configuration");
+        return ESP_FAIL;
+    }
 
     // Keep pullup_vref_mv driven by the ADC task rather than the HTTP API.
     cfg.pullup_vref_mv = board_cfg.pullup_vref_mv;
@@ -660,7 +768,7 @@ esp_err_t live_values_get_handler(httpd_req_t *req) {
         xSemaphoreGive(filtered_voltages_mutex);
     }
 
-    char *json = malloc(4096);
+    char *json = malloc(8192);
     if (!json) {
         ESP_LOGE(TAG, "Failed to allocate live values JSON buffer");
         httpd_resp_send_500(req);
@@ -780,7 +888,7 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
         *cfg = board_cfg;
     }
 
-    char *json = malloc(4096);
+    char *json = malloc(8192);
     if (!json) {
         ESP_LOGE(TAG, "Failed to allocate JSON buffer");
         free(cfg);
@@ -789,8 +897,9 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
     }
 
     size_t json_pos = 0;
-    const size_t json_max = 4096;
+    const size_t json_max = 8192;
     char espnow_clients[384];
+    char mk60_json[768];
     char gps_mac[18];
     if (!format_espnow_clients_json(cfg, espnow_clients, sizeof(espnow_clients))) {
         free(json);
@@ -798,9 +907,15 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
+    if (!format_mk60_json(cfg, mk60_json, sizeof(mk60_json))) {
+        free(json);
+        free(cfg);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
     format_mac(cfg->gps_target_mac, gps_mac, sizeof(gps_mac));
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg->can_enabled ? "true" : "false",
         (unsigned long)cfg->can_speed_kbps,
         (unsigned long)cfg->can_start_id,
@@ -810,6 +925,7 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
         cfg->gps_enabled ? "true" : "false",
         (unsigned long)cfg->gps_can_start_id,
         gps_mac,
+        mk60_json,
         (unsigned)cfg->pullup_vref_divider_high_ohm);
 
     for (int i = 0; i < CONFIG_CHANNELS; ++i) {
@@ -862,7 +978,7 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
  * Accepts raw JSON body, validates it, backs up existing config, and saves new config.
  */
 esp_err_t config_import_post_handler(httpd_req_t *req) {
-    const size_t REQ_BUF_SIZE = 4096;
+    const size_t REQ_BUF_SIZE = 8192;
     char *buf = malloc(REQ_BUF_SIZE);
     if (!buf) {
         ESP_LOGE(TAG, "Failed to allocate import buffer");
@@ -1033,6 +1149,13 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
         cJSON_Delete(root);
         free(buf);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid GPS configuration");
+        return ESP_FAIL;
+    }
+    if (!read_mk60_config(root, &cfg)) {
+        ESP_LOGW(TAG, "Invalid MK60 emulator configuration in import");
+        cJSON_Delete(root);
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid MK60 emulator configuration");
         return ESP_FAIL;
     }
     cfg.pullup_vref_mv = board_cfg.pullup_vref_mv;

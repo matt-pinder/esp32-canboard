@@ -48,6 +48,10 @@ esp_err_t can_deinit(void);
 /// @param label Short label used in rate-limited error logs
 void can_transmit_frame(const twai_message_t *message, const char *label);
 
+/// @brief Transmit one physical-CAN service frame independent of sensor CAN output.
+/// Used by validated request/response services such as the MK60 emulator.
+esp_err_t can_transmit_service_frame(const twai_message_t *message);
+
 /// @brief FreeRTOS task for transmitting CAN messages
 /// Periodically transmits 3 multiplexed CAN messages containing voltage data from all 10 channels.
 /// Message format:
@@ -58,5 +62,5 @@ void can_transmit_frame(const twai_message_t *message, const char *label);
 /// @param arg Unused FreeRTOS task parameter
 void canTransmit(void *arg);
 
-/// @brief Low-priority task that relays received CAN frames through ESP-NOW.
-void canRelayEspNow(void *arg);
+/// @brief Sole physical CAN receiver; dispatches copies to all enabled consumers.
+void canReceiveDispatch(void *arg);
