@@ -13,9 +13,6 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_system.h"
-#include "driver/gpio.h"
-
-#define USB_PRESENCE_DETECT GPIO_NUM_38
 
 #include "inc/inputs.h"
 #include "inc/can.h"
@@ -23,6 +20,7 @@
 #include "inc/dragy_gps.h"
 #include "inc/espnow_transport.h"
 #include "inc/mk60_emulator.h"
+#include "inc/relay_rule_engine.h"
 
 #include "inc/wifi_config.h"
 #include "inc/config.h"
@@ -59,13 +57,15 @@ void app_main(void)
     } else {
         ESP_LOGI(log_tag, "Config loaded and CRC valid");
     }
+    relay_rule_engine_set_publish_rate(board_cfg.can_tx_hz);
+    relay_rule_engine_init();
 
     if (mk60_emulator_start(&board_cfg.mk60_emulator) != ESP_OK) {
         ESP_LOGE(log_tag, "Failed to initialize MK60 emulator task");
         abort();
     }
 
-    // Start WiFi config mode (AP + HTTP server with timeout)
+    // Keep the configuration AP available; HTTPD starts only while a client is associated.
     wifi_config_mode_start();
 
     if (ble_scan_init() != ESP_OK) {

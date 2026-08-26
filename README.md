@@ -18,11 +18,22 @@ This project targets ESP-IDF 6.0.2. Activate the 6.0.2 environment before runnin
 
 ## Device Configuration
 
-On each boot the board enables a WiFi access point and web configuration interface; this will automatically disable after 120 seconds if no client connects. 
+The board keeps its WiFi access point available continuously. The web server starts when a client connects to the access point and stops when that client disconnects, avoiding the HTTP server's idle memory cost.
 
 | SSID | WPA2 Key | Web UI |
 |:---|:---|:---|
-| ESP32-CanBoard | canboard123 | http://192.168.4.1 |
+| ESP32-CanBoard | canconfig | http://192.168.4.1 |
+
+### Previous-boot WiFi diagnostics
+
+The firmware stores a four-boot ring of small WiFi startup records in one NVS
+blob and prints them as `PREVIOUS BOOT WIFI` during the next boot. This allows a
+12 V-only startup to be diagnosed after power is removed and USB serial is
+connected, even if USB enumeration causes another reset. In each record, result values of `0` mean success, mode `3` is
+AP+STA, event bit `0x01` confirms an AP-start event, and bit `0x02` records that
+the AP was subsequently stopped. `usb_vbus` records GPIO38 and `usb_phy` records
+whether the USB PHY was retained; both should be `0` on a 12 V-only boot. The bounded NVS blob is updated at boot and
+AP start/stop events; normal runtime traffic does not write diagnostic data.
 
 The web UI allows you to:
 

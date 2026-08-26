@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "espnow_can_protocol.h"
+#include "relay_command_protocol.h"
 
 static void assert_frame_equal(const espnow_can_frame_t *actual, const espnow_can_frame_t *expected)
 {
@@ -99,10 +100,30 @@ static void test_malformed_packets(void)
     assert(espnow_can_encode_batch(packet, sizeof(packet), &meta, &frame, 0U) == 0U);
 }
 
+static void test_relay_command_encoding(void)
+{
+    const relay_command_t command = {
+        .state_mask = 0x8001U, .valid_mask = 0x0F02U,
+        .pulse_mask = 0x4004U, .counter = 0xA5U,
+    };
+    uint8_t bytes[RELAY_COMMAND_FRAME_DLC];
+    relay_command_encode(bytes, &command);
+    const uint8_t expected[RELAY_COMMAND_FRAME_DLC] =
+        {0x01U, 0x80U, 0x02U, 0x0FU, 0x04U, 0x40U, 0xA5U, 0x01U};
+    assert(memcmp(bytes, expected, sizeof(bytes)) == 0);
+    relay_command_t decoded;
+    assert(relay_command_decode(bytes, &decoded));
+    assert(memcmp(&command, &decoded, sizeof(command)) == 0);
+    bytes[7] = 2U;
+    assert(!relay_command_decode(bytes, &decoded));
+    assert(relay_command_can_id(0x7FAU) == 0x7FFU);
+}
+
 int main(void)
 {
     test_round_trips();
     test_malformed_packets();
+    test_relay_command_encoding();
     puts("espnow_can_protocol tests passed");
     return 0;
 }

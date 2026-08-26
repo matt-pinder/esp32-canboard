@@ -265,7 +265,7 @@ bool config_has_espnow_relay_client(const board_config_t *cfg) {
 }
 
 static bool config_semantically_valid(const board_config_t *cfg) {
-    if (cfg->version != CONFIG_VERSION || cfg->can_start_id > 0x7FB || cfg->gps_can_start_id > 0x7FA ||
+    if (cfg->version != CONFIG_VERSION || cfg->can_start_id > 0x7FA || cfg->gps_can_start_id > 0x7FA ||
         (cfg->can_speed_kbps != 125 && cfg->can_speed_kbps != 250 &&
          cfg->can_speed_kbps != 500 && cfg->can_speed_kbps != 1000) ||
         (cfg->can_tx_hz != 25 && cfg->can_tx_hz != 50) ||

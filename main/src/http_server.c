@@ -12,6 +12,7 @@
 #include "inc/http_server.h"
 #include "inc/inputs.h"
 #include "inc/wifi_config.h"
+#include "inc/relay_rule_http.h"
 #include "esp_wifi.h"
 #include "cJSON.h"
 #include <sys/param.h>
@@ -1244,6 +1245,10 @@ esp_err_t ble_dragy_scan_post_handler(httpd_req_t *req) {
  * Registers five URI handlers for configuration management and device control.
  */
 void start_http_server(void) {
+    if (server != NULL) {
+        return;
+    }
+
     // Initialize SPIFFS
     esp_err_t ret = esp_vfs_spiffs_register(&(esp_vfs_spiffs_conf_t){
         .base_path = "/spiffs",
@@ -1264,7 +1269,10 @@ void start_http_server(void) {
     // Start HTTP server
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 15;
+    /* /api/rules builds a complete 64-source/16-rule JSON document.  The
+     * default HTTPD task stack is insufficient for cJSON's traversal. */
+    config.stack_size = 12288;
     // Allow larger responses, such as the configuration UI, to traverse a
     // slower infrastructure WiFi path without hitting the 5-second default.
     config.send_wait_timeout = 15;
@@ -1347,6 +1355,7 @@ void start_http_server(void) {
         .user_ctx = NULL
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &ble_dragy_scan_uri));
+    relay_rule_http_register(server);
     
     ESP_LOGI(TAG, "HTTP server started on http://192.168.4.1");
 }
