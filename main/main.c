@@ -23,6 +23,7 @@
 #include "inc/dragy_gps.h"
 #include "inc/espnow_transport.h"
 #include "inc/mk60_emulator.h"
+#include "inc/relay_rule_engine.h"
 
 #include "inc/wifi_config.h"
 #include "inc/config.h"
@@ -67,6 +68,10 @@ void app_main(void)
 
     // Start WiFi config mode (AP + HTTP server with timeout)
     wifi_config_mode_start();
+
+    // Rules are initialized only after the established WiFi startup path.
+    relay_rule_engine_set_publish_rate(board_cfg.can_tx_hz);
+    relay_rule_engine_init();
 
     if (ble_scan_init() != ESP_OK) {
         ESP_LOGW(log_tag, "BLE scan support is not active");
