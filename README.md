@@ -41,11 +41,11 @@ The web UI allows you to:
 |:----|:----|
 | Save Config | Save current UI settings to the dedicated `config` NVS partition. Changes are validated, persisted and applied immediately. |
 | Backup | Download a JSON snapshot of the current configuration. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
-| Restore | Select a previously exported JSON file. The UI validates it, backs up the previous valid NVS record, commits the replacement, and verifies it by reading it back. |
+| Restore | Select a previously exported JSON file. The UI validates it, replaces the current board record, and verifies it by reading it back. |
 | Reboot Device | Reboots the device. |
 
 **Notes:**
-- Configuration is persisted in the dedicated `config` NVS partition. The web UI uses JSON export/import for human-readable backups.
+- Board configuration is persisted as one current record in the dedicated `config` NVS partition. Relay rules use a separate CRC-checked raw `rules` partition with atomic A/B writes, so rule size and updates cannot exhaust board-configuration NVS.
 - On boot, firmware automatically imports a valid legacy `/spiffs/config.bin` into NVS when one is still present and verifies the committed record. The legacy file is left untouched.
 - Normal `idf.py flash` updates the application and SPIFFS web assets, but does not write the dedicated `config` partition. Before the first upgrade from a SPIFFS-stored configuration, export a JSON backup (or flash/boot the migration firmware without its SPIFFS target once); a normal project flash replaces the old shared SPIFFS image before firmware can import its config file.
 - `erase-flash`, whole-chip images, or explicitly flashing address `0x200000` will still erase configuration; ordinary application/partition-table flashing will not.

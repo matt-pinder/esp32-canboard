@@ -8,18 +8,18 @@
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "nvs.h"
 
 #define TAG "RELAY_RULES"
 #define RULE_CONFIG_VERSION 1U
-#define RULE_CONFIG_NAMESPACE "relay_rules"
-#define RULE_CONFIG_ACTIVE_KEY "active"
-#define RULE_CONFIG_BACKUP_KEY "backup"
+#define RULE_CONFIG_PARTITION "rules"
 #define ZERO_CONFIRM_DEFAULT 11U
 #define RULE_COMPACT_MAGIC 0x52554C32U
 #define RULE_COMPACT_VERSION 1U
+#define RULE_SLOT_MAGIC 0x52534C54U
+#define RULE_SLOT_COUNT 2U
 
 typedef struct {
     uint32_t magic;
@@ -31,6 +31,14 @@ typedef struct {
     uint32_t signal_timeout_ms;
     uint32_t crc32;
 } compact_header_t;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t generation;
+    uint32_t payload_size;
+    uint32_t payload_crc32;
+    uint32_t header_crc32;
+} rule_slot_header_t;
 
 typedef struct {
     uint8_t slot;
@@ -171,24 +179,9 @@ bool relay_rule_engine_validate(const relay_rule_config_t *config, uint8_t can_t
     return true;
 }
 
-static bool load_config(relay_rule_config_t *config)
+static bool decode_config(uint8_t *blob, size_t length, relay_rule_config_t *config)
 {
-    nvs_handle_t handle;
-    if (nvs_open_from_partition("config", RULE_CONFIG_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
-    size_t length = 0U;
-    esp_err_t result = nvs_get_blob(handle, RULE_CONFIG_ACTIVE_KEY, NULL, &length);
-    if (result != ESP_OK) { nvs_close(handle); return false; }
-    if (length == sizeof(*config)) {
-        result = nvs_get_blob(handle, RULE_CONFIG_ACTIVE_KEY, config, &length);
-        nvs_close(handle);
-        return result == ESP_OK && config->crc32 == crc32(config, offsetof(relay_rule_config_t, crc32)) &&
-               relay_rule_engine_validate(config, publish_rate_hz);
-    }
-    uint8_t *blob = malloc(length);
-    if (blob == NULL) { nvs_close(handle); return false; }
-    result = nvs_get_blob(handle, RULE_CONFIG_ACTIVE_KEY, blob, &length);
-    nvs_close(handle);
-    if (result != ESP_OK || length < sizeof(compact_header_t)) { free(blob); return false; }
+    if (blob == NULL || length < sizeof(compact_header_t)) return false;
     compact_header_t *header = (compact_header_t *)blob;
     const size_t expected = sizeof(*header) + header->source_count * sizeof(compact_source_t) +
                             header->rule_count * sizeof(compact_rule_t);
@@ -197,7 +190,6 @@ static bool load_config(relay_rule_config_t *config)
     if (header->magic != RULE_COMPACT_MAGIC || header->version != RULE_COMPACT_VERSION ||
         header->source_count > RELAY_RULE_MAX_SOURCES || header->rule_count > RELAY_RULE_MAX_RULES ||
         header->total_size != length || expected != length || saved_crc != crc32(blob, length)) {
-        free(blob);
         return false;
     }
     relay_rule_engine_set_defaults(config);
@@ -208,19 +200,76 @@ static bool load_config(relay_rule_config_t *config)
     for (unsigned i = 0; i < header->source_count; ++i) {
         compact_source_t entry;
         memcpy(&entry, blob + offset, sizeof(entry)); offset += sizeof(entry);
-        if (entry.slot >= RELAY_RULE_MAX_SOURCES || used_sources[entry.slot]) { free(blob); return false; }
+        if (entry.slot >= RELAY_RULE_MAX_SOURCES || used_sources[entry.slot]) return false;
         used_sources[entry.slot] = true;
         config->sources[entry.slot] = entry.source;
     }
     for (unsigned i = 0; i < header->rule_count; ++i) {
         compact_rule_t entry;
         memcpy(&entry, blob + offset, sizeof(entry)); offset += sizeof(entry);
-        if (entry.slot >= RELAY_RULE_MAX_RULES || used_rules[entry.slot]) { free(blob); return false; }
+        if (entry.slot >= RELAY_RULE_MAX_RULES || used_rules[entry.slot]) return false;
         used_rules[entry.slot] = true;
         config->rules[entry.slot] = entry.rule;
     }
-    free(blob);
     return relay_rule_engine_validate(config, publish_rate_hz);
+}
+
+static bool read_rule_slot(const esp_partition_t *partition, unsigned slot,
+                           rule_slot_header_t *header, uint8_t **payload)
+{
+    if (partition == NULL || header == NULL || payload == NULL || slot >= RULE_SLOT_COUNT ||
+        partition->size % RULE_SLOT_COUNT != 0U) return false;
+    const size_t slot_size = partition->size / RULE_SLOT_COUNT;
+    const size_t slot_offset = slot * slot_size;
+    if (esp_partition_read(partition, slot_offset, header, sizeof(*header)) != ESP_OK) return false;
+
+    const uint32_t saved_header_crc = header->header_crc32;
+    header->header_crc32 = 0U;
+    const bool header_valid = header->magic == RULE_SLOT_MAGIC &&
+        saved_header_crc == crc32(header, sizeof(*header)) &&
+        header->payload_size >= sizeof(compact_header_t) &&
+        header->payload_size <= slot_size - sizeof(*header);
+    header->header_crc32 = saved_header_crc;
+    if (!header_valid) return false;
+
+    *payload = malloc(header->payload_size);
+    if (*payload == NULL) return false;
+    if (esp_partition_read(partition, slot_offset + sizeof(*header), *payload,
+                           header->payload_size) != ESP_OK ||
+        crc32(*payload, header->payload_size) != header->payload_crc32) {
+        free(*payload);
+        *payload = NULL;
+        return false;
+    }
+    return true;
+}
+
+static int newest_slot(const bool valid[RULE_SLOT_COUNT],
+                       const rule_slot_header_t headers[RULE_SLOT_COUNT])
+{
+    if (!valid[0]) return valid[1] ? 1 : -1;
+    if (!valid[1]) return 0;
+    return (int32_t)(headers[1].generation - headers[0].generation) > 0 ? 1 : 0;
+}
+
+static bool load_config(relay_rule_config_t *config)
+{
+    const esp_partition_t *partition = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, RULE_CONFIG_PARTITION);
+    rule_slot_header_t headers[RULE_SLOT_COUNT] = {0};
+    uint8_t *payloads[RULE_SLOT_COUNT] = {0};
+    bool valid[RULE_SLOT_COUNT] = {0};
+    for (unsigned slot = 0; slot < RULE_SLOT_COUNT; ++slot)
+        valid[slot] = read_rule_slot(partition, slot, &headers[slot], &payloads[slot]);
+
+    const int newest = newest_slot(valid, headers);
+    bool loaded = newest >= 0 && decode_config(payloads[newest], headers[newest].payload_size, config);
+    if (!loaded && newest >= 0) {
+        const unsigned other = (unsigned)newest ^ 1U;
+        loaded = valid[other] && decode_config(payloads[other], headers[other].payload_size, config);
+    }
+    for (unsigned slot = 0; slot < RULE_SLOT_COUNT; ++slot) free(payloads[slot]);
+    return loaded;
 }
 
 static bool save_config(const relay_rule_config_t *config)
@@ -250,21 +299,52 @@ static bool save_config(const relay_rule_config_t *config)
         memcpy(stored + offset, &entry, sizeof(entry)); offset += sizeof(entry);
     }
     header->crc32 = crc32(stored, stored_length);
-    nvs_handle_t handle;
-    if (nvs_open_from_partition("config", RULE_CONFIG_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+
+    const esp_partition_t *partition = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, RULE_CONFIG_PARTITION);
+    if (partition == NULL || partition->size % RULE_SLOT_COUNT != 0U ||
+        stored_length > partition->size / RULE_SLOT_COUNT - sizeof(rule_slot_header_t)) {
         free(stored);
         return false;
     }
-    size_t previous_length = 0U;
-    if (nvs_get_blob(handle, RULE_CONFIG_ACTIVE_KEY, NULL, &previous_length) == ESP_OK && previous_length > 0U) {
-        uint8_t *previous = malloc(previous_length);
-        if (previous != NULL && nvs_get_blob(handle, RULE_CONFIG_ACTIVE_KEY, previous, &previous_length) == ESP_OK)
-            nvs_set_blob(handle, RULE_CONFIG_BACKUP_KEY, previous, previous_length);
-        free(previous);
-    }
-    esp_err_t result = nvs_set_blob(handle, RULE_CONFIG_ACTIVE_KEY, stored, stored_length);
-    if (result == ESP_OK) result = nvs_commit(handle);
-    nvs_close(handle);
+
+    rule_slot_header_t headers[RULE_SLOT_COUNT] = {0};
+    uint8_t *old_payloads[RULE_SLOT_COUNT] = {0};
+    bool valid[RULE_SLOT_COUNT] = {0};
+    for (unsigned slot = 0; slot < RULE_SLOT_COUNT; ++slot)
+        valid[slot] = read_rule_slot(partition, slot, &headers[slot], &old_payloads[slot]);
+    const int current = newest_slot(valid, headers);
+    const unsigned target = current == 0 ? 1U : 0U;
+    const uint32_t generation = current >= 0 ? headers[current].generation + 1U : 1U;
+    for (unsigned slot = 0; slot < RULE_SLOT_COUNT; ++slot) free(old_payloads[slot]);
+
+    const size_t slot_size = partition->size / RULE_SLOT_COUNT;
+    const size_t slot_offset = target * slot_size;
+    esp_err_t result = esp_partition_erase_range(partition, slot_offset, slot_size);
+    if (result == ESP_OK)
+        result = esp_partition_write(partition, slot_offset + sizeof(rule_slot_header_t),
+                                     stored, stored_length);
+
+    rule_slot_header_t slot_header = {
+        .magic = RULE_SLOT_MAGIC,
+        .generation = generation,
+        .payload_size = stored_length,
+        .payload_crc32 = crc32(stored, stored_length),
+        .header_crc32 = 0U,
+    };
+    slot_header.header_crc32 = crc32(&slot_header, sizeof(slot_header));
+    if (result == ESP_OK)
+        result = esp_partition_write(partition, slot_offset, &slot_header, sizeof(slot_header));
+
+    rule_slot_header_t verified_header = {0};
+    uint8_t *verified_payload = NULL;
+    const bool verified = result == ESP_OK &&
+        read_rule_slot(partition, target, &verified_header, &verified_payload) &&
+        verified_header.generation == generation &&
+        verified_header.payload_size == stored_length &&
+        memcmp(verified_payload, stored, stored_length) == 0;
+    free(verified_payload);
+    if (!verified) result = ESP_FAIL;
     if (result == ESP_OK) {
         ESP_LOGI(TAG, "Saved compact rules: %u configured rules, %u CAN sources, %u bytes",
                  (unsigned)rule_count, (unsigned)source_count, (unsigned)stored_length);

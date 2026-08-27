@@ -12,7 +12,6 @@
 #define CONFIG_NVS_PARTITION "config"
 #define CONFIG_NVS_NAMESPACE "board_config"
 #define CONFIG_NVS_KEY "active"
-#define CONFIG_NVS_BACKUP_KEY "backup"
 #define CONFIG_RECORD_MAGIC 0x31474643U
 #define CONFIG_RECORD_SCHEMA_VERSION 1U
 #define CONFIG_RECORD_HEADER_SIZE 16U
@@ -78,7 +77,6 @@ typedef enum {
 } config_read_result_t;
 
 static bool nvs_partition_initialized;
-static bool protect_existing_nvs_record;
 
 static void log_board_config(const board_config_t *cfg) {
     if (cfg == NULL) {
@@ -534,8 +532,8 @@ static bool load_legacy_spiffs_config(board_config_t *cfg) {
 }
 
 bool config_save(const board_config_t *cfg) {
-    if (cfg == NULL || !config_semantically_valid(cfg) || protect_existing_nvs_record) {
-        ESP_LOGE(TAG, "Refusing to save invalid config or overwrite an unsupported NVS record");
+    if (cfg == NULL || !config_semantically_valid(cfg)) {
+        ESP_LOGE(TAG, "Refusing to save invalid config");
         return false;
     }
     if (config_nvs_init() != ESP_OK) return false;
@@ -555,61 +553,14 @@ bool config_save(const board_config_t *cfg) {
         return false;
     }
 
-    size_t existing_size = 0;
-    err = nvs_get_blob(handle, CONFIG_NVS_KEY, NULL, &existing_size);
-    if (err == ESP_OK && existing_size > CONFIG_RECORD_HEADER_SIZE + sizeof(board_config_persist_t)) {
-        ESP_LOGE(TAG, "Refusing to replace unsupported NVS record size %zu", existing_size);
-        nvs_close(handle);
-        free(record); free(readback);
-        return false;
-    }
-    uint8_t *existing = err == ESP_OK && existing_size > 0 ? malloc(existing_size) : NULL;
-    if (err == ESP_OK && existing_size > 0 && existing == NULL) {
-        nvs_close(handle);
-        free(record); free(readback);
-        return false;
-    }
-    board_config_t *existing_cfg = existing != NULL ? malloc(sizeof(*existing_cfg)) : NULL;
-    if (existing != NULL && existing_cfg == NULL) {
-        nvs_close(handle);
-        free(existing); free(record); free(readback);
-        return false;
-    }
-    esp_err_t existing_read_err = err;
-    if (existing != NULL) {
-        existing_read_err = nvs_get_blob(handle, CONFIG_NVS_KEY, existing, &existing_size);
-    }
-    bool had_valid_existing = existing != NULL &&
-                              existing_read_err == ESP_OK &&
-                              decode_record(existing, existing_size, existing_cfg);
-    if (had_valid_existing) {
-        err = nvs_set_blob(handle, CONFIG_NVS_BACKUP_KEY, existing, existing_size);
-        if (err == ESP_OK) err = nvs_commit(handle);
-    } else if (existing_read_err == ESP_ERR_NVS_NOT_FOUND || existing_read_err == ESP_OK ||
-               existing_read_err == ESP_ERR_NVS_INVALID_LENGTH) {
-        // No valid active record exists to back up. This path is also used by
-        // the verified legacy-import recovery flow.
-        err = ESP_OK;
-    } else {
-        err = existing_read_err;
-    }
-    if (err == ESP_OK) err = nvs_set_blob(handle, CONFIG_NVS_KEY, record, record_size);
+    err = nvs_set_blob(handle, CONFIG_NVS_KEY, record, record_size);
     if (err == ESP_OK) err = nvs_commit(handle);
 
     size_t readback_size = record_size;
     if (err == ESP_OK) err = nvs_get_blob(handle, CONFIG_NVS_KEY, readback, &readback_size);
     bool verified = err == ESP_OK && readback_size == record_size && memcmp(record, readback, record_size) == 0;
-    if (!verified && had_valid_existing) {
-        esp_err_t restore_err = nvs_set_blob(handle, CONFIG_NVS_KEY, existing, existing_size);
-        if (restore_err == ESP_OK) restore_err = nvs_commit(handle);
-        if (restore_err == ESP_OK) {
-            ESP_LOGW(TAG, "Restored previous NVS config after failed replacement");
-        } else {
-            ESP_LOGE(TAG, "Failed to restore previous NVS config: %s", esp_err_to_name(restore_err));
-        }
-    }
     nvs_close(handle);
-    free(existing_cfg); free(existing); free(readback);
+    free(readback);
     if (!verified) {
         ESP_LOGE(TAG, "Config NVS commit/read-back failed: %s", esp_err_to_name(err));
         free(record);
@@ -637,10 +588,8 @@ bool config_load(board_config_t *cfg) {
         return true;
     }
 
-    if (nvs_result == CONFIG_READ_INVALID) {
-        protect_existing_nvs_record = true;
-        ESP_LOGE(TAG, "Active NVS config record is invalid or uses an unsupported schema; preserving it");
-    }
+    if (nvs_result == CONFIG_READ_INVALID)
+        ESP_LOGE(TAG, "Active NVS config record is invalid or uses an unsupported schema");
 
     board_config_t *migration_cfg = malloc(sizeof(*migration_cfg));
     if (migration_cfg == NULL) {
@@ -653,9 +602,6 @@ bool config_load(board_config_t *cfg) {
         return false;
     }
 
-    // A verified legacy record is an authorized recovery source for a corrupt
-    // destination record. Keep the legacy file until NVS read-back succeeds.
-    protect_existing_nvs_record = false;
     if (!config_save(migration_cfg)) {
         ESP_LOGE(TAG, "Legacy config is valid but NVS migration failed; using it for this boot");
         *cfg = *migration_cfg;

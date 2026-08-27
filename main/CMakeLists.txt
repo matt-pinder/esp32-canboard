@@ -24,12 +24,13 @@ idf_component_register(SRCS "main.c"
                              esp_wifi
                              esp_event
                              esp_netif
+                             esp_partition
                              esp_timer
                              nvs_flash
                              spiffs
                              espressif__cjson)
 
 # Web assets remain part of the normal project flash. Persistent board settings
-# live in the separate `config` NVS partition, which has no FLASH_IN_PROJECT
-# image and is initialized/mounted by config.c at runtime.
+# live in `config` NVS and relay rules in the raw `rules` partition; neither
+# data partition has a FLASH_IN_PROJECT image.
 spiffs_create_partition_image(spiffs ./spiffs FLASH_IN_PROJECT)

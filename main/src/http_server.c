@@ -1161,8 +1161,7 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
     }
     cfg.pullup_vref_mv = board_cfg.pullup_vref_mv;
 
-    // config_save() commits the previous valid NVS record to its backup key
-    // before replacing the active record.
+    // config_save() commits and verifies the single current board record.
     bool saved = config_save(&cfg);
     if (!saved) {
         ESP_LOGE(TAG, "Failed to save imported configuration");
