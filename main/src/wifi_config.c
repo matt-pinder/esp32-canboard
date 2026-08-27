@@ -3,10 +3,8 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "esp_http_server.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
-#include "esp_spiffs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "inc/config.h"
@@ -19,7 +17,6 @@
 #define WIFI_SSID "ESP32-CanBoard" ///< WiFi access point SSID
 #define WIFI_PASS "canconfig"    ///< WiFi access point password
 #define WIFI_MAX_CONN 1            ///< Maximum number of simultaneous WiFi connections
-#define CONFIG_TIMEOUT_MS 120000   ///< Configuration mode timeout in milliseconds (120 seconds)
 #define PREFERRED_WIFI_SSID "Broomhall IoT"
 #define PREFERRED_WIFI_SEARCH_MS 1000
 #define PREFERRED_WIFI_CONNECT_MS 1000
@@ -30,30 +27,8 @@
  */
 static const char *TAG = "WIFI_CFG";
 extern board_config_t board_cfg;
-/**
- * @brief Timer handle for configuration mode timeout
- */
-static esp_timer_handle_t config_timer = NULL;
-/**
- * @brief Flag indicating whether a client is currently connected to HTTP server
- */
-static bool client_connected = false;
 static EventGroupHandle_t wifi_events = NULL;
-static void config_timeout_cb(void *arg);
-
-/**
- * @brief Start the configuration HTTP server and its inactivity timer.
- */
-static void start_config_server(void)
-{
-    start_http_server();
-
-    const esp_timer_create_args_t timer_args = {
-        .callback = &config_timeout_cb,
-        .name = "cfg_timeout"};
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &config_timer));
-    ESP_ERROR_CHECK(esp_timer_start_once(config_timer, CONFIG_TIMEOUT_MS * 1000));
-}
+static uint8_t ap_station_count = 0;
 
 /**
  * @brief Scan for the preferred network for up to PREFERRED_WIFI_SEARCH_MS.
@@ -105,22 +80,12 @@ static bool scan_for_preferred_ap(void)
 }
 
 /**
- * @brief Try to connect to the preferred network, leaving WiFi in STA mode on success.
+ * @brief Try to connect the STA interface while leaving the configuration AP active.
  */
 static bool try_preferred_station(void)
 {
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-
-    esp_err_t ret = esp_wifi_start();
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE)
-    {
-        ESP_LOGW(TAG, "Could not start station mode: %s", esp_err_to_name(ret));
-        return false;
-    }
-
     if (!scan_for_preferred_ap())
     {
-        esp_wifi_stop();
         return false;
     }
 
@@ -133,7 +98,7 @@ static bool try_preferred_station(void)
     };
 
     xEventGroupClearBits(wifi_events, WIFI_GOT_IP_BIT);
-    ret = esp_wifi_set_config(WIFI_IF_STA, &sta_config);
+    esp_err_t ret = esp_wifi_set_config(WIFI_IF_STA, &sta_config);
     if (ret == ESP_OK)
     {
         ret = esp_wifi_connect();
@@ -141,7 +106,6 @@ static bool try_preferred_station(void)
     if (ret != ESP_OK)
     {
         ESP_LOGW(TAG, "Could not connect to %s: %s", PREFERRED_WIFI_SSID, esp_err_to_name(ret));
-        esp_wifi_stop();
         return false;
     }
 
@@ -153,16 +117,15 @@ static bool try_preferred_station(void)
         return true;
     }
 
-    ESP_LOGW(TAG, "Timed out connecting to %s; falling back to local AP", PREFERRED_WIFI_SSID);
+    ESP_LOGW(TAG, "Timed out connecting to %s; local AP remains available", PREFERRED_WIFI_SSID);
     esp_wifi_disconnect();
-    esp_wifi_stop();
     return false;
 }
 
 /**
- * @brief Start the existing local configuration AP and HTTP server.
+ * @brief Start the local configuration AP without allocating the HTTP server yet.
  */
-static void start_fallback_ap(void)
+static void start_persistent_ap(void)
 {
     wifi_config_t ap_config = {
         .ap = {
@@ -176,35 +139,7 @@ static void start_fallback_ap(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "WiFi AP+STA started: %s on channel %d", WIFI_SSID, ESPNOW_WIFI_CHANNEL);
-
-    start_config_server();
-}
-
-/**
- * @brief Timer callback for configuration mode timeout
- * Disables WiFi AP and HTTP server if no client has connected within timeout period.
- * @param arg Callback argument (unused)
- */
-static void config_timeout_cb(void *arg)
-{
-    if (!client_connected)
-    {
-        ESP_LOGI(TAG, "No client connected in 120s, disabling configuration HTTP server");
-        stop_http_server();
-        if (board_cfg.espnow_enabled)
-        {
-            esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
-            if (err != ESP_OK)
-            {
-                ESP_LOGW(TAG, "Failed to switch WiFi to STA mode for ESP-NOW: %s", esp_err_to_name(err));
-            }
-        }
-        else
-        {
-            esp_wifi_stop();
-        }
-    }
+    ESP_LOGI(TAG, "Persistent WiFi AP+STA started: %s on channel %d", WIFI_SSID, ESPNOW_WIFI_CHANNEL);
 }
 
 /**
@@ -225,21 +160,33 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     if (event_id == WIFI_EVENT_AP_STACONNECTED)
     {
         wifi_event_ap_staconnected_t *evt = (wifi_event_ap_staconnected_t *)event_data;
+        if (ap_station_count < WIFI_MAX_CONN)
+        {
+            ap_station_count++;
+        }
+        start_http_server();
         ESP_LOGI(TAG, "station: %02x:%02x:%02x:%02x:%02x:%02x join, AID=%d, bgn, 40U",
                  evt->mac[0], evt->mac[1], evt->mac[2], evt->mac[3], evt->mac[4], evt->mac[5], evt->aid);
     }
     else if (event_id == WIFI_EVENT_AP_STADISCONNECTED)
     {
         wifi_event_ap_stadisconnected_t *evt = (wifi_event_ap_stadisconnected_t *)event_data;
+        if (ap_station_count > 0)
+        {
+            ap_station_count--;
+        }
+        if (ap_station_count == 0)
+        {
+            stop_http_server();
+        }
         ESP_LOGI(TAG, "station: %02x:%02x:%02x:%02x:%02x:%02x leave, AID = %d, reason = %d, bss_flags is %u, bss:0x%p",
                  evt->mac[0], evt->mac[1], evt->mac[2], evt->mac[3], evt->mac[4], evt->mac[5], evt->aid, evt->reason, 0, event_data);
     }
 }
 
 /**
- * @brief Connect to the preferred WiFi network, or start the configuration AP.
- * Searches for Broomhall IoT for 10 seconds. If it cannot be used, starts the
- * ESP32-CanBoard access point and HTTP configuration server for 120 seconds.
+ * @brief Keep the configuration AP active and optionally connect to preferred WiFi.
+ * The HTTP server is created only while a station is associated with the AP.
  */
 void wifi_config_mode_start(void)
 {
@@ -256,29 +203,23 @@ void wifi_config_mode_start(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    if (!board_cfg.espnow_enabled && try_preferred_station())
-    {
-        start_config_server();
-        return;
-    }
+    start_persistent_ap();
 
     if (board_cfg.espnow_enabled)
     {
         ESP_LOGI(TAG, "ESP-NOW enabled; keeping WiFi on fixed channel %d", ESPNOW_WIFI_CHANNEL);
     }
 
-    start_fallback_ap();
+    else
+    {
+        (void)try_preferred_station();
+    }
 }
 
 /**
- * @brief Notify that a client has connected and reset inactivity timer
- * Call this from HTTP server connection handler to prevent timeout during active configuration.
+ * @brief Compatibility hook retained for existing HTTP handlers.
  */
 void notify_client_connected(void)
 {
-    client_connected = true;
-    if (config_timer)
-    {
-        esp_timer_stop(config_timer);
-    }
+    /* AP association events now own HTTP server lifetime. */
 }
