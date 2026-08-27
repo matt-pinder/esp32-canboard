@@ -305,7 +305,7 @@ esp_err_t espnow_transport_start(void)
         /* WiFi owns the AP and channel.  Channel 0 makes the peer use the
          * channel already selected by the running WiFi interface. */
         peer_info.channel = 0;
-        peer_info.ifidx = WIFI_IF_STA;
+        peer_info.ifidx = WIFI_IF_AP;
         peer_info.encrypt = false;
         err = esp_now_add_peer(&peer_info);
         if (err != ESP_OK) {
