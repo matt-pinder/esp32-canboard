@@ -18,17 +18,18 @@ This project targets ESP-IDF 6.0.2. Activate the 6.0.2 environment before runnin
 
 ## Device Configuration
 
-On each boot the board enables a WiFi access point and web configuration interface; this will automatically disable after 120 seconds if no client connects. 
+The board keeps its WiFi access point available continuously. To reduce idle memory use, the web server starts when a client associates with the access point and stops when that client disconnects.
 
 | SSID | WPA2 Key | Web UI |
 |:---|:---|:---|
-| ESP32-CanBoard | canboard123 | http://192.168.4.1 |
+| ESP32-CanBoard | canconfig | http://192.168.4.1 |
 
 The web UI allows you to:
 
 - View and edit per-channel settings (name, sensor type, pull-up, **filter level** dropdown, pressure calibration).
 - Configure required CAN parameters - Base ID and bus speed.
 - Configure CAN and ESP-NOW output, including optional CAN bus relay over ESP-NOW.
+- Configure up to 16 relay output rules using local sensor values, DBC-imported CAN signals, timers, and pulse lookup tables.
 - Adjust pullup vref calculation voltage to allow for LDO regulator output/load.
 - View current input voltages and calculated values in real time.
 - Backup the entire configuration to a JSON file.
