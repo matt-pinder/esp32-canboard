@@ -6,7 +6,8 @@
 
 #define ESPNOW_WIFI_CHANNEL 1
 
-/// @brief Initialize ESP-NOW and add the configured target peer.
+/// @brief Attach ESP-NOW to the already-running WiFi radio and add configured peers.
+/// Does not change WiFi mode, channel, AP configuration, or radio lifetime.
 esp_err_t espnow_transport_start(void);
 
 /// @brief Stop ESP-NOW transport if it is active.

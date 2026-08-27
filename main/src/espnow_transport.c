@@ -280,11 +280,6 @@ esp_err_t espnow_transport_start(void)
     }
     ESP_RETURN_ON_ERROR(ensure_transport_resources(), TAG, "Could not allocate transport resources");
 
-    esp_err_t err = esp_wifi_set_channel(ESPNOW_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
-    if (err != ESP_OK)
-    {
-        return err;
-    }
     uint8_t primary_channel = 0U;
     wifi_second_chan_t secondary_channel = WIFI_SECOND_CHAN_NONE;
     ESP_RETURN_ON_ERROR(esp_wifi_get_channel(&primary_channel, &secondary_channel), TAG, "Could not verify WiFi channel");
@@ -294,7 +289,7 @@ esp_err_t espnow_transport_start(void)
     }
 
     ESP_RETURN_ON_ERROR(esp_now_init(), TAG, "Could not initialize ESP-NOW");
-    err = esp_now_register_send_cb(espnow_send_callback);
+    esp_err_t err = esp_now_register_send_cb(espnow_send_callback);
     if (err != ESP_OK)
     {
         esp_now_deinit();
@@ -307,7 +302,9 @@ esp_err_t espnow_transport_start(void)
     for (uint8_t i = 0; i < board_cfg.espnow_client_count; ++i) {
         esp_now_peer_info_t peer_info = {0};
         memcpy(peer_info.peer_addr, board_cfg.espnow_clients[i].mac, ESP_NOW_ETH_ALEN);
-        peer_info.channel = ESPNOW_WIFI_CHANNEL;
+        /* WiFi owns the AP and channel.  Channel 0 makes the peer use the
+         * channel already selected by the running WiFi interface. */
+        peer_info.channel = 0;
         peer_info.ifidx = WIFI_IF_STA;
         peer_info.encrypt = false;
         err = esp_now_add_peer(&peer_info);
