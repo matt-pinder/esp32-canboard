@@ -20,6 +20,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#define AGGREGATE_CONFIG_REQUEST_LIMIT (160U * 1024U)
+
 /**
  * @brief Log tag for HTTP server module
  */
@@ -29,6 +31,53 @@ static const char *TAG = "HTTPD";
  */
 static httpd_handle_t server = NULL;
 extern board_config_t board_cfg;
+
+static char *receive_request_body(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || (size_t)req->content_len > AGGREGATE_CONFIG_REQUEST_LIMIT) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request size");
+        return NULL;
+    }
+    char *body = malloc((size_t)req->content_len + 1U);
+    if (body == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Server error");
+        return NULL;
+    }
+    size_t received = 0U;
+    while (received < (size_t)req->content_len) {
+        const int result = httpd_req_recv(req, body + received,
+                                          (size_t)req->content_len - received);
+        if (result <= 0) {
+            free(body);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Incomplete request");
+            return NULL;
+        }
+        received += (size_t)result;
+    }
+    body[received] = '\0';
+    return body;
+}
+
+static bool append_rules_json(char **json, size_t json_pos)
+{
+    cJSON *rules = relay_rule_config_json_create();
+    if (rules == NULL) return false;
+    char *rules_text = cJSON_PrintUnformatted(rules);
+    cJSON_Delete(rules);
+    if (rules_text == NULL) return false;
+
+    const size_t required = json_pos + strlen(rules_text) + 16U;
+    char *expanded = realloc(*json, required);
+    if (expanded == NULL) {
+        free(rules_text);
+        return false;
+    }
+    *json = expanded;
+    snprintf(expanded + json_pos, required - json_pos,
+             "],\"rules\":%s}\n", rules_text);
+    free(rules_text);
+    return true;
+}
 
 static void format_mac(const uint8_t mac[ESP_NOW_ETH_ALEN], char *out, size_t out_len) {
     snprintf(out, out_len, "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -256,10 +305,13 @@ static bool apply_runtime_config(const board_config_t *cfg) {
     }
 
     board_config_t previous_cfg = board_cfg;
+    const bool previous_can_required = previous_cfg.can_enabled ||
+        config_has_espnow_relay_client(&previous_cfg) || previous_cfg.mk60_emulator.enabled;
+    const bool next_can_required = cfg->can_enabled ||
+        config_has_espnow_relay_client(cfg) || cfg->mk60_emulator.enabled;
     bool can_changed = (previous_cfg.can_enabled != cfg->can_enabled) ||
                        (previous_cfg.can_speed_kbps != cfg->can_speed_kbps) ||
-                       (config_has_espnow_relay_client(&previous_cfg) != config_has_espnow_relay_client(cfg)) ||
-                       (previous_cfg.mk60_emulator.enabled != cfg->mk60_emulator.enabled);
+                       (previous_can_required != next_can_required);
     bool mk60_changed = memcmp(&previous_cfg.mk60_emulator, &cfg->mk60_emulator,
                                sizeof(cfg->mk60_emulator)) != 0;
     bool espnow_changed = (previous_cfg.espnow_enabled != cfg->espnow_enabled) ||
@@ -327,6 +379,51 @@ static bool apply_runtime_config(const board_config_t *cfg) {
         return true;
     }
 
+    return true;
+}
+
+static bool save_aggregate_config(const board_config_t *cfg,
+                                  const relay_rule_config_t *rules,
+                                  bool update_rules)
+{
+    const board_config_t previous_board = board_cfg;
+    relay_rule_config_t *previous_rules = NULL;
+
+    if (update_rules) {
+        previous_rules = malloc(sizeof(*previous_rules));
+        if (previous_rules == NULL) return false;
+        relay_rule_engine_snapshot(previous_rules);
+        relay_rule_engine_set_publish_rate(cfg->can_tx_hz);
+        if (!relay_rule_engine_replace_and_save(rules)) {
+            ESP_LOGE(TAG, "Aggregate save failed while writing relay rules");
+            relay_rule_engine_set_publish_rate(previous_board.can_tx_hz);
+            free(previous_rules);
+            return false;
+        }
+    }
+
+    if (!config_save(cfg)) {
+        ESP_LOGE(TAG, "Aggregate save failed while writing board configuration");
+        if (update_rules) {
+            relay_rule_engine_set_publish_rate(previous_board.can_tx_hz);
+            relay_rule_engine_replace_and_save(previous_rules);
+        }
+        free(previous_rules);
+        return false;
+    }
+
+    if (!apply_runtime_config(cfg)) {
+        ESP_LOGE(TAG, "Aggregate save failed while applying runtime transport configuration");
+        config_save(&previous_board);
+        if (update_rules) {
+            relay_rule_engine_set_publish_rate(previous_board.can_tx_hz);
+            relay_rule_engine_replace_and_save(previous_rules);
+        }
+        free(previous_rules);
+        return false;
+    }
+
+    free(previous_rules);
     return true;
 }
 
@@ -465,7 +562,12 @@ esp_err_t config_get_handler(httpd_req_t *req) {
         }
     }
     
-    snprintf(json + json_pos, json_max - json_pos, "]}\n");
+    if (!append_rules_json(&json, json_pos)) {
+        ESP_LOGE(TAG, "Failed to append rules to configuration JSON");
+        free(json);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, strlen(json));
     free(json);
@@ -479,24 +581,11 @@ esp_err_t config_get_handler(httpd_req_t *req) {
  * @return ESP_OK on successful save, ESP_FAIL on JSON parse error or config validation failure
  */
 esp_err_t config_post_handler(httpd_req_t *req) {
-    const size_t REQ_BUF_SIZE = 8192;
-    char *buf = malloc(REQ_BUF_SIZE);
-    if (!buf) {
-        ESP_LOGE(TAG, "Failed to allocate request buffer");
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Server error");
-        return ESP_FAIL;
-    }
-
-    int ret = httpd_req_recv(req, buf, REQ_BUF_SIZE - 1);
-    if (ret <= 0) {
-        ESP_LOGE(TAG, "Failed to receive request body");
-        free(buf);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request error");
-        return ESP_FAIL;
-    }
-    buf[ret] = 0;
-    
+    char *buf = receive_request_body(req);
+    if (buf == NULL) return ESP_FAIL;
     cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    buf = NULL;
     if (!root) {
         ESP_LOGW(TAG, "Invalid JSON received");
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
@@ -674,20 +763,29 @@ esp_err_t config_post_handler(httpd_req_t *req) {
         }
     }
 
-    cJSON_Delete(root);
-    free(buf);
-
-    if (!config_save(&cfg)) {
-        ESP_LOGE(TAG, "Failed to save configuration");
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save config");
+    relay_rule_config_t *rules = malloc(sizeof(*rules));
+    cJSON *rules_json = cJSON_GetObjectItemCaseSensitive(root, "rules");
+    if (rules == NULL || !cJSON_IsObject(rules_json) ||
+        !relay_rule_config_json_parse(rules_json, rules) ||
+        !relay_rule_engine_validate(rules, cfg.can_tx_hz)) {
+        ESP_LOGW(TAG, "Invalid or missing aggregate rule configuration");
+        free(rules);
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid rule configuration");
         return ESP_FAIL;
     }
 
-    if (!apply_runtime_config(&cfg)) {
-        ESP_LOGW(TAG, "Config saved but failed to fully apply at runtime");
+    const bool saved = save_aggregate_config(&cfg, rules, true);
+    free(rules);
+    cJSON_Delete(root);
+    if (!saved) {
+        ESP_LOGE(TAG, "Failed to save aggregate configuration");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Failed to save configuration");
+        return ESP_FAIL;
     }
     
-    ESP_LOGI(TAG, "Configuration updated successfully");
+    ESP_LOGI(TAG, "Board and rule configuration updated successfully");
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
@@ -777,7 +875,7 @@ esp_err_t live_values_get_handler(httpd_req_t *req) {
     }
 
     size_t json_pos = 0;
-    const size_t json_max = 4096;
+    const size_t json_max = 8192;
 
     int written = snprintf(json + json_pos, json_max - json_pos,
         "{\"derived_vref_mv\":%u,\"channels\":[",
@@ -856,7 +954,19 @@ esp_err_t live_values_get_handler(httpd_req_t *req) {
         json_pos += (size_t)written;
     }
 
-    written = snprintf(json + json_pos, json_max - json_pos, "]}\n");
+    cJSON *rule_status = relay_rule_status_json_create();
+    char *rule_status_text = rule_status ? cJSON_PrintUnformatted(rule_status) : NULL;
+    cJSON_Delete(rule_status);
+    if (rule_status_text == NULL) {
+        ESP_LOGE(TAG, "Failed to build compact rule status JSON");
+        free(json);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    written = snprintf(json + json_pos, json_max - json_pos,
+                       "],\"rules\":%s}\n", rule_status_text);
+    free(rule_status_text);
     if (written < 0 || (size_t)written >= (json_max - json_pos)) {
         ESP_LOGE(TAG, "Failed to finalize live values JSON");
         free(json);
@@ -962,7 +1072,13 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
         }
     }
 
-    snprintf(json + json_pos, json_max - json_pos, "]}\n");
+    if (!append_rules_json(&json, json_pos)) {
+        ESP_LOGE(TAG, "Failed to append rules to exported configuration");
+        free(json);
+        free(cfg);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
 
     // Set headers to trigger download in browser
     httpd_resp_set_type(req, "application/json");
@@ -979,27 +1095,13 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
  * Accepts raw JSON body, validates it, backs up existing config, and saves new config.
  */
 esp_err_t config_import_post_handler(httpd_req_t *req) {
-    const size_t REQ_BUF_SIZE = 8192;
-    char *buf = malloc(REQ_BUF_SIZE);
-    if (!buf) {
-        ESP_LOGE(TAG, "Failed to allocate import buffer");
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Server error");
-        return ESP_FAIL;
-    }
-
-    int ret = httpd_req_recv(req, buf, REQ_BUF_SIZE - 1);
-    if (ret <= 0) {
-        ESP_LOGE(TAG, "Failed to receive import body");
-        free(buf);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request error");
-        return ESP_FAIL;
-    }
-    buf[ret] = 0;
-
+    char *buf = receive_request_body(req);
+    if (buf == NULL) return ESP_FAIL;
     cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    buf = NULL;
     if (!root) {
         ESP_LOGW(TAG, "Invalid JSON import");
-        free(buf);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
         return ESP_FAIL;
     }
@@ -1161,23 +1263,55 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
     }
     cfg.pullup_vref_mv = board_cfg.pullup_vref_mv;
 
-    // config_save() commits and verifies the single current board record.
-    bool saved = config_save(&cfg);
+    relay_rule_config_t *rules = NULL;
+    bool legacy_without_rules = false;
+    cJSON *rules_json = cJSON_GetObjectItemCaseSensitive(root, "rules");
+    if (rules_json != NULL) {
+        rules = malloc(sizeof(*rules));
+        const bool valid_rules = rules != NULL && cJSON_IsObject(rules_json) &&
+                                 relay_rule_config_json_parse(rules_json, rules) &&
+                                 relay_rule_engine_validate(rules, cfg.can_tx_hz);
+        if (!valid_rules) {
+            ESP_LOGW(TAG, "Invalid rule configuration in import");
+            free(rules);
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid rule configuration");
+            return ESP_FAIL;
+        }
+    } else {
+        ESP_LOGW(TAG, "Legacy import has no rules; preserving active rules");
+        legacy_without_rules = true;
+        rules = malloc(sizeof(*rules));
+        if (rules == NULL) {
+            cJSON_Delete(root);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        relay_rule_engine_snapshot(rules);
+        if (!relay_rule_engine_validate(rules, cfg.can_tx_hz)) {
+            free(rules);
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "Existing rules are incompatible with imported TX rate");
+            return ESP_FAIL;
+        }
+    }
+
+    bool saved = save_aggregate_config(&cfg, rules, true);
+    free(rules);
     if (!saved) {
-        ESP_LOGE(TAG, "Failed to save imported configuration");
+        ESP_LOGE(TAG, "Failed to save imported aggregate configuration");
         cJSON_Delete(root);
-        free(buf);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save imported config");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Failed to save imported configuration");
         return ESP_FAIL;
     }
 
-    if (!apply_runtime_config(&cfg)) {
-        ESP_LOGW(TAG, "Imported config saved but failed to fully apply at runtime");
-    }
-
     cJSON_Delete(root);
-    free(buf);
-    httpd_resp_sendstr(req, "OK");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, legacy_without_rules ?
+                       "{\"ok\":true,\"warning\":\"Backup contained no rules; active rules were preserved\"}" :
+                       "{\"ok\":true}");
     return ESP_OK;
 }
 
@@ -1352,8 +1486,6 @@ void start_http_server(void) {
         .user_ctx = NULL
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &ble_dragy_scan_uri));
-    relay_rule_http_register(server);
-    
     ESP_LOGI(TAG, "HTTP server started on http://192.168.4.1");
 }
 

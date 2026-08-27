@@ -77,6 +77,7 @@ typedef struct {
     uint8_t pulse_source_index;
     uint8_t pulse_point_count;
     relay_pulse_point_t pulse_points[RELAY_RULE_MAX_PULSE_POINTS];
+    float pulse_hysteresis;
 } relay_rule_case_t;
 
 typedef struct {
@@ -95,19 +96,37 @@ typedef struct {
 } relay_rule_config_t;
 
 typedef struct {
+    char name[RELAY_RULE_NAME_LENGTH];
     bool present;
     bool accepted_valid;
     float value;
     uint32_t age_ms;
     uint8_t zero_streak;
+    uint8_t zero_confirm_samples;
 } relay_rule_source_status_t;
 
+typedef enum {
+    RELAY_RULE_INVALID_NONE = 0,
+    RELAY_RULE_INVALID_SOURCE_NOT_RECEIVED,
+    RELAY_RULE_INVALID_SOURCE_UNCONFIRMED,
+    RELAY_RULE_INVALID_SOURCE_STALE,
+} relay_rule_invalid_reason_t;
+
 typedef struct {
+    bool configured;
     bool enabled;
     bool valid;
     bool state;
     bool pulse_active;
     int8_t selected_case;
+    uint32_t pulse_on_time_ms;
+    uint32_t pulse_period_ms;
+    uint32_t pulse_next_on_ms;
+    int8_t invalid_case;
+    int8_t invalid_test;
+    int8_t invalid_source;
+    bool invalid_pulse_source;
+    relay_rule_invalid_reason_t invalid_reason;
 } relay_rule_status_t;
 
 void relay_rule_engine_init(void);

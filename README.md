@@ -40,8 +40,8 @@ The web UI allows you to:
 | Function | Description |
 |:----|:----|
 | Save Config | Save current UI settings to the dedicated `config` NVS partition. Changes are validated, persisted and applied immediately. |
-| Backup | Download a JSON snapshot of the current configuration. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
-| Restore | Select a previously exported JSON file. The UI validates it, replaces the current board record, and verifies it by reading it back. |
+| Backup | Download one JSON snapshot containing the board configuration and output rules. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
+| Restore | Select a previously exported JSON file. The backend validates and applies the board configuration and output rules together while retaining their separate flash records. |
 | Reboot Device | Reboots the device. |
 
 **Notes:**
@@ -54,7 +54,7 @@ The web UI allows you to:
 
 ## CAN Output
 
-The device transmits input data as a set of five CAN frames starting at the configured base ID. All frames use DLC=8 and little-endian byte ordering.
+The device transmits five input-data frames and one relay-rule command frame starting at the configured base ID. All frames use DLC=8 and little-endian byte ordering.
 
 | CAN ID | Name | Payload |
 |:---|:---|:---|
@@ -63,6 +63,7 @@ The device transmits input data as a set of five CAN frames starting at the conf
 | Base ID + 2 | analogVoltage_3 | Inputs 8..9 as two uint16 (bytes 0..3), dynamic0 (bytes 4..5), dynamic1 (bytes 6..7) |
 | Base ID + 3 | dynamicSignals_1 | dynamic2, dynamic3, dynamic4, dynamic5 as four 2-byte values (bytes 0..7) |
 | Base ID + 4 | dynamicSignals_2 | dynamic6, dynamic7, dynamic8, dynamic9 as four 2-byte values (bytes 0..7) |
+| Base ID + 5 | relayRuleCommands | Rule state, validity and pulse-mode bitmasks, followed by a rolling counter and format version |
 
 Encoding rules for dynamic values (one per input):
 | Channel | Type | Encoding |
@@ -73,6 +74,44 @@ Encoding rules for dynamic values (one per input):
 |dynamicSignal|NTC|signed int16 = temperature_C * 1 (°C as integer)|
 
 Example DBC for signal names and scaling: [dbc/esp32-canboard.dbc](dbc/esp32-canboard.dbc)
+
+### Relay rule command frame
+
+The standard CAN frame at `Base ID + 5` publishes the final output of all 16 relay rules. It always has DLC 8. Rule 1 uses bit 0 of each mask, Rule 2 uses bit 1, through to Rule 16 using bit 15.
+
+In a downloaded output DBC, `Rule_x` is replaced by the sanitized configured output label. For example, a rule labelled `Diff Temp` produces `Diff_Temp_state`, `Diff_Temp_valid`, and `Diff_Temp_pulse`.
+
+| Bytes | Encoding | Meaning |
+|:---|:---|:---|
+| 0..1 | uint16 little-endian | `Rule_x_state` bits |
+| 2..3 | uint16 little-endian | `Rule_x_valid` bits |
+| 4..5 | uint16 little-endian | `Rule_x_pulse` bits |
+| 6 | uint8 | Rolling frame counter, wrapping from 255 to 0 |
+| 7 | uint8 | Frame format version, currently `1` |
+
+For each rule:
+
+- `Rule_x_state` is the rule's final commanded output at this instant. `1` requests relay ON and `0` requests relay OFF.
+- `Rule_x_valid` says whether the rule had all data required to make a safe decision. A consumer must energize a relay only when both `state` and `valid` are `1`. A stale, missing, or still-zero-confirming required source clears `valid` and forces the command safely OFF.
+- `Rule_x_pulse` says that the currently selected rule case is using the PULSE action. It is mode/status information, not an ON command. It remains `1` during both the ON and OFF portions of the pulse cycle; `state` identifies the current portion. A continuous ON rule has `pulse=0`, while a pulse lookup that currently resolves to continuous ON can have both `state=1` and `pulse=1`.
+
+The relay output decision is therefore:
+
+```text
+applied relay state = Rule_x_valid AND Rule_x_state
+```
+
+Examples for an otherwise empty command frame (`CC` is the rolling counter):
+
+| Situation | State / valid / pulse | CAN data bytes |
+|:---|:---|:---|
+| Rule 1 continuously ON | `1 / 1 / 0` | `01 00 01 00 00 00 CC 01` |
+| Rule 1 validly OFF because no case matched | `0 / 1 / 0` | `00 00 01 00 00 00 CC 01` |
+| Rule 2 in the ON portion of a pulse cycle | `1 / 1 / 1` | `02 00 02 00 02 00 CC 01` |
+| Rule 2 in the OFF portion of the same pulse cycle | `0 / 1 / 1` | `00 00 02 00 02 00 CC 01` |
+| Rule 2 invalid because its required input is stale | `0 / 0 / 0` | `00 00 00 00 00 00 CC 01` |
+
+For example, `Rule_2_pulse=1` and `Rule_2_state=0` does not indicate a fault: it means Rule 2 is validly waiting in the OFF portion of its pulse cycle. Conversely, `Rule_2_valid=0` is fail-safe OFF even if a malformed or older sender were to leave its state bit set.
 
 ### E46 M3 MK60 cluster emulator (capture-first)
 

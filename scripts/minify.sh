@@ -38,13 +38,19 @@ const min = fs.readFileSync(process.env.TMP_MIN, 'utf8');
 
 new Function(min);
 
-fs.writeFileSync(
-  process.env.OUT,
-  html.replace(
-    /<script>[\s\S]*?<\/script>/,
-    '<script>' + min + '</script>'
-  )
+const output = html.replace(
+  /<script>[\s\S]*?<\/script>/,
+  () => '<script>' + min + '</script>'
 );
+const scripts = output.match(/<script>/g) || [];
+const scriptEnds = output.match(/<\/script>/g) || [];
+const outputScript = output.match(/<script>([\s\S]*?)<\/script>/);
+if (scripts.length !== 1 || scriptEnds.length !== 1 || !outputScript) {
+  throw new Error(`Generated HTML has ${scripts.length} script starts and ${scriptEnds.length} script ends`);
+}
+new Function(outputScript[1]);
+
+fs.writeFileSync(process.env.OUT, output);
 NODE
 
 

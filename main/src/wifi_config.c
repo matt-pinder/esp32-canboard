@@ -15,8 +15,8 @@
 #include "secrets.h"
 
 #define WIFI_SSID "ESP32-CanBoard" ///< WiFi access point SSID
-#define WIFI_PASS "canconfig"    ///< WiFi access point password
-#define WIFI_MAX_CONN 1            ///< Maximum number of simultaneous WiFi connections
+#define WIFI_PASS "canconfig"      ///< WiFi access point password
+#define WIFI_MAX_CONN 3            ///< Maximum number of simultaneous WiFi connections
 #define PREFERRED_WIFI_SSID "Broomhall IoT"
 #define PREFERRED_WIFI_SEARCH_MS 1000
 #define PREFERRED_WIFI_CONNECT_MS 1000
@@ -136,9 +136,10 @@ static void start_persistent_ap(void)
             .channel = ESPNOW_WIFI_CHANNEL,
             .authmode = WIFI_AUTH_WPA2_PSK}};
 
-    /* ESP-NOW shares the persistent SoftAP interface.  The STA interface is
-     * needed only when infrastructure WiFi is allowed. */
-    ESP_ERROR_CHECK(esp_wifi_set_mode(board_cfg.espnow_enabled ? WIFI_MODE_AP : WIFI_MODE_APSTA));
+    /* Keep the STA interface active for ESP-NOW so existing receivers continue
+     * to see the canboard's established STA source MAC.  The SoftAP remains
+     * active independently for configuration. */
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_LOGI(TAG, "Persistent WiFi AP started: %s on channel %d", WIFI_SSID, ESPNOW_WIFI_CHANNEL);

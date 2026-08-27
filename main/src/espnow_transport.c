@@ -24,6 +24,8 @@ extern board_config_t board_cfg;
 #define ESPNOW_NOTIFY_FRAME BIT0
 #define ESPNOW_NOTIFY_FLUSH BIT1
 #define ESPNOW_NOTIFY_STOP BIT2
+#define ESPNOW_FAILURE_BACKOFF_THRESHOLD 3U
+#define ESPNOW_OFFLINE_PROBE_INTERVAL_US 1000000LL
 
 typedef struct {
     espnow_can_frame_t frame;
@@ -41,10 +43,17 @@ typedef struct {
     uint64_t radio_busy_us;
 } espnow_transport_stats_t;
 
+typedef struct {
+    uint8_t consecutive_failures;
+    bool send_pending;
+    int64_t retry_after_us;
+} espnow_peer_runtime_t;
+
 static const char *TAG = "ESPNOW";
 static volatile bool espnow_started;
 static espnow_client_config_t active_clients[ESPNOW_MAX_CLIENTS];
 static uint16_t active_sequences[ESPNOW_MAX_CLIENTS];
+static espnow_peer_runtime_t peer_runtime[ESPNOW_MAX_CLIENTS];
 static uint8_t active_client_count;
 static QueueHandle_t frame_queue;
 static SemaphoreHandle_t transport_mutex;
@@ -59,20 +68,73 @@ static bool mac_is_empty(const uint8_t mac[ESP_NOW_ETH_ALEN])
     return memcmp(mac, zero, ESP_NOW_ETH_ALEN) == 0;
 }
 
-static void increment_send_failure(void)
+static void record_send_result(uint8_t client_index, bool success)
 {
     portENTER_CRITICAL(&stats_mux);
-    transport_stats.send_failures++;
+    if (client_index < ESPNOW_MAX_CLIENTS)
+    {
+        espnow_peer_runtime_t *runtime = &peer_runtime[client_index];
+        runtime->send_pending = false;
+        if (success)
+        {
+            runtime->consecutive_failures = 0U;
+            runtime->retry_after_us = 0;
+        }
+        else
+        {
+            transport_stats.send_failures++;
+            if (runtime->consecutive_failures < UINT8_MAX)
+            {
+                runtime->consecutive_failures++;
+            }
+            if (runtime->consecutive_failures >= ESPNOW_FAILURE_BACKOFF_THRESHOLD)
+            {
+                runtime->retry_after_us = esp_timer_get_time() + ESPNOW_OFFLINE_PROBE_INTERVAL_US;
+            }
+        }
+    }
+    else if (!success)
+    {
+        transport_stats.send_failures++;
+    }
     portEXIT_CRITICAL(&stats_mux);
 }
 
 static void espnow_send_callback(const esp_now_send_info_t *tx_info, esp_now_send_status_t status)
 {
-    (void)tx_info;
-    if (status != ESP_NOW_SEND_SUCCESS)
+    if (tx_info == NULL || tx_info->des_addr == NULL)
     {
-        increment_send_failure();
+        if (status != ESP_NOW_SEND_SUCCESS)
+        {
+            portENTER_CRITICAL(&stats_mux);
+            transport_stats.send_failures++;
+            portEXIT_CRITICAL(&stats_mux);
+        }
+        return;
     }
+
+    for (uint8_t client_index = 0; client_index < active_client_count; ++client_index)
+    {
+        if (memcmp(tx_info->des_addr, active_clients[client_index].mac, ESP_NOW_ETH_ALEN) == 0)
+        {
+            record_send_result(client_index, status == ESP_NOW_SEND_SUCCESS);
+            return;
+        }
+    }
+}
+
+static bool begin_peer_send(uint8_t client_index, int64_t now_us)
+{
+    bool send = false;
+    portENTER_CRITICAL(&stats_mux);
+    espnow_peer_runtime_t *runtime = &peer_runtime[client_index];
+    if (!runtime->send_pending && now_us >= runtime->retry_after_us)
+    {
+        runtime->send_pending = true;
+        send = true;
+    }
+    portEXIT_CRITICAL(&stats_mux);
+    return send;
 }
 
 static void flush_timer_callback(void *arg)
@@ -197,6 +259,7 @@ static void batch_transmitter_task(void *arg)
                 }
             }
             if (client_frame_count == 0U) continue;
+            if (!begin_peer_send(client_index, esp_timer_get_time())) continue;
 
             const espnow_can_batch_meta_t meta = {
                 .sequence = active_sequences[client_index]++,
@@ -207,7 +270,7 @@ static void batch_transmitter_task(void *arg)
             const size_t packet_size = espnow_can_encode_batch(packet, sizeof(packet), &meta,
                                                                 client_frames, client_frame_count);
             if (packet_size == 0U) {
-                increment_send_failure();
+                record_send_result(client_index, false);
                 continue;
             }
 
@@ -218,7 +281,7 @@ static void batch_transmitter_task(void *arg)
             transport_stats.sent_packets++;
             transport_stats.radio_busy_us += send_api_us;
             portEXIT_CRITICAL(&stats_mux);
-            if (send_err != ESP_OK) increment_send_failure();
+            if (send_err != ESP_OK) record_send_result(client_index, false);
         }
         xSemaphoreGive(transport_mutex);
     }
@@ -279,6 +342,7 @@ esp_err_t espnow_transport_start(void)
         if (mac_is_empty(board_cfg.espnow_clients[i].mac)) return ESP_ERR_INVALID_ARG;
     }
     ESP_RETURN_ON_ERROR(ensure_transport_resources(), TAG, "Could not allocate transport resources");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "Could not disable WiFi power save");
 
     uint8_t primary_channel = 0U;
     wifi_second_chan_t secondary_channel = WIFI_SECOND_CHAN_NONE;
@@ -298,14 +362,15 @@ esp_err_t espnow_transport_start(void)
 
     memset(active_clients, 0, sizeof(active_clients));
     memset(active_sequences, 0, sizeof(active_sequences));
+    memset(peer_runtime, 0, sizeof(peer_runtime));
     active_client_count = 0U;
     for (uint8_t i = 0; i < board_cfg.espnow_client_count; ++i) {
         esp_now_peer_info_t peer_info = {0};
         memcpy(peer_info.peer_addr, board_cfg.espnow_clients[i].mac, ESP_NOW_ETH_ALEN);
-        /* WiFi owns the AP and channel.  Channel 0 makes the peer use the
-         * channel already selected by the running WiFi interface. */
-        peer_info.channel = 0;
-        peer_info.ifidx = WIFI_IF_AP;
+        /* Receivers advertise their STA MAC and expect the canboard's stable
+         * STA source MAC.  Keep both ends explicitly on the AP-owned channel. */
+        peer_info.channel = ESPNOW_WIFI_CHANNEL;
+        peer_info.ifidx = WIFI_IF_STA;
         peer_info.encrypt = false;
         err = esp_now_add_peer(&peer_info);
         if (err != ESP_OK) {
@@ -369,6 +434,26 @@ esp_err_t espnow_transport_stop(void)
 
 esp_err_t espnow_transport_apply_config(void)
 {
+    if (espnow_started && board_cfg.espnow_enabled &&
+        active_client_count == board_cfg.espnow_client_count) {
+        bool same_peers = true;
+        for (uint8_t i = 0; i < active_client_count; ++i) {
+            if (memcmp(active_clients[i].mac, board_cfg.espnow_clients[i].mac,
+                       ESP_NOW_ETH_ALEN) != 0) {
+                same_peers = false;
+                break;
+            }
+        }
+        if (same_peers) {
+            if (transport_mutex != NULL) xSemaphoreTake(transport_mutex, portMAX_DELAY);
+            for (uint8_t i = 0; i < active_client_count; ++i)
+                active_clients[i].relay_can = board_cfg.espnow_clients[i].relay_can;
+            if (transport_mutex != NULL) xSemaphoreGive(transport_mutex);
+            ESP_LOGI(TAG, "Updated relay flags for %u existing peer(s) without restarting ESP-NOW",
+                     (unsigned)active_client_count);
+            return ESP_OK;
+        }
+    }
     if (espnow_started) {
         const esp_err_t stop_err = espnow_transport_stop();
         if (stop_err != ESP_OK) return stop_err;

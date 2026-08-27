@@ -359,8 +359,7 @@
         margin: 0.25rem 0 0.9rem;
         color: #536271;
       }
-      .rules-toolbar,
-      .dbc-picker,
+      .rules-reference-toolbar,
       .section-heading,
       .case-actions {
         display: flex;
@@ -368,12 +367,17 @@
         gap: 0.55rem;
         flex-wrap: wrap;
       }
-      .dbc-picker input[type="file"] {
-        width: auto;
-        margin-left: 0.4rem;
+      .rules-reference-toolbar {
+        margin: 1rem 0 0.45rem;
       }
-      .rules-toolbar {
-        margin-bottom: 0.75rem;
+      .rules-reference-toolbar label {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        flex-wrap: wrap;
+      }
+      .rules-reference-toolbar input[type="file"] {
+        width: auto;
       }
       #relay-rules-card button {
         border: 1px solid #b8c4d0;
@@ -402,28 +406,15 @@
         min-height: 1.2em;
         color: #536271;
       }
-      .rule-section {
-        margin-top: 0.75rem;
-        border: 1px solid #d5dde5;
-        border-radius: 6px;
-        background: #fff;
-        overflow: hidden;
-      }
-      .rule-section > summary {
-        padding: 0.75rem 0.9rem;
-        background: #edf2f6;
-        cursor: pointer;
-        user-select: none;
-      }
-      .rule-section-body {
-        padding: 0.85rem;
-      }
       #rule-dbc-status {
         display: block;
-        margin: -0.25rem 0 0.65rem;
+        margin: 0 0 0.75rem;
       }
       .rules-table-wrap {
         overflow-x: auto;
+      }
+      .section-heading {
+        margin-top: 0.75rem;
       }
       #relay-rules-card table {
         width: 100%;
@@ -464,6 +455,14 @@
         white-space: nowrap;
         font-family: monospace;
         font-size: 0.88rem;
+      }
+      .rule-live-status {
+        min-width: 210px;
+        font-size: 0.86rem;
+        color: #536271;
+      }
+      .rule-live-status strong {
+        color: #263746;
       }
       .row-actions {
         display: flex;
@@ -800,86 +799,51 @@
         Build named output commands from local sensors or imported CAN signals.
         Outputs are broadcast on <code>CAN base + 5</code>.
       </p>
-      <div class="rules-toolbar">
-        <button type="button" id="rules-save" class="primary-button">
-          Save and apply</button
-        ><button type="button" id="rules-load">Discard changes</button
-        ><button type="button" id="rules-dbc">Download output DBC</button
-        ><span id="rules-status"></span>
-      </div>
       <p class="hint">
         The first matching case wins. Tests inside one case are ANDed;
         additional cases provide ELSE-IF/OR behavior. Missing or stale required
         data forces the output safely OFF.
       </p>
-      <details class="rule-section" open>
-        <summary>
-          <strong>1. DBC import</strong> — required only for CAN tests
-        </summary>
-        <div class="rule-section-body">
-          <div class="dbc-picker">
-            <label
-              ><strong>DBC file</strong>
-              <input
-                id="rule-dbc-file"
-                type="file"
-                accept=".dbc,text/plain" /></label
-            ><span id="rule-dbc-status" class="hint"
-              >Import a DBC to populate CAN message and field choices inside
-              rule tests.</span
-            >
-          </div>
-        </div>
-      </details>
-      <details class="rule-section" open>
-        <summary>
-          <strong>2. Output rules</strong> — up to 16 broadcast command bits
-        </summary>
-        <div class="rule-section-body">
-          <div class="rules-table-wrap">
-            <table class="output-rules-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Output label</th>
-                  <th>Enabled</th>
-                  <th>Logic</th>
-                  <th>Published as</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="rule-editor"></tbody>
-            </table>
-          </div>
-          <div class="section-heading">
-            <button type="button" id="rule-add" class="primary-button">
-              Add rule</button
-            ><span class="hint"
-              >Configure expands the rule's ordered cases and optional pulse
-              table.</span
-            >
-          </div>
-        </div>
-      </details>
-      <details class="rule-section">
-        <summary><strong>Advanced</strong> — JSON backup/import</summary>
-        <div class="rule-section-body">
-          <p class="hint">
-            Only use this to save a backup or paste a configuration prepared
-            elsewhere.
-          </p>
-          <textarea
-            id="rules-json"
-            rows="12"
-            style="width: 100%; font-family: monospace"
-            spellcheck="false"
-            aria-label="Relay rule JSON"
-          ></textarea>
-          <p>
-            <button type="button" id="rules-import-json">Apply JSON</button>
-          </p>
-        </div>
-      </details>
+      <div class="rules-reference-toolbar">
+        <label
+          ><strong>Select reference DBC file</strong>
+          <input
+            id="rule-dbc-file"
+            type="file"
+            accept=".dbc,text/plain" /></label
+        ><button type="button" id="rules-dbc">
+          Download output relay reference DBC
+        </button>
+        <span id="rules-status"></span>
+      </div>
+      <span id="rule-dbc-status" class="hint"
+        >Select a reference DBC to populate CAN message and field choices in
+        rule tests.</span
+      >
+      <div class="rules-table-wrap">
+        <table class="output-rules-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Output label</th>
+              <th>Enabled</th>
+              <th>Logic</th>
+              <th>Published as</th>
+              <th>Live status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rule-editor"></tbody>
+        </table>
+      </div>
+      <div class="section-heading">
+        <button type="button" id="rule-add" class="primary-button">
+          Add rule</button
+        ><span class="hint"
+          >Configure expands the rule's ordered cases and optional pulse
+          table.</span
+        >
+      </div>
     </section>
     <div id="status-toast" class="toast" role="status" aria-live="polite">
       <span id="status-toast-icon" class="toast-icon">✓</span>
@@ -1266,6 +1230,7 @@
       async function loadConfig() {
         const res = await fetch("/api/config");
         config = await res.json();
+        setLoadedRules(config.rules);
         fillTable();
         // Set CAN speed dropdown
         document.getElementById("can-speed").value =
@@ -1351,6 +1316,16 @@
               valueEl.textContent = ch.value || "";
             }
           }
+
+          relayRuleStatus = [];
+          const receivedAt = Date.now();
+          (Array.isArray(live.rules) ? live.rules : []).forEach((rule) => {
+            const index = Number(rule?.rule) - 1;
+            if (index >= 0 && index < 16) {
+              relayRuleStatus[index] = { ...rule, received_at_ms: receivedAt };
+            }
+          });
+          updateRuleStatusCells();
         } catch (e) {
           for (let i = 0; i < 10; ++i) {
             const voltageEl = document.getElementById(`live-voltage-${i}`);
@@ -1358,6 +1333,10 @@
             if (voltageEl) voltageEl.textContent = "--";
             if (valueEl) valueEl.textContent = "";
           }
+          relayRuleStatus = [];
+          document.querySelectorAll("[data-rule-live]").forEach((cell) => {
+            cell.textContent = "Status unavailable";
+          });
           if (window.console && console.warn) {
             console.warn("refreshLiveValues failed:", e);
           }
@@ -1367,7 +1346,7 @@
       document.getElementById("config-form").onsubmit = async function (e) {
         e.preventDefault();
         const form = e.target;
-        const error = validateConfig(form);
+        const error = validateConfig(form) || validateRulesForSave();
         setStatus(error, true);
         if (error) return;
         // Build config object
@@ -1426,6 +1405,7 @@
         config.pullup_vref_divider_high_ohm = isNaN(pvh)
           ? config.pullup_vref_divider_high_ohm || 5850
           : pvh;
+        config.rules = sparseRulesPayload();
         try {
           const resp = await fetch("/api/config", {
             method: "POST",
@@ -1433,9 +1413,9 @@
             body: JSON.stringify(config),
           });
           if (resp.ok) {
-            setStatus("Config saved.", false, true);
+            setStatus("Configuration and output rules saved.", false, true);
           } else {
-            setStatus("Failed to save config.", true);
+            setStatus(await resp.text() || "Failed to save configuration.", true);
           }
         } catch (e) {
           setStatus("Failed to save config.", true);
@@ -1517,14 +1497,16 @@
             body: text,
           });
           if (resp.ok) {
+            const result = await resp.json().catch(() => ({}));
+            if (result.warning) setStatus(result.warning, true);
             setTimeout(() => {
               window.location.reload();
-            }, 900);
+            }, result.warning ? 2200 : 900);
           } else {
-            // No toast needed for restore flow
+            setStatus(await resp.text() || "Restore failed.", true);
           }
         } catch (e) {
-          // No toast needed for restore flow
+          setStatus("Restore failed.", true);
         } finally {
           e.target.value = "";
         }
@@ -1581,6 +1563,7 @@
         }
       };
       let relayRules = null;
+      let relayRuleStatus = [];
       let dbcMessages = [];
       let visibleRuleRows = [];
       const expandedRuleRows = new Set();
@@ -1596,6 +1579,7 @@
       const num = (value, fallback = 0) =>
         Number.isFinite(Number(value)) ? Number(value) : fallback;
       const sourceLabel = (source) => {
+        if (!source) return "Unknown source";
         if (source.type === 2 || source.type === 3) {
           const channel = Number(source.local_channel || 0);
           const configuredName = config?.channels?.[channel]?.name;
@@ -1664,6 +1648,23 @@
         }
         return null;
       }
+      function storedCanLabels(source) {
+        const name = String(source?.name || "").trim();
+        const separator = name.lastIndexOf(".");
+        const id = Number(source?.can_id || 0)
+          .toString(16)
+          .toUpperCase();
+        return {
+          message:
+            separator > 0
+              ? name.slice(0, separator)
+              : `CAN 0x${id.padStart(3, "0")}`,
+          field:
+            separator > 0
+              ? name.slice(separator + 1)
+              : name || "Saved CAN field",
+        };
+      }
       function testEditor(test, rule, caseIndex, testIndex) {
         const key = testKey(rule, caseIndex, testIndex),
           mode = testSourceMode(test, key),
@@ -1672,22 +1673,36 @@
           localValue = source?.type === 3;
         const dbcSelection =
           mode === "can" ? dbcSelectionForSource(source) : null;
-        const messageOptions = dbcMessages
+        const storedCanSource = mode === "can" && source?.type === 1;
+        const storedLabels = storedCanLabels(source);
+        const importedMessageOptions = dbcMessages
           .map(
             (message, index) =>
               `<option value="${index}" ${dbcSelection?.messageIndex === index ? "selected" : ""}>0x${message.id.toString(16).toUpperCase()} — ${html(message.name)}</option>`,
           )
           .join("");
-        const selectedMessage = dbcMessages[dbcSelection?.messageIndex ?? 0];
-        const fieldOptions = (selectedMessage?.signals || [])
-          .map(
-            (signal, index) =>
-              `<option value="${index}" ${dbcSelection?.signalIndex === index ? "selected" : ""}>${html(signal.name)}${signal.unit ? ` (${html(signal.unit)})` : ""}</option>`,
-          )
-          .join("");
+        const savedMessageOption = storedCanSource
+          ? `<option value="stored" selected>0x${Number(source.can_id).toString(16).toUpperCase()} — ${html(storedLabels.message)} (saved)</option>`
+          : "";
+        const messageOptions = dbcSelection
+          ? importedMessageOptions
+          : savedMessageOption + importedMessageOptions;
+        const selectedMessage = dbcSelection
+          ? dbcMessages[dbcSelection.messageIndex]
+          : null;
+        const fieldOptions = dbcSelection
+          ? (selectedMessage?.signals || [])
+              .map(
+                (signal, index) =>
+                  `<option value="${index}" ${dbcSelection.signalIndex === index ? "selected" : ""}>${html(signal.name)}${signal.unit ? ` (${html(signal.unit)})` : ""}</option>`,
+              )
+              .join("")
+          : storedCanSource
+            ? `<option value="stored" selected>${html(storedLabels.field)} (saved)</option>`
+            : "";
         return `<div class="logic-test">
           <select aria-label="Test source type" data-change="test-mode" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}"><option value="sensor" ${mode === "sensor" ? "selected" : ""}>Sensor input</option><option value="can" ${mode === "can" ? "selected" : ""}>CAN</option><option value="timer" ${mode === "timer" ? "selected" : ""}>Timer</option></select>
-          ${mode === "sensor" ? `<select aria-label="Sensor input" data-change="sensor-channel" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${Array.from({ length: 10 }, (_, index) => `<option value="${index}" ${localChannel === index ? "selected" : ""}>Input ${index + 1}${config?.channels?.[index]?.name ? ` — ${html(config.channels[index].name)}` : ""}</option>`).join("")}</select><select aria-label="Sensor measurement" data-change="sensor-measurement" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}"><option value="voltage" ${!localValue ? "selected" : ""}>Voltage</option><option value="value" ${localValue ? "selected" : ""}>Value</option></select>` : mode === "can" ? `<select aria-label="CAN message" data-change="can-message" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${messageOptions || `<option value="">Import a DBC first</option>`}</select><select aria-label="CAN field" data-change="can-field" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${fieldOptions || `<option value="">Select a DBC message</option>`}</select>` : `<span class="hint">Milliseconds since startup</span><span></span>`}
+          ${mode === "sensor" ? `<select aria-label="Sensor input" data-change="sensor-channel" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${Array.from({ length: 10 }, (_, index) => `<option value="${index}" ${localChannel === index ? "selected" : ""}>Input ${index + 1}${config?.channels?.[index]?.name ? ` — ${html(config.channels[index].name)}` : ""}</option>`).join("")}</select><select aria-label="Sensor measurement" data-change="sensor-measurement" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}"><option value="voltage" ${!localValue ? "selected" : ""}>Voltage</option><option value="value" ${localValue ? "selected" : ""}>Value</option></select>` : mode === "can" ? `<select aria-label="CAN message" data-change="can-message" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${messageOptions || `<option value="">Select reference DBC first</option>`}</select><select aria-label="CAN field" data-change="can-field" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${fieldOptions || `<option value="">Select a DBC message</option>`}</select>` : `<span class="hint">Milliseconds since startup</span><span></span>`}
           <select data-change="test-comparison" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${comparisonChoices(test.comparison)}</select>
           <input type="number" step="any" value="${test.threshold}" aria-label="Threshold" data-change="test-threshold" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}" placeholder="Threshold">
           <label class="hysteresis-label"><input type="checkbox" data-change="test-hyst-enabled" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}" ${test.hysteresis_enabled ? "checked" : ""}> Hysteresis</label>
@@ -1703,23 +1718,12 @@
           .join("");
         const pulse =
           entry.action === 2
-            ? `<div class="pulse-panel"><div class="pulse-header"><label>Pulse lookup source<select data-change="pulse-source" data-r="${rule}" data-c="${caseIndex}">${sourceChoices(entry.pulse_source_index)}</select></label><button type="button" data-click="add-point" data-r="${rule}" data-c="${caseIndex}">Add lookup row</button><span class="hint">Values between rows are interpolated.</span></div><div class="rules-table-wrap"><table class="pulse-table"><thead><tr><th>Signal value</th><th>ON time (seconds)</th><th>Cycle period (seconds)</th><th></th></tr></thead><tbody>${pulseRows || `<tr><td class="empty-row" colspan="4">Add at least one pulse lookup row.</td></tr>`}</tbody></table></div></div>`
+            ? `<div class="pulse-panel"><div class="pulse-header"><label>Pulse lookup source<select data-change="pulse-source" data-r="${rule}" data-c="${caseIndex}">${sourceChoices(entry.pulse_source_index)}</select></label><label>Pulse source hysteresis<input type="number" min="0" step="any" value="${num(entry.pulse_hysteresis)}" data-change="pulse-hysteresis" data-r="${rule}" data-c="${caseIndex}" aria-label="Pulse source hysteresis"></label><button type="button" data-click="add-point" data-r="${rule}" data-c="${caseIndex}">Add lookup row</button><span class="hint">Hysteresis is measured from the cycle-start value. Exceeding it recalculates the current countdown from the original start time and updates ON duration while ON.</span></div><div class="rules-table-wrap"><table class="pulse-table"><thead><tr><th>Signal value</th><th>ON time (seconds)</th><th>Cycle period (seconds)</th><th></th></tr></thead><tbody>${pulseRows || `<tr><td class="empty-row" colspan="4">Add at least one pulse lookup row.</td></tr>`}</tbody></table></div></div>`
             : "";
         return `<section class="logic-case"><div class="logic-case-header"><strong>${caseIndex === 0 ? "IF" : "ELSE IF"} — Case ${caseIndex + 1}</strong><button class="danger-button" type="button" data-click="remove-case" data-r="${rule}" data-c="${caseIndex}">Remove case</button></div>${entry.tests.map((test, t) => testEditor(test, rule, caseIndex, t)).join("")}<div class="case-actions"><button type="button" data-click="add-test" data-r="${rule}" data-c="${caseIndex}">Add AND test</button><span class="hint">All tests above must pass.</span></div><div class="case-result"><strong>THEN</strong><select data-change="case-action" data-r="${rule}" data-c="${caseIndex}">${actionChoices(entry.action)}</select></div>${pulse}</section>`;
       }
       function renderRuleEditor() {
         if (!relayRules) return;
-        const sparseBackup = {
-          ...relayRules,
-          rules: relayRules.rules
-            .map((rule, index) => ({ ...rule, rule: index + 1 }))
-            .filter((rule) => rule.enabled || rule.cases.length),
-        };
-        document.getElementById("rules-json").value = JSON.stringify(
-          sparseBackup,
-          null,
-          2,
-        );
         document.getElementById("rule-editor").innerHTML =
           visibleRuleRows
             .map((r) => {
@@ -1731,10 +1735,68 @@
                 ? `${rule.cases.length} case${rule.cases.length === 1 ? "" : "s"} · ${actions}`
                 : "No cases · defaults OFF";
               const expanded = expandedRuleRows.has(r);
-              return `<tr class="rule-summary-row"><td class="rule-number">${r + 1}</td><td><input aria-label="Rule ${r + 1} output label" data-change="rule-label" data-r="${r}" value="${html(rule.label)}"></td><td class="rule-enabled"><input aria-label="Rule ${r + 1} enabled" type="checkbox" data-change="rule-enabled" data-r="${r}" ${rule.enabled ? "checked" : ""}></td><td>${summary}</td><td class="rule-command">Bit ${r + 1}</td><td><div class="row-actions"><button type="button" data-click="toggle-detail" data-r="${r}">${expanded ? "Close" : "Configure"}</button><button class="danger-button" type="button" data-click="remove-rule" data-r="${r}">Remove</button></div></td></tr><tr class="rule-detail-row" id="rule-detail-${r}" ${expanded ? "" : "hidden"}><td colspan="6"><div class="rule-detail"><div class="rule-detail-title"><strong>${html(rule.label)} — ordered logic</strong><span class="hint">No matching case means valid OFF.</span></div>${rule.cases.map((entry, c) => caseEditor(entry, r, c)).join("")}${rule.cases.length < 4 ? `<button type="button" data-click="add-case" data-r="${r}">Add ELSE-IF case</button>` : ""}</div></td></tr>`;
+              return `<tr class="rule-summary-row"><td class="rule-number">${r + 1}</td><td><input aria-label="Rule ${r + 1} output label" data-change="rule-label" data-r="${r}" value="${html(rule.label)}"></td><td class="rule-enabled"><input aria-label="Rule ${r + 1} enabled" type="checkbox" data-change="rule-enabled" data-r="${r}" ${rule.enabled ? "checked" : ""}></td><td>${summary}</td><td class="rule-command">Bit ${r + 1}</td><td class="rule-live-status" data-rule-live="${r}">Waiting for status…</td><td><div class="row-actions"><button type="button" data-click="toggle-detail" data-r="${r}">${expanded ? "Close" : "Configure"}</button><button class="danger-button" type="button" data-click="remove-rule" data-r="${r}">Remove</button></div></td></tr><tr class="rule-detail-row" id="rule-detail-${r}" ${expanded ? "" : "hidden"}><td colspan="7"><div class="rule-detail"><div class="rule-detail-title"><strong>${html(rule.label)} — ordered logic</strong><span class="hint">No matching case means valid OFF.</span></div>${rule.cases.map((entry, c) => caseEditor(entry, r, c)).join("")}${rule.cases.length < 4 ? `<button type="button" data-click="add-case" data-r="${r}">Add ELSE-IF case</button>` : ""}</div></td></tr>`;
             })
             .join("") ||
-          '<tr><td class="empty-row" colspan="6">No output rules yet. Select Add rule to create the first command bit.</td></tr>';
+          '<tr><td class="empty-row" colspan="7">No output rules yet. Select Add rule to create the first command bit.</td></tr>';
+        updateRuleStatusCells();
+      }
+      const formatRuleSeconds = (milliseconds) => {
+        const seconds = Math.max(0, Number(milliseconds) || 0) / 1000;
+        return `${seconds >= 10 ? seconds.toFixed(1) : seconds.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")} s`;
+      };
+      function ruleLiveStatusText(status) {
+        if (!status) return "Waiting for status…";
+        if (!status?.enabled) return "Disabled";
+        if (!status.valid) {
+          const source =
+            relayRules?.sources?.find(
+              (candidate) =>
+                candidate.type !== 0 &&
+                candidate.name === status.invalid_source_name,
+            ) ||
+            (status.invalid_source_name
+              ? { name: status.invalid_source_name, type: 1 }
+              : null);
+          const location = status.invalid_pulse_source
+            ? `Case ${Number(status.invalid_case) + 1} pulse source`
+            : `Case ${Number(status.invalid_case) + 1}, test ${Number(status.invalid_test) + 1}`;
+          let reason = "is unavailable";
+          if (Number(status.invalid_reason) === 1)
+            reason = "has not been received";
+          else if (Number(status.invalid_reason) === 2) {
+            const required =
+              Number(status.invalid_source_zero_confirm_samples) || 1;
+            const streak = Number(status.invalid_source_zero_streak) || 0;
+            reason = `is awaiting an accepted value (zero confirmation ${streak}/${required})`;
+          } else if (Number(status.invalid_reason) === 3) {
+            reason = `is stale (age ${formatRuleSeconds(status.invalid_source_age_ms)}; timeout ${formatRuleSeconds(relayRules?.signal_timeout_ms)})`;
+          }
+          return `<strong>Invalid · OFF</strong><br>${html(location)}: ${html(sourceLabel(source))} ${html(reason)}`;
+        }
+        let state = status.state ? "ON" : "OFF";
+        if (!status.pulse_active)
+          return `<strong>${state}</strong> · Case ${Number(status.selected_case) + 1}`;
+        const onTime = Number(status.pulse_on_time_ms) || 0;
+        const period = Number(status.pulse_period_ms) || 0;
+        if (onTime <= 0)
+          return `<strong>OFF</strong> · No ON cycle at current signal`;
+        if (period > 0 && onTime >= period)
+          return `<strong>ON</strong> · Continuous at current signal · ON duration continuous`;
+        const elapsed = Math.max(0, Date.now() - Number(status.received_at_ms));
+        let nextOn = Number(status.pulse_next_on_ms) - elapsed;
+        if (nextOn <= 0)
+          nextOn = period - ((-nextOn) % period);
+        const phase = (period - nextOn) % period;
+        state = phase < onTime ? "ON" : "OFF";
+        return `<strong>${state}</strong> · Next ON in ${formatRuleSeconds(nextOn)} · ON duration ${formatRuleSeconds(onTime)}`;
+      }
+      function updateRuleStatusCells() {
+        document.querySelectorAll("[data-rule-live]").forEach((cell) => {
+          cell.innerHTML = ruleLiveStatusText(
+            relayRuleStatus[Number(cell.dataset.ruleLive)],
+          );
+        });
       }
       const defaultTest = () => ({
         type: 0,
@@ -1748,6 +1810,7 @@
         tests: [defaultTest()],
         action: 0,
         pulse_source_index: 0,
+        pulse_hysteresis: 0,
         pulse_points: [],
       });
       function ensureCanSource(messageIndex, signalIndex) {
@@ -1805,6 +1868,8 @@
         else if (kind === "case-action") entry.action = num(el.value);
         else if (kind === "pulse-source")
           entry.pulse_source_index = num(el.value);
+        else if (kind === "pulse-hysteresis")
+          entry.pulse_hysteresis = Math.max(0, num(el.value));
         else if (kind === "test-mode") {
           const key = testKey(r, c, t);
           testSourceModes.set(key, el.value);
@@ -1973,12 +2038,12 @@
             0,
           );
           document.getElementById("rule-dbc-status").textContent =
-            `Loaded ${dbcMessages.length} messages and ${count} fields from ${file.name}. CAN tests now provide message and field dropdowns.`;
+            `Selected ${file.name}: ${dbcMessages.length} messages and ${count} fields available to CAN tests.`;
           renderRuleEditor();
         } catch (error) {
           dbcMessages = [];
           document.getElementById("rule-dbc-status").textContent =
-            `DBC import failed: ${error.message}`;
+            `Reference DBC could not be read: ${error.message}`;
           renderRuleEditor();
         }
       };
@@ -2002,6 +2067,52 @@
         renderRuleEditor();
       };
       function expandSparseRules(payload) {
+        const sources = Array.from({ length: 64 }, (_, index) => {
+          if (index < 20) {
+            const channel = index % 10;
+            const voltage = index < 10;
+            return {
+              name: `Input ${channel + 1} ${voltage ? "voltage" : "value"}`,
+              type: voltage ? 2 : 3,
+              local_channel: channel,
+              can_id: 0,
+              extended: false,
+              start_bit: 0,
+              bit_length: 0,
+              little_endian: false,
+              is_signed: false,
+              factor: 0,
+              offset: 0,
+              zero_confirm_samples: 11,
+            };
+          }
+          return {
+            name: "",
+            type: 0,
+            local_channel: 0,
+            can_id: 0,
+            extended: false,
+            start_bit: 0,
+            bit_length: 0,
+            little_endian: false,
+            is_signed: false,
+            factor: 0,
+            offset: 0,
+            zero_confirm_samples: 0,
+          };
+        });
+        (payload.sources || []).forEach((source, index) => {
+          if (index >= 44) return;
+          sources[20 + index] = {
+            ...sources[20 + index],
+            ...source,
+            type: 1,
+          };
+        });
+        const sourceIndex = (name) =>
+          sources.findIndex(
+            (source) => source.type !== 0 && source.name === name,
+          );
         const expanded = Array.from({ length: 16 }, (_, index) => ({
           rule: index + 1,
           label: `Rule ${index + 1}`,
@@ -2015,15 +2126,32 @@
         ) {
           const saved = payload.rules[position],
             slot = Number(saved.rule || position + 1) - 1;
-          if (slot >= 0 && slot < expanded.length)
-            expanded[slot] = { ...saved, rule: slot + 1 };
+          if (slot >= 0 && slot < expanded.length) {
+            expanded[slot] = {
+              ...saved,
+              rule: slot + 1,
+              cases: (saved.cases || []).map((entry) => ({
+                ...entry,
+                pulse_source_index:
+                  entry.action === 2
+                    ? sourceIndex(entry.pulse_source_name)
+                    : 0,
+                pulse_hysteresis: num(entry.pulse_hysteresis),
+                pulse_points: entry.action === 2 ? entry.pulse_points || [] : [],
+                tests: (entry.tests || []).map((test) => ({
+                  ...test,
+                  source_index:
+                    test.type === 0 ? sourceIndex(test.source_name) : 0,
+                })),
+              })),
+            };
+          }
         }
-        return { ...payload, rules: expanded };
+        return { ...payload, sources, rules: expanded };
       }
-      async function loadRules() {
-        const response = await fetch("/api/rules", { cache: "no-store" });
-        if (!response.ok) throw new Error(await response.text());
-        relayRules = expandSparseRules(await response.json());
+      function setLoadedRules(payload) {
+        if (!payload) throw new Error("Configuration does not contain output rules.");
+        relayRules = expandSparseRules(payload);
         visibleRuleRows = relayRules.rules
           .map((rule, index) =>
             rule.enabled || rule.cases.length ? index : -1,
@@ -2031,10 +2159,82 @@
           .filter((index) => index >= 0);
         expandedRuleRows.clear();
         renderRuleEditor();
-        ruleStatus("Loaded.");
+      }
+      function sparseRulesPayload() {
+        const configuredRules = relayRules.rules
+          .map((rule, index) => ({ ...rule, rule: index + 1 }))
+          .filter((rule) => rule.enabled || rule.cases.length);
+        const usedCanSources = new Set();
+        configuredRules.forEach((rule) =>
+          rule.cases.forEach((entry) => {
+            entry.tests.forEach((test) => {
+              if (
+                test.type === 0 &&
+                relayRules.sources[test.source_index]?.type === 1
+              )
+                usedCanSources.add(test.source_index);
+            });
+            if (
+              entry.action === 2 &&
+              relayRules.sources[entry.pulse_source_index]?.type === 1
+            )
+              usedCanSources.add(entry.pulse_source_index);
+          }),
+        );
+        const compactSource = (source) => ({
+          name: source.name,
+          can_id: source.can_id,
+          extended: source.extended,
+          start_bit: source.start_bit,
+          bit_length: source.bit_length,
+          little_endian: source.little_endian,
+          is_signed: source.is_signed,
+          factor: source.factor,
+          offset: source.offset,
+          zero_confirm_samples: source.zero_confirm_samples,
+        });
+        const compactRules = configuredRules.map((rule) => ({
+          rule: rule.rule,
+          label: rule.label,
+          enabled: rule.enabled,
+          cases: rule.cases.map((entry) => {
+            const compact = {
+              action: entry.action,
+              tests: entry.tests.map((test) => {
+                const result = {
+                  type: test.type,
+                  comparison: test.comparison,
+                  hysteresis_enabled: test.hysteresis_enabled,
+                  threshold: test.threshold,
+                  hysteresis: test.hysteresis,
+                };
+                if (test.type === 0)
+                  result.source_name =
+                    relayRules.sources[test.source_index]?.name || "";
+                return result;
+              }),
+            };
+            if (entry.action === 2) {
+              compact.pulse_source_name =
+                relayRules.sources[entry.pulse_source_index]?.name || "";
+              compact.pulse_hysteresis = num(entry.pulse_hysteresis);
+              compact.pulse_points = entry.pulse_points;
+            }
+            return compact;
+          }),
+        }));
+        return {
+          version: relayRules.version,
+          signal_timeout_ms: relayRules.signal_timeout_ms,
+          sources: [...usedCanSources].map((index) =>
+            compactSource(relayRules.sources[index]),
+          ),
+          rules: compactRules,
+        };
       }
       function validateRulesForSave() {
-        const publishIntervalMs = config?.can_tx_hz === 50 ? 20 : 40;
+        const publishIntervalMs =
+          Number(document.getElementById("can-tx-rate").value) === 50 ? 20 : 40;
         for (let r = 0; r < relayRules.rules.length; ++r) {
           const rule = relayRules.rules[r];
           if (!rule.enabled) continue;
@@ -2045,6 +2245,8 @@
             if (!entry.tests.length)
               return `Rule ${r + 1}, case ${c + 1} needs at least one test.`;
             if (entry.action !== 2) continue;
+            if (num(entry.pulse_hysteresis, -1) < 0)
+              return `Rule ${r + 1}, case ${c + 1}: pulse source hysteresis cannot be negative.`;
             if (!entry.pulse_points.length)
               return `Rule ${r + 1}, case ${c + 1} uses PULSE but has no lookup rows.`;
             for (let p = 0; p < entry.pulse_points.length; ++p) {
@@ -2069,50 +2271,6 @@
         }
         return "";
       }
-      async function saveRules() {
-        const validationError = validateRulesForSave();
-        if (validationError) throw new Error(validationError);
-        const payload = {
-          ...relayRules,
-          rules: relayRules.rules
-            .map((rule, index) => ({ ...rule, rule: index + 1 }))
-            .filter((rule) => rule.enabled || rule.cases.length),
-        };
-        const response = await fetch("/api/rules", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!response.ok) throw new Error(await response.text());
-        relayRules = expandSparseRules(await response.json());
-        visibleRuleRows = relayRules.rules
-          .map((rule, index) =>
-            rule.enabled || rule.cases.length ? index : -1,
-          )
-          .filter((index) => index >= 0);
-        renderRuleEditor();
-        ruleStatus("Saved and applied.");
-      }
-      document.getElementById("rules-load").onclick = () =>
-        loadRules().catch((e) => ruleStatus(`Load failed: ${e.message}`));
-      document.getElementById("rules-save").onclick = () =>
-        saveRules().catch((e) => ruleStatus(`Save failed: ${e.message}`));
-      document.getElementById("rules-import-json").onclick = () => {
-        try {
-          relayRules = expandSparseRules(
-            JSON.parse(document.getElementById("rules-json").value),
-          );
-          visibleRuleRows = relayRules.rules
-            .map((rule, index) =>
-              rule.enabled || rule.cases.length ? index : -1,
-            )
-            .filter((index) => index >= 0);
-          renderRuleEditor();
-          saveRules().catch((e) => ruleStatus(`Save failed: ${e.message}`));
-        } catch (e) {
-          ruleStatus("Invalid JSON.");
-        }
-      };
       document.getElementById("rules-dbc").onclick = () => {
         try {
           const rules = relayRules;
@@ -2143,8 +2301,8 @@
       };
       updateTransportControls();
       loadConfig();
-      loadRules().catch(() => {});
       setInterval(refreshLiveValues, 1000);
+      setInterval(updateRuleStatusCells, 250);
     </script>
   </body>
 </html>
