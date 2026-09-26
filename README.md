@@ -180,6 +180,72 @@ Dragy output uses six standard 11-bit CAN frames starting at the configured GPS 
 
 The Dragy BLE handshake and stream format are based on the experimental [DragyDash ESP32 protocol notes](https://github.com/jremick/dragy-dash-esp32/blob/main/docs/DRAGY_PROTOCOL.md).
 
+### Dragy update-rate probe
+
+[`tools/dragy_rate_probe.py`](tools/dragy_rate_probe.py) connects from macOS or another Bleak-compatible host, inventories the `FD00` characteristics, performs the normal handshake, and reassembles every checksum-valid UBX message received through `FD02`. It reports both host arrival rate and the rate derived from NAV-PVT `iTOW`, and separately detects `UBX-HNR-PVT` if that message ever appears.
+
+To test whether the mobile-app setting persists in the Dragy, select a rate in the app, disconnect the app completely, and make a capture. Repeat for each setting:
+
+```sh
+python3 -m pip install bleak
+python3 tools/dragy_rate_probe.py --label 10Hz --duration 15 --output dragy-10hz.json
+python3 tools/dragy_rate_probe.py --label 20Hz --duration 15 --output dragy-20hz.json
+python3 tools/dragy_rate_probe.py --label 25Hz --duration 15 --output dragy-25hz.json
+python3 tools/dragy_rate_probe.py --compare dragy-10hz.json dragy-20hz.json dragy-25hz.json
+```
+
+Use `--name` if the advertised name differs from `DRGPR-7E084E`. The comparison shows NAV-PVT rate and delta distributions, all observed UBX class/message IDs, HNR-PVT counts, and any changed readable characteristic values. A persisted output-rate change proves the setting is stored by the Dragy, but identifying the command used to change it still requires capturing the app's BLE writes.
+
+The `FD00` service also exposes writable characteristic `FD01`, which testing confirmed is a transparent UBX command ingress paired with notify-only telemetry characteristic `FD02`. A `UBX-MON-VER` poll sent to FD01 returned the following receiver identity through FD02:
+
+- Module: MAX-M10S
+- Firmware: SPG 5.10
+- Protocol: 34.10
+- Enabled systems reported by the firmware: GPS, GLONASS, Galileo, BeiDou, SBAS, and QZSS
+
+The command path can be checked without changing configuration by polling the receiver version:
+
+```sh
+python3 tools/dragy_rate_probe.py --probe-command-path --duration 5 --output dragy-command-probe.json
+```
+
+The summary should contain message `0A/04` and report the command path as confirmed. An experimental rate can then be applied to the receiver's RAM layer only:
+
+```sh
+python3 tools/dragy_rate_probe.py --set-rate 25 --duration 15 --output dragy-set-25hz.json
+```
+
+This sends `CFG-RATE-MEAS=40 ms` and `CFG-RATE-NAV=1` using `UBX-CFG-VALSET`. The 10 Hz and 20 Hz choices use 100 ms and 50 ms respectively. The receiver returned `UBX-ACK-ACK` for both configuration messages and changed its NAV-PVT iTOW cadence accordingly. The command deliberately does not select the battery-backed RAM or flash layers, so it does not permanently write receiver configuration.
+
+At 20 Hz and 25 Hz, testing found occasional complete navigation epochs missing from FD02 even though NAV-PVT iTOW confirmed the configured receiver rate. To test whether the periodic NAV-DOP and larger NAV-SAT messages cause that loss, disable both while setting 25 Hz:
+
+```sh
+python3 tools/dragy_rate_probe.py \
+  --set-rate 25 \
+  --disable-extra-nav \
+  --duration 30 \
+  --output dragy-25hz-pvt-only.json
+```
+
+The probe first reads the PVT, DOP, and SAT message-output rates for I2C, UART1, and SPI so the active receiver interface can be identified. It then disables DOP and SAT on all three interfaces in the RAM layer. A successful test should report eight `UBX-ACK-ACK` messages—two rate settings and six message-output settings—no `01/04` or `01/35` messages after the short transition, and NAV-PVT host rate close to 25 Hz with almost exclusively 40 ms iTOW deltas.
+
+Testing identified I2C as the active Dragy receiver interface: NAV-PVT had rate 1 and NAV-DOP/NAV-SAT each had rate 10. Disabling DOP and SAT removed those messages after the buffered transition but did not improve NAV-PVT completeness: delivery remained about 24 Hz with periodic 80 ms iTOW gaps. Earlier NAV-SAT captures showed GPS, Galileo, BeiDou, and GLONASS all active. The remaining missed epochs therefore appear unrelated to competing UBX output bandwidth; a separate single-GNSS test is required to distinguish MAX-M10S navigation workload from Dragy's BLE forwarding limit.
+
+Run that single-GNSS experiment with:
+
+```sh
+python3 tools/dragy_rate_probe.py \
+  --single-gnss \
+  --set-rate 25 \
+  --disable-extra-nav \
+  --duration 60 \
+  --output dragy-25hz-gps-only.json
+```
+
+The probe first reads the RAM constellation settings, then keeps GPS enabled while disabling Galileo, BeiDou, and GLONASS in one RAM-only `UBX-CFG-VALSET`. QZSS and SBAS are left unchanged. Changing signal configuration restarts the GNSS subsystem, so the probe waits before applying the rate and message-output settings. Testing observed eleven ACK messages: two configuration queries, one signal configuration, two rate settings, and six DOP/SAT output settings.
+
+The GPS-only test produced a complete post-configuration stream: 1,498 NAV-PVT frames over approximately 59.8 seconds, with all 1,497 iTOW intervals exactly 40 ms and a measured host arrival rate of approximately 25 Hz. The few non-40 ms intervals in the full capture occurred before the final configuration acknowledgement, during the GNSS restart and rate transition. This confirms that the earlier missing epochs were caused by attempting 25 Hz with GPS, Galileo, BeiDou, and GLONASS all enabled, rather than by FD02 BLE throughput.
+
 ### Dragy Pro IMU capture (experimental)
 
 Testing with a Dragy Pro DRG71 found an undocumented IMU notification stream on characteristic `FD05`. Notifications contain one or more 16-byte records:

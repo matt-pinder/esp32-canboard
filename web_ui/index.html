@@ -675,8 +675,21 @@
             <div class="transport-option-row">
               <label class="transport-control" for="gps-enabled">
                 <input id="gps-enabled" name="gps_enabled" type="checkbox" />
-                <span>GPS</span>
+                <span>Dragy GPS</span>
               </label>
+
+              <span class="gps-setting">
+                <label for="gps-update-rate">Update Rate:</label>
+                <select
+                  id="gps-update-rate"
+                  name="gps_update_rate_hz"
+                  class="small-select"
+                >
+                  <option value="10">10Hz</option>
+                  <option value="20">20Hz</option>
+                  <option value="25">25Hz</option>
+                </select>
+              </span>
 
               <span class="gps-setting">
                 <label for="gps-can-start-id">GPS Start ID:</label>
@@ -1037,6 +1050,7 @@
         addClient.disabled =
           !espnowEnabled || espnowClients.length >= ESPNOW_MAX_CLIENTS;
         document.getElementById("gps-can-start-id").disabled = !gpsEnabled;
+        document.getElementById("gps-update-rate").disabled = !gpsEnabled;
         gpsMac.disabled = !gpsEnabled;
         gpsMac.required = gpsEnabled;
         document.getElementById("ble-scan-btn").disabled = !gpsEnabled;
@@ -1114,6 +1128,12 @@
           );
           if (isNaN(gpsStartId) || gpsStartId < 0 || gpsStartId > 0x7fa) {
             error += "GPS Start ID must allow six 11-bit frames. ";
+          }
+          const gpsRate = parseInt(
+            document.getElementById("gps-update-rate").value,
+          );
+          if (![10, 20, 25].includes(gpsRate)) {
+            error += "Dragy update rate must be 10, 20, or 25Hz. ";
           }
         }
         const emubSelection = new Array(EMUB_TX_OPTIONS.length).fill(false);
@@ -1278,6 +1298,11 @@
         document.getElementById("gps-target-mac").value = normalizeMacAddress(
           config.gps_target_mac || "",
         );
+        document.getElementById("gps-update-rate").value = [10, 20, 25].includes(
+          config.gps_update_rate_hz,
+        )
+          ? config.gps_update_rate_hz
+          : 10;
         updateTransportControls();
         await refreshLiveValues();
       }
@@ -1365,6 +1390,9 @@
           config.gps_can_start_id !== undefined
             ? config.gps_can_start_id
             : 0x650,
+        );
+        config.gps_update_rate_hz = parseInt(
+          document.getElementById("gps-update-rate").value,
         );
         config.can_speed_kbps = parseInt(
           document.getElementById("can-speed").value,

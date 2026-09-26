@@ -287,6 +287,15 @@ static bool read_gps_config(cJSON *root, board_config_t *cfg) {
         }
     }
 
+    cJSON *gps_rate = cJSON_GetObjectItem(root, "gps_update_rate_hz");
+    if (gps_rate != NULL) {
+        if (!cJSON_IsNumber(gps_rate) ||
+            (gps_rate->valueint != 10 && gps_rate->valueint != 20 && gps_rate->valueint != 25)) {
+            return false;
+        }
+        cfg->gps_update_rate_hz = (uint8_t)gps_rate->valueint;
+    }
+
     if (cfg->gps_can_start_id > 0x7FA) {
         return false;
     }
@@ -320,6 +329,7 @@ static bool apply_runtime_config(const board_config_t *cfg) {
                                   sizeof(cfg->espnow_clients)) != 0);
     bool gps_changed = (previous_cfg.gps_enabled != cfg->gps_enabled) ||
                        (previous_cfg.gps_can_start_id != cfg->gps_can_start_id) ||
+                       (previous_cfg.gps_update_rate_hz != cfg->gps_update_rate_hz) ||
                        (memcmp(previous_cfg.gps_target_mac, cfg->gps_target_mac, ESP_NOW_ETH_ALEN) != 0);
     board_cfg = *cfg;
 
@@ -371,8 +381,9 @@ static bool apply_runtime_config(const board_config_t *cfg) {
 
     if (gps_changed) {
         dragy_gps_apply_config();
-        ESP_LOGI(TAG, "Runtime GPS settings updated: enabled=%d start_id=0x%lX",
-                 board_cfg.gps_enabled, (unsigned long)board_cfg.gps_can_start_id);
+        ESP_LOGI(TAG, "Runtime GPS settings updated: enabled=%d rate=%uHz start_id=0x%lX",
+                 board_cfg.gps_enabled, (unsigned)board_cfg.gps_update_rate_hz,
+                 (unsigned long)board_cfg.gps_can_start_id);
     }
 
     if (!can_changed && !espnow_changed && !gps_changed && !mk60_changed) {
@@ -513,7 +524,7 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     
     // Start JSON object including persisted board and transport configuration.
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"gps_update_rate_hz\":%u,\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg.can_enabled ? "true" : "false",
         (unsigned long)cfg.can_speed_kbps,
         (unsigned long)cfg.can_start_id,
@@ -523,6 +534,7 @@ esp_err_t config_get_handler(httpd_req_t *req) {
         cfg.gps_enabled ? "true" : "false",
         (unsigned long)cfg.gps_can_start_id,
         gps_mac,
+        (unsigned)cfg.gps_update_rate_hz,
         mk60_json,
         (unsigned)cfg.pullup_vref_divider_high_ohm);
     
@@ -597,6 +609,7 @@ esp_err_t config_post_handler(httpd_req_t *req) {
     // The current web asset predates this safety-critical setting. Preserve an
     // existing profile when that UI posts a configuration without the field.
     cfg.mk60_emulator = board_cfg.mk60_emulator;
+    cfg.gps_update_rate_hz = board_cfg.gps_update_rate_hz;
     
     cJSON *channels = cJSON_GetObjectItem(root, "channels");
     if (!channels || !cJSON_IsArray(channels) || cJSON_GetArraySize(channels) != CONFIG_CHANNELS) {
@@ -1026,7 +1039,7 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
     }
     format_mac(cfg->gps_target_mac, gps_mac, sizeof(gps_mac));
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"gps_update_rate_hz\":%u,\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg->can_enabled ? "true" : "false",
         (unsigned long)cfg->can_speed_kbps,
         (unsigned long)cfg->can_start_id,
@@ -1036,6 +1049,7 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
         cfg->gps_enabled ? "true" : "false",
         (unsigned long)cfg->gps_can_start_id,
         gps_mac,
+        (unsigned)cfg->gps_update_rate_hz,
         mk60_json,
         (unsigned)cfg->pullup_vref_divider_high_ohm);
 

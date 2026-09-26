@@ -17,6 +17,7 @@
 #include "inc/config.h"
 
 #if CONFIG_BT_ENABLED && CONFIG_BT_NIMBLE_ENABLED && CONFIG_BT_NIMBLE_ROLE_CENTRAL
+#include "host/ble_att.h"
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/ble_hs.h"
@@ -33,8 +34,11 @@
 #define DRAGY_STREAM_START_TIMEOUT_MS 8000
 #define DRAGY_STREAM_STALL_MS 4000
 #define DRAGY_BATTERY_READ_MS 60000
+#define DRAGY_GNSS_RESTART_MS 1000
 #define UBX_NAV_PVT_FRAME_LEN 100
 #define UBX_BUFFER_LEN 256
+#define UBX_CFG_SIGNAL_FRAME_LEN 32
+#define UBX_CFG_RATE_FRAME_LEN 18
 #define DRAGY_IMU_RECORD_LEN 16
 #define DRAGY_IMU_MARKER 0xE1
 #define DRAGY_NAV_QUEUE_DEPTH 32
@@ -47,6 +51,7 @@ typedef struct
     bool enabled;
     uint32_t can_start_id;
     uint8_t target_mac[ESP_NOW_ETH_ALEN];
+    uint8_t update_rate_hz;
 } dragy_config_t;
 
 typedef struct
@@ -88,6 +93,22 @@ static volatile uint32_t config_revision;
 #if CONFIG_BT_ENABLED && CONFIG_BT_NIMBLE_ENABLED && CONFIG_BT_NIMBLE_ROLE_CENTRAL
 static const ble_uuid16_t dragy_service_uuid = BLE_UUID16_INIT(0xFD00);
 
+#define UBX_CFG_RATE_MEAS 0x30210001U
+#define UBX_CFG_RATE_NAV 0x30210002U
+#define UBX_CFG_SIGNAL_GPS_ENA 0x1031001FU
+#define UBX_CFG_SIGNAL_GAL_ENA 0x10310021U
+#define UBX_CFG_SIGNAL_BDS_ENA 0x10310022U
+#define UBX_CFG_SIGNAL_GLO_ENA 0x10310025U
+
+typedef enum
+{
+    RECEIVER_CONFIG_IDLE,
+    RECEIVER_CONFIG_SIGNAL_WRITE,
+    RECEIVER_CONFIG_SIGNAL_SETTLE,
+    RECEIVER_CONFIG_RATE_MEAS_WRITE,
+    RECEIVER_CONFIG_RATE_NAV_WRITE,
+} receiver_config_state_t;
+
 static volatile bool ble_connected;
 static volatile bool ble_connecting;
 static volatile bool stream_ready;
@@ -100,6 +121,7 @@ static volatile uint8_t battery_percent = 0xFF;
 
 static uint16_t service_start_handle;
 static uint16_t service_end_handle;
+static uint16_t fd01_value_handle;
 static uint16_t fd02_def_handle;
 static uint16_t fd02_value_handle;
 static uint16_t fd02_cccd_handle;
@@ -114,6 +136,9 @@ static uint16_t next_def_after_fd05;
 static uint8_t ubx_buffer[UBX_BUFFER_LEN];
 static size_t ubx_buffer_used;
 static TickType_t last_nav_queue_warn;
+static volatile receiver_config_state_t receiver_config_state;
+static volatile TickType_t receiver_config_due_tick;
+static uint8_t receiver_update_rate_hz = 10;
 
 static uint16_t read_u16_le(const uint8_t *data)
 {
@@ -141,6 +166,73 @@ static int16_t read_i16_be(const uint8_t *data)
 static uint32_t read_u24_be(const uint8_t *data)
 {
     return ((uint32_t)data[0] << 16) | ((uint32_t)data[1] << 8) | data[2];
+}
+
+static void put_u16_le(uint8_t *data, uint16_t value)
+{
+    data[0] = value & 0xFF;
+    data[1] = (value >> 8) & 0xFF;
+}
+
+static void put_u32_le(uint8_t *data, uint32_t value)
+{
+    data[0] = value & 0xFF;
+    data[1] = (value >> 8) & 0xFF;
+    data[2] = (value >> 16) & 0xFF;
+    data[3] = (value >> 24) & 0xFF;
+}
+
+static void finish_ubx_frame(uint8_t *frame, size_t length)
+{
+    uint8_t ck_a = 0;
+    uint8_t ck_b = 0;
+    for (size_t i = 2; i < length - 2; ++i)
+    {
+        ck_a += frame[i];
+        ck_b += ck_a;
+    }
+    frame[length - 2] = ck_a;
+    frame[length - 1] = ck_b;
+}
+
+static void build_cfg_signal_frame(uint8_t frame[UBX_CFG_SIGNAL_FRAME_LEN], bool gps_only)
+{
+    static const uint32_t keys[] = {
+        UBX_CFG_SIGNAL_GPS_ENA,
+        UBX_CFG_SIGNAL_GAL_ENA,
+        UBX_CFG_SIGNAL_BDS_ENA,
+        UBX_CFG_SIGNAL_GLO_ENA,
+    };
+    memset(frame, 0, UBX_CFG_SIGNAL_FRAME_LEN);
+    frame[0] = 0xB5;
+    frame[1] = 0x62;
+    frame[2] = 0x06;
+    frame[3] = 0x8A;
+    put_u16_le(frame + 4, 24);
+    frame[7] = 0x01; // RAM layer only.
+    size_t offset = 10;
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i)
+    {
+        put_u32_le(frame + offset, keys[i]);
+        frame[offset + 4] = (i == 0 || !gps_only) ? 1 : 0;
+        offset += 5;
+    }
+    finish_ubx_frame(frame, UBX_CFG_SIGNAL_FRAME_LEN);
+}
+
+static void build_cfg_rate_frame(uint8_t frame[UBX_CFG_RATE_FRAME_LEN],
+                                 uint32_t key, uint16_t value)
+{
+    memset(frame, 0, UBX_CFG_RATE_FRAME_LEN);
+    frame[0] = 0xB5;
+    frame[1] = 0x62;
+    frame[2] = 0x06;
+    frame[3] = 0x8A;
+    put_u16_le(frame + 4, 10);
+    frame[7] = 0x01; // RAM layer only.
+    put_u32_le(frame + 10, key);
+    put_u16_le(frame + 14, value);
+    finish_ubx_frame(frame, UBX_CFG_RATE_FRAME_LEN);
 }
 
 static bool ubx_checksum_valid(const uint8_t *frame, size_t length)
@@ -312,6 +404,7 @@ static void reset_gatt_state(void)
     battery_read_pending = false;
     service_start_handle = 0;
     service_end_handle = 0;
+    fd01_value_handle = 0;
     fd02_def_handle = 0;
     fd02_value_handle = 0;
     fd02_cccd_handle = 0;
@@ -326,6 +419,8 @@ static void reset_gatt_state(void)
     last_packet_tick = 0;
     ubx_buffer_used = 0;
     last_nav_queue_warn = 0;
+    receiver_config_state = RECEIVER_CONFIG_IDLE;
+    receiver_config_due_tick = 0;
 }
 
 static void wake_dragy_task(void)
@@ -385,6 +480,118 @@ static void read_battery(void)
     }
 }
 
+static int rate_nav_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                             struct ble_gatt_attr *attr, void *arg)
+{
+    (void)attr;
+    (void)arg;
+    if (conn_handle != connection_handle)
+    {
+        return 0;
+    }
+    if (error->status != 0)
+    {
+        terminate_connection("Dragy navigation ratio configuration failed");
+        return 0;
+    }
+
+    receiver_config_state = RECEIVER_CONFIG_IDLE;
+    ubx_buffer_used = 0;
+    last_packet_tick = 0;
+    if (sample_queue != NULL)
+    {
+        xQueueReset(sample_queue);
+    }
+    stream_ready = true;
+    connected_at_tick = xTaskGetTickCount();
+    ESP_LOGI(TAG, "Dragy configured in RAM: %uHz, %s; waiting for NAV-PVT and FD05 IMU data",
+             (unsigned)receiver_update_rate_hz,
+             receiver_update_rate_hz == 25 ? "GPS only" : "all constellations");
+    read_battery();
+    wake_dragy_task();
+    return 0;
+}
+
+static int rate_meas_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                              struct ble_gatt_attr *attr, void *arg)
+{
+    (void)attr;
+    (void)arg;
+    if (conn_handle != connection_handle)
+    {
+        return 0;
+    }
+    if (error->status != 0)
+    {
+        terminate_connection("Dragy measurement rate configuration failed");
+        return 0;
+    }
+
+    uint8_t frame[UBX_CFG_RATE_FRAME_LEN];
+    build_cfg_rate_frame(frame, UBX_CFG_RATE_NAV, 1);
+    receiver_config_state = RECEIVER_CONFIG_RATE_NAV_WRITE;
+    int rc = ble_gattc_write_flat(conn_handle, fd01_value_handle, frame, sizeof(frame),
+                                  rate_nav_write_cb, NULL);
+    if (rc != 0)
+    {
+        terminate_connection("Dragy navigation ratio write could not start");
+    }
+    return 0;
+}
+
+static void start_rate_measurement_write(void)
+{
+    uint16_t handle = connection_handle;
+    if (handle == BLE_HS_CONN_HANDLE_NONE || fd01_value_handle == 0)
+    {
+        return;
+    }
+
+    uint8_t frame[UBX_CFG_RATE_FRAME_LEN];
+    build_cfg_rate_frame(frame, UBX_CFG_RATE_MEAS, 1000U / receiver_update_rate_hz);
+    receiver_config_state = RECEIVER_CONFIG_RATE_MEAS_WRITE;
+    int rc = ble_gattc_write_flat(handle, fd01_value_handle, frame, sizeof(frame),
+                                  rate_meas_write_cb, NULL);
+    if (rc != 0)
+    {
+        terminate_connection("Dragy measurement rate write could not start");
+    }
+}
+
+static int signal_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                           struct ble_gatt_attr *attr, void *arg)
+{
+    (void)attr;
+    (void)arg;
+    if (conn_handle != connection_handle)
+    {
+        return 0;
+    }
+    if (error->status != 0)
+    {
+        terminate_connection("Dragy constellation configuration failed");
+        return 0;
+    }
+
+    receiver_config_state = RECEIVER_CONFIG_SIGNAL_SETTLE;
+    receiver_config_due_tick = xTaskGetTickCount() + pdMS_TO_TICKS(DRAGY_GNSS_RESTART_MS);
+    wake_dragy_task();
+    return 0;
+}
+
+static void start_receiver_configuration(uint16_t conn_handle)
+{
+    uint8_t frame[UBX_CFG_SIGNAL_FRAME_LEN];
+    build_cfg_signal_frame(frame, receiver_update_rate_hz == 25);
+    receiver_config_state = RECEIVER_CONFIG_SIGNAL_WRITE;
+    int rc = ble_gattc_write_flat(conn_handle, fd01_value_handle, frame, sizeof(frame),
+                                  signal_write_cb, NULL);
+    if (rc != 0)
+    {
+        terminate_connection("Dragy constellation write could not start");
+    }
+}
+
 static int handshake_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
                               struct ble_gatt_attr *attr, void *arg)
 {
@@ -400,11 +607,9 @@ static int handshake_write_cb(uint16_t conn_handle, const struct ble_gatt_error 
         return 0;
     }
 
-    stream_ready = true;
-    connected_at_tick = xTaskGetTickCount();
-    ESP_LOGI(TAG, "Dragy handshake complete; waiting for NAV-PVT and FD05 IMU data");
-    read_battery();
-    wake_dragy_task();
+    ESP_LOGI(TAG, "Dragy handshake complete; applying %uHz receiver configuration",
+             (unsigned)receiver_update_rate_hz);
+    start_receiver_configuration(conn_handle);
     return 0;
 }
 
@@ -562,7 +767,11 @@ static int characteristic_discovery_cb(uint16_t conn_handle, const struct ble_ga
     if (error->status == 0 && chr != NULL)
     {
         uint16_t uuid = ble_uuid_u16(&chr->uuid.u);
-        if (uuid == 0xFD02)
+        if (uuid == 0xFD01)
+        {
+            fd01_value_handle = chr->val_handle;
+        }
+        else if (uuid == 0xFD02)
         {
             fd02_def_handle = chr->def_handle;
             fd02_value_handle = chr->val_handle;
@@ -593,10 +802,10 @@ static int characteristic_discovery_cb(uint16_t conn_handle, const struct ble_ga
         return 0;
     }
 
-    if (error->status != BLE_HS_EDONE || fd02_value_handle == 0 ||
+    if (error->status != BLE_HS_EDONE || fd01_value_handle == 0 || fd02_value_handle == 0 ||
         fd03_value_handle == 0 || fd05_value_handle == 0)
     {
-        terminate_connection("Required FD02/FD03/FD05 characteristics were not found");
+        terminate_connection("Required FD01/FD02/FD03/FD05 characteristics were not found");
         return 0;
     }
 
@@ -642,6 +851,29 @@ static int service_discovery_cb(uint16_t conn_handle, const struct ble_gatt_erro
     return 0;
 }
 
+static int mtu_exchange_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                           uint16_t mtu, void *arg)
+{
+    (void)arg;
+    if (conn_handle != connection_handle)
+    {
+        return 0;
+    }
+    if (error->status != 0 || mtu < UBX_CFG_SIGNAL_FRAME_LEN + 3)
+    {
+        terminate_connection("Dragy MTU exchange failed or negotiated MTU is too small");
+        return 0;
+    }
+
+    ESP_LOGI(TAG, "Dragy negotiated BLE MTU %u; discovering FD00 service", (unsigned)mtu);
+    if (ble_gattc_disc_svc_by_uuid(conn_handle, &dragy_service_uuid.u,
+                                   service_discovery_cb, NULL) != 0)
+    {
+        terminate_connection("FD00 service discovery could not start");
+    }
+    return 0;
+}
+
 static int dragy_gap_event(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
@@ -662,11 +894,21 @@ static int dragy_gap_event(struct ble_gap_event *event, void *arg)
         connection_handle = event->connect.conn_handle;
         ble_connected = true;
         reset_gatt_state();
-        ESP_LOGI(TAG, "Connected to Dragy; discovering FD00 service");
-        if (ble_gattc_disc_svc_by_uuid(connection_handle, &dragy_service_uuid.u,
-                                       service_discovery_cb, NULL) != 0)
+        ESP_LOGI(TAG, "Connected to Dragy; negotiating BLE MTU");
+        int mtu_rc = ble_gattc_exchange_mtu(connection_handle, mtu_exchange_cb, NULL);
+        if (mtu_rc == BLE_HS_EALREADY && ble_att_mtu(connection_handle) >= UBX_CFG_SIGNAL_FRAME_LEN + 3)
         {
-            terminate_connection("FD00 service discovery could not start");
+            ESP_LOGI(TAG, "Dragy BLE MTU already negotiated at %u; discovering FD00 service",
+                     (unsigned)ble_att_mtu(connection_handle));
+            if (ble_gattc_disc_svc_by_uuid(connection_handle, &dragy_service_uuid.u,
+                                           service_discovery_cb, NULL) != 0)
+            {
+                terminate_connection("FD00 service discovery could not start");
+            }
+        }
+        else if (mtu_rc != 0)
+        {
+            terminate_connection("Dragy MTU exchange could not start");
         }
         wake_dragy_task();
         return 0;
@@ -865,6 +1107,7 @@ static void dragy_task(void *arg)
 
         bool connection_config_changed =
             active_connection_config.enabled != config.enabled ||
+            active_connection_config.update_rate_hz != config.update_rate_hz ||
             memcmp(active_connection_config.target_mac, config.target_mac, ESP_NOW_ETH_ALEN) != 0;
         if (connection_config_changed && (ble_connected || ble_connecting))
         {
@@ -910,6 +1153,7 @@ static void dragy_task(void *arg)
                     battery_percent = 0xFF;
                     ble_connecting = true;
                     active_connection_config = config;
+                    receiver_update_rate_hz = config.update_rate_hz;
                     ESP_LOGI(TAG, "Connecting to Dragy %02X:%02X:%02X:%02X:%02X:%02X",
                              config.target_mac[0], config.target_mac[1], config.target_mac[2],
                              config.target_mac[3], config.target_mac[4], config.target_mac[5]);
@@ -939,6 +1183,12 @@ static void dragy_task(void *arg)
                     retry_delay_ms = DRAGY_RETRY_MAX_MS;
                 }
             }
+        }
+
+        if (ble_connected && receiver_config_state == RECEIVER_CONFIG_SIGNAL_SETTLE &&
+            (int32_t)(now - receiver_config_due_tick) >= 0)
+        {
+            start_rate_measurement_write();
         }
 
         if (ble_connected && stream_ready)
@@ -991,6 +1241,7 @@ void dragy_gps_apply_config(void)
         runtime_config.enabled = board_cfg.gps_enabled;
         runtime_config.can_start_id = board_cfg.gps_can_start_id;
         memcpy(runtime_config.target_mac, board_cfg.gps_target_mac, ESP_NOW_ETH_ALEN);
+        runtime_config.update_rate_hz = board_cfg.gps_update_rate_hz;
         ++config_revision;
         xSemaphoreGive(config_mutex);
     }

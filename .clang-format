@@ -1,0 +1,22 @@
+BasedOnStyle: LLVM
+Language: Cpp
+# Key bits for your example:
+AlignConsecutiveMacros: AcrossEmptyLinesAndComments
+AlignTrailingComments: true
+# Optional: also align assignments/declarations elsewhere
+AlignConsecutiveAssignments: AcrossEmptyLinesAndComments
+AlignConsecutiveDeclarations: false
+ColumnLimit: 150
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+AlignAfterOpenBracket: Align # alternatives: DontAlign / Align
+BinPackArguments: false # one-arg-per-line when it wraps
+BinPackParameters: true
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+BreakBeforeBinaryOperators: NonAssignment
+InsertBraces: true
+AllowShortEnumsOnASingleLine: false
+SeparateDefinitionBlocks: Always

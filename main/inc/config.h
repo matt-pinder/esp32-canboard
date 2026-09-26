@@ -8,7 +8,7 @@
 
 #define CONFIG_CHANNELS 10       ///< Number of ADC input channels
 #define CONFIG_NAME_LEN 32      ///< Maximum characters for channel name
-#define CONFIG_VERSION 12       ///< Configuration structure version number (increment for new fields or layout changes)
+#define CONFIG_VERSION 13       ///< Configuration structure version number (increment for new fields or layout changes)
 #define ESPNOW_MAX_CLIENTS 4    ///< Maximum number of unencrypted ESP-NOW destinations
 
 /// Per-channel median filter strength levels
@@ -81,6 +81,7 @@ typedef struct {
     bool gps_enabled;                      ///< Enable external BLE GPS integration
     uint32_t gps_can_start_id;             ///< First CAN ID used by Dragy GPS/IMU frames; following frames increment from this
     uint8_t gps_target_mac[ESP_NOW_ETH_ALEN]; ///< Optional BLE GPS target MAC address
+    uint8_t gps_update_rate_hz;            ///< Dragy navigation rate (supported: 10, 20, or 25 Hz)
     uint16_t pullup_vref_mv;               ///< Live pull-up reference voltage in millivolts (runtime read-only display)
     uint16_t pullup_vref_divider_high_ohm; ///< Top resistor value of the pull-up Vref divider (persisted)
     mk60_emulator_config_t mk60_emulator;  ///< Opt-in capture-derived MK60 RTR response profile
