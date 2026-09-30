@@ -69,7 +69,7 @@ void app_main(void)
     // Start WiFi config mode (AP + HTTP server with timeout)
     wifi_config_mode_start();
 
-    // Rules are initialized only after the established WiFi startup path.
+    // Outputs are initialized only after the established WiFi startup path.
     relay_rule_engine_set_publish_rate(board_cfg.can_tx_hz);
     relay_rule_engine_init();
 

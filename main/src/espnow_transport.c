@@ -369,7 +369,7 @@ esp_err_t espnow_transport_start(void) {
         }
         active_clients[active_client_count++] = board_cfg.espnow_clients[i];
         ESP_LOGI(TAG,
-                 "Client %u active: %02X:%02X:%02X:%02X:%02X:%02X relay_can=%d rate=MCS0/HT20",
+                 "Client %u active: %02X:%02X:%02X:%02X:%02X:%02X label=\"%s\" relay_can=%d rate=MCS0/HT20",
                  (unsigned)(i + 1U),
                  peer_info.peer_addr[0],
                  peer_info.peer_addr[1],
@@ -377,6 +377,7 @@ esp_err_t espnow_transport_start(void) {
                  peer_info.peer_addr[3],
                  peer_info.peer_addr[4],
                  peer_info.peer_addr[5],
+                 board_cfg.espnow_clients[i].label,
                  board_cfg.espnow_clients[i].relay_can);
     }
 
@@ -433,12 +434,12 @@ esp_err_t espnow_transport_apply_config(void) {
                 xSemaphoreTake(transport_mutex, portMAX_DELAY);
             }
             for (uint8_t i = 0; i < active_client_count; ++i) {
-                active_clients[i].relay_can = board_cfg.espnow_clients[i].relay_can;
+                active_clients[i] = board_cfg.espnow_clients[i];
             }
             if (transport_mutex != NULL) {
                 xSemaphoreGive(transport_mutex);
             }
-            ESP_LOGI(TAG, "Updated relay flags for %u existing peer(s) without restarting ESP-NOW", (unsigned)active_client_count);
+            ESP_LOGI(TAG, "Updated configuration for %u existing peer(s) without restarting ESP-NOW", (unsigned)active_client_count);
             return ESP_OK;
         }
     }

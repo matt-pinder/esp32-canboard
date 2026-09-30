@@ -31,6 +31,6 @@ idf_component_register(SRCS "main.c"
                              espressif__cjson)
 
 # Web assets remain part of the normal project flash. Persistent board settings
-# live in `config` NVS and relay rules in the raw `rules` partition; neither
+# live in `config` NVS and Outputs in the raw `rules` partition; neither
 # data partition has a FLASH_IN_PROJECT image.
 spiffs_create_partition_image(spiffs ./spiffs FLASH_IN_PROJECT)

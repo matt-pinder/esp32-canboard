@@ -9,11 +9,23 @@
 #include "freertos/task.h"
 #include "inc/relay_rule_engine.h"
 
+#define OUTPUT_CONFIG_VERSION 2U
+
 static bool number(const cJSON *object, const char *key, double *value)
 {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
     if (!cJSON_IsNumber(item) || !isfinite(item->valuedouble)) return false;
     *value = item->valuedouble;
+    return true;
+}
+
+static bool integer(const cJSON *object, const char *key, double minimum, double maximum,
+                    double *value)
+{
+    if (!number(object, key, value) || *value < minimum || *value > maximum ||
+        floor(*value) != *value) {
+        return false;
+    }
     return true;
 }
 
@@ -41,46 +53,58 @@ static cJSON *can_source_json(const relay_source_config_t *source)
     return item;
 }
 
-static cJSON *rules_json(const relay_rule_config_t *config)
+static cJSON *outputs_json(const relay_rule_config_t *config)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "version", config->version);
     cJSON_AddNumberToObject(root, "signal_timeout_ms", config->signal_timeout_ms);
+
     bool used_sources[RELAY_RULE_MAX_SOURCES] = {0};
     for (unsigned r = 0; r < RELAY_RULE_MAX_RULES; ++r) {
-        const relay_output_rule_t *rule = &config->rules[r];
-        if (!rule->enabled && rule->case_count == 0U) continue;
-        for (unsigned c = 0; c < rule->case_count; ++c) {
-            const relay_rule_case_t *entry = &rule->cases[c];
-            for (unsigned t = 0; t < entry->test_count; ++t)
+        const relay_output_rule_t *output = &config->rules[r];
+        if (!output->enabled && output->case_count == 0U) continue;
+        for (unsigned c = 0; c < output->case_count; ++c) {
+            const relay_rule_case_t *entry = &output->cases[c];
+            for (unsigned t = 0; t < entry->test_count; ++t) {
                 if (entry->tests[t].type == RELAY_TEST_SOURCE)
                     used_sources[entry->tests[t].source_index] = true;
+            }
             if (entry->action == RELAY_ACTION_PULSE)
                 used_sources[entry->pulse_source_index] = true;
+            else if (entry->action == RELAY_ACTION_PWM)
+                used_sources[entry->pwm_source_index] = true;
         }
     }
+
     cJSON *sources = cJSON_AddArrayToObject(root, "sources");
-    for (unsigned i = 0; i < RELAY_RULE_MAX_SOURCES; ++i)
+    for (unsigned i = 0; i < RELAY_RULE_MAX_SOURCES; ++i) {
         if (used_sources[i] && config->sources[i].type == RELAY_SOURCE_CAN)
             cJSON_AddItemToArray(sources, can_source_json(&config->sources[i]));
-    cJSON *rules = cJSON_AddArrayToObject(root, "rules");
+    }
+
+    cJSON *outputs = cJSON_AddArrayToObject(root, "outputs");
     for (unsigned r = 0; r < RELAY_RULE_MAX_RULES; ++r) {
-        const relay_output_rule_t *rule = &config->rules[r];
-        if (!rule->enabled && rule->case_count == 0U) continue;
-        cJSON *rule_json = cJSON_CreateObject();
-        cJSON_AddNumberToObject(rule_json, "rule", r + 1U);
-        cJSON_AddStringToObject(rule_json, "label", rule->label);
-        cJSON_AddBoolToObject(rule_json, "enabled", rule->enabled);
-        cJSON *cases = cJSON_AddArrayToObject(rule_json, "cases");
-        for (unsigned c = 0; c < rule->case_count; ++c) {
-            const relay_rule_case_t *entry = &rule->cases[c];
+        const relay_output_rule_t *output = &config->rules[r];
+        if (!output->enabled && output->case_count == 0U) continue;
+        cJSON *output_json = cJSON_CreateObject();
+        cJSON_AddNumberToObject(output_json, "output", r + 1U);
+        cJSON_AddStringToObject(output_json, "label", output->label);
+        cJSON_AddBoolToObject(output_json, "enabled", output->enabled);
+        cJSON *cases = cJSON_AddArrayToObject(output_json, "cases");
+        for (unsigned c = 0; c < output->case_count; ++c) {
+            const relay_rule_case_t *entry = &output->cases[c];
             cJSON *case_json = cJSON_CreateObject();
             cJSON_AddNumberToObject(case_json, "action", entry->action);
             if (entry->action == RELAY_ACTION_PULSE) {
                 cJSON_AddStringToObject(case_json, "pulse_source_name",
                                         config->sources[entry->pulse_source_index].name);
                 cJSON_AddNumberToObject(case_json, "pulse_hysteresis", entry->pulse_hysteresis);
+            } else if (entry->action == RELAY_ACTION_PWM) {
+                cJSON_AddStringToObject(case_json, "pwm_source_name",
+                                        config->sources[entry->pwm_source_index].name);
+                cJSON_AddNumberToObject(case_json, "pwm_hysteresis", entry->pwm_hysteresis);
             }
+
             cJSON *tests = cJSON_AddArrayToObject(case_json, "tests");
             for (unsigned t = 0; t < entry->test_count; ++t) {
                 const relay_rule_test_t *test = &entry->tests[t];
@@ -95,6 +119,7 @@ static cJSON *rules_json(const relay_rule_config_t *config)
                 cJSON_AddNumberToObject(test_json, "hysteresis", test->hysteresis);
                 cJSON_AddItemToArray(tests, test_json);
             }
+
             if (entry->action == RELAY_ACTION_PULSE) {
                 cJSON *points = cJSON_AddArrayToObject(case_json, "pulse_points");
                 for (unsigned p = 0; p < entry->pulse_point_count; ++p) {
@@ -104,10 +129,18 @@ static cJSON *rules_json(const relay_rule_config_t *config)
                     cJSON_AddNumberToObject(point, "period_ms", entry->pulse_points[p].period_ms);
                     cJSON_AddItemToArray(points, point);
                 }
+            } else if (entry->action == RELAY_ACTION_PWM) {
+                cJSON *points = cJSON_AddArrayToObject(case_json, "pwm_points");
+                for (unsigned p = 0; p < entry->pwm_point_count; ++p) {
+                    cJSON *point = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(point, "input_value", entry->pwm_points[p].input_value);
+                    cJSON_AddNumberToObject(point, "duty_percent", entry->pwm_points[p].duty_percent);
+                    cJSON_AddItemToArray(points, point);
+                }
             }
             cJSON_AddItemToArray(cases, case_json);
         }
-        cJSON_AddItemToArray(rules, rule_json);
+        cJSON_AddItemToArray(outputs, output_json);
     }
     return root;
 }
@@ -116,24 +149,27 @@ static bool parse_can_source(cJSON *item, relay_source_config_t *source)
 {
     double value;
     cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "name");
-    if (!cJSON_IsString(name) || name->valuestring == NULL || name->valuestring[0] == '\0' ||
-        strlen(name->valuestring) >= sizeof(source->name)) return false;
+    if (!cJSON_IsObject(item) || !cJSON_IsString(name) || name->valuestring == NULL ||
+        name->valuestring[0] == '\0' || strlen(name->valuestring) >= sizeof(source->name)) {
+        return false;
+    }
     strlcpy(source->name, name->valuestring, sizeof(source->name));
     source->type = RELAY_SOURCE_CAN;
-    if (!number(item, "can_id", &value) || value < 0 || value > 0x1FFFFFFF) return false;
+    if (!integer(item, "can_id", 0, 0x1FFFFFFF, &value)) return false;
     source->can_id = (uint32_t)value;
-    if (!boolean(item, "extended", &source->extended) || !number(item, "start_bit", &value) || value < 0 || value > 63) return false;
+    if (!boolean(item, "extended", &source->extended) ||
+        !integer(item, "start_bit", 0, 63, &value)) return false;
     source->start_bit = (uint8_t)value;
-    if (!number(item, "bit_length", &value) || value < 0 || value > 64) return false;
+    if (!integer(item, "bit_length", 1, 64, &value)) return false;
     source->bit_length = (uint8_t)value;
-    if (!boolean(item, "little_endian", &source->little_endian) || !boolean(item, "is_signed", &source->is_signed) ||
-        !number(item, "factor", &value)) return false;
+    if (!boolean(item, "little_endian", &source->little_endian) ||
+        !boolean(item, "is_signed", &source->is_signed) || !number(item, "factor", &value)) {
+        return false;
+    }
     source->factor = (float)value;
     if (!number(item, "offset", &value)) return false;
     source->offset = (float)value;
-    /* Zero means use the engine default (11 samples). Unused source slots in
-     * the aggregate configuration intentionally serialize as zero. */
-    if (!number(item, "zero_confirm_samples", &value) || value < 0 || value > UINT8_MAX) return false;
+    if (!integer(item, "zero_confirm_samples", 0, UINT8_MAX, &value)) return false;
     source->zero_confirm_samples = (uint8_t)value;
     return true;
 }
@@ -141,9 +177,10 @@ static bool parse_can_source(cJSON *item, relay_source_config_t *source)
 static int source_index_by_name(const relay_rule_config_t *config, const char *name)
 {
     if (name == NULL || name[0] == '\0') return -1;
-    for (unsigned i = 0; i < RELAY_RULE_MAX_SOURCES; ++i)
+    for (unsigned i = 0; i < RELAY_RULE_MAX_SOURCES; ++i) {
         if (config->sources[i].type != RELAY_SOURCE_UNUSED &&
             strcmp(config->sources[i].name, name) == 0) return (int)i;
+    }
     return -1;
 }
 
@@ -152,30 +189,58 @@ static bool parse_case(cJSON *item, relay_rule_case_t *entry,
 {
     double value;
     cJSON *tests = cJSON_GetObjectItemCaseSensitive(item, "tests");
-    cJSON *points = cJSON_GetObjectItemCaseSensitive(item, "pulse_points");
-    if (!number(item, "action", &value) || value < RELAY_ACTION_OFF || value > RELAY_ACTION_PULSE ||
-        !cJSON_IsArray(tests)) return false;
-    entry->action = (relay_action_t)cJSON_GetObjectItemCaseSensitive(item, "action")->valueint;
+    if (!cJSON_IsObject(item) ||
+        !integer(item, "action", RELAY_ACTION_OFF, RELAY_ACTION_PWM, &value) ||
+        !cJSON_IsArray(tests)) {
+        return false;
+    }
+    entry->action = (relay_action_t)value;
+
+    cJSON *pulse_points = NULL;
+    cJSON *pwm_points = NULL;
     if (entry->action == RELAY_ACTION_PULSE) {
         cJSON *pulse_source = cJSON_GetObjectItemCaseSensitive(item, "pulse_source_name");
-        cJSON *pulse_hysteresis = cJSON_GetObjectItemCaseSensitive(item, "pulse_hysteresis");
+        pulse_points = cJSON_GetObjectItemCaseSensitive(item, "pulse_points");
         if (!cJSON_IsString(pulse_source) || pulse_source->valuestring == NULL ||
-            !cJSON_IsNumber(pulse_hysteresis) || !isfinite(pulse_hysteresis->valuedouble) ||
-            pulse_hysteresis->valuedouble < 0.0 || !cJSON_IsArray(points)) return false;
+            !number(item, "pulse_hysteresis", &value) || value < 0.0 ||
+            !cJSON_IsArray(pulse_points)) return false;
         const int source_index = source_index_by_name(config, pulse_source->valuestring);
         if (source_index < 0) return false;
         entry->pulse_source_index = (uint8_t)source_index;
-        entry->pulse_hysteresis = (float)pulse_hysteresis->valuedouble;
+        entry->pulse_hysteresis = (float)value;
+    } else if (entry->action == RELAY_ACTION_PWM) {
+        cJSON *pwm_source = cJSON_GetObjectItemCaseSensitive(item, "pwm_source_name");
+        pwm_points = cJSON_GetObjectItemCaseSensitive(item, "pwm_points");
+        if (!cJSON_IsString(pwm_source) || pwm_source->valuestring == NULL ||
+            !number(item, "pwm_hysteresis", &value) || value < 0.0 ||
+            !cJSON_IsArray(pwm_points)) return false;
+        const int source_index = source_index_by_name(config, pwm_source->valuestring);
+        if (source_index < 0) return false;
+        entry->pwm_source_index = (uint8_t)source_index;
+        entry->pwm_hysteresis = (float)value;
     }
+
     const int test_count = cJSON_GetArraySize(tests);
-    const int point_count = entry->action == RELAY_ACTION_PULSE ? cJSON_GetArraySize(points) : 0;
-    if (test_count < 1 || test_count > RELAY_RULE_MAX_TESTS || point_count > RELAY_RULE_MAX_PULSE_POINTS) return false;
+    const int pulse_point_count = entry->action == RELAY_ACTION_PULSE ?
+                                  cJSON_GetArraySize(pulse_points) : 0;
+    const int pwm_point_count = entry->action == RELAY_ACTION_PWM ?
+                                cJSON_GetArraySize(pwm_points) : 0;
+    if (test_count < 1 || test_count > (int)RELAY_RULE_MAX_TESTS ||
+        pulse_point_count < 0 || pulse_point_count > (int)RELAY_RULE_MAX_PULSE_POINTS ||
+        pwm_point_count < 0 || pwm_point_count > (int)RELAY_RULE_MAX_PWM_POINTS ||
+        (entry->action == RELAY_ACTION_PULSE && pulse_point_count < 1) ||
+        (entry->action == RELAY_ACTION_PWM && pwm_point_count < 1)) {
+        return false;
+    }
     entry->test_count = (uint8_t)test_count;
-    entry->pulse_point_count = (uint8_t)point_count;
+    entry->pulse_point_count = (uint8_t)pulse_point_count;
+    entry->pwm_point_count = (uint8_t)pwm_point_count;
+
     for (int t = 0; t < test_count; ++t) {
         cJSON *test_json = cJSON_GetArrayItem(tests, t);
         relay_rule_test_t *test = &entry->tests[t];
-        if (!cJSON_IsObject(test_json) || !number(test_json, "type", &value) || value < RELAY_TEST_SOURCE || value > RELAY_TEST_UPTIME) return false;
+        if (!cJSON_IsObject(test_json) ||
+            !integer(test_json, "type", RELAY_TEST_SOURCE, RELAY_TEST_UPTIME, &value)) return false;
         test->type = (relay_test_type_t)value;
         if (test->type == RELAY_TEST_SOURCE) {
             cJSON *source_name = cJSON_GetObjectItemCaseSensitive(test_json, "source_name");
@@ -184,22 +249,33 @@ static bool parse_case(cJSON *item, relay_rule_case_t *entry,
             if (source_index < 0) return false;
             test->source_index = (uint8_t)source_index;
         }
-        if (!number(test_json, "comparison", &value) || value < RELAY_COMPARE_GT || value > RELAY_COMPARE_NE) return false;
+        if (!integer(test_json, "comparison", RELAY_COMPARE_GT, RELAY_COMPARE_NE, &value)) return false;
         test->comparison = (relay_compare_t)value;
-        if (!boolean(test_json, "hysteresis_enabled", &test->hysteresis_enabled) || !number(test_json, "threshold", &value)) return false;
+        if (!boolean(test_json, "hysteresis_enabled", &test->hysteresis_enabled) ||
+            !number(test_json, "threshold", &value)) return false;
         test->threshold = (float)value;
-        if (!number(test_json, "hysteresis", &value)) return false;
+        if (!number(test_json, "hysteresis", &value) || value < 0.0) return false;
         test->hysteresis = (float)value;
     }
-    for (int p = 0; p < point_count; ++p) {
-        cJSON *point_json = cJSON_GetArrayItem(points, p);
+
+    for (int p = 0; p < pulse_point_count; ++p) {
+        cJSON *point_json = cJSON_GetArrayItem(pulse_points, p);
         relay_pulse_point_t *point = &entry->pulse_points[p];
         if (!cJSON_IsObject(point_json) || !number(point_json, "input_value", &value)) return false;
         point->input_value = (float)value;
-        if (!number(point_json, "on_time_ms", &value) || value < 0 || value > UINT32_MAX) return false;
+        if (!integer(point_json, "on_time_ms", 0, UINT32_MAX, &value)) return false;
         point->on_time_ms = (uint32_t)value;
-        if (!number(point_json, "period_ms", &value) || value < 0 || value > UINT32_MAX) return false;
+        if (!integer(point_json, "period_ms", 0, UINT32_MAX, &value)) return false;
         point->period_ms = (uint32_t)value;
+    }
+
+    for (int p = 0; p < pwm_point_count; ++p) {
+        cJSON *point_json = cJSON_GetArrayItem(pwm_points, p);
+        relay_pwm_point_t *point = &entry->pwm_points[p];
+        if (!cJSON_IsObject(point_json) || !number(point_json, "input_value", &value)) return false;
+        point->input_value = (float)value;
+        if (!integer(point_json, "duty_percent", 0, 100, &value)) return false;
+        point->duty_percent = (uint8_t)value;
     }
     return true;
 }
@@ -207,13 +283,18 @@ static bool parse_case(cJSON *item, relay_rule_case_t *entry,
 bool relay_rule_config_json_parse(const cJSON *root, relay_rule_config_t *config)
 {
     double value;
+    if (root == NULL || config == NULL || !cJSON_IsObject(root)) return false;
     relay_rule_engine_set_defaults(config);
-    if (!number(root, "signal_timeout_ms", &value) || value < 100 || value > 60000) return false;
+    if (!integer(root, "version", OUTPUT_CONFIG_VERSION, OUTPUT_CONFIG_VERSION, &value) ||
+        !integer(root, "signal_timeout_ms", 100, 60000, &value)) return false;
+    config->version = OUTPUT_CONFIG_VERSION;
     config->signal_timeout_ms = (uint32_t)value;
+
     cJSON *sources = cJSON_GetObjectItemCaseSensitive(root, "sources");
-    cJSON *rules = cJSON_GetObjectItemCaseSensitive(root, "rules");
-    if (!cJSON_IsArray(sources) || cJSON_GetArraySize(sources) > RELAY_RULE_MAX_SOURCES - 20U ||
-        !cJSON_IsArray(rules) || cJSON_GetArraySize(rules) > RELAY_RULE_MAX_RULES) return false;
+    cJSON *outputs = cJSON_GetObjectItemCaseSensitive(root, "outputs");
+    if (!cJSON_IsArray(sources) || cJSON_GetArraySize(sources) > (int)(RELAY_RULE_MAX_SOURCES - 20U) ||
+        !cJSON_IsArray(outputs) || cJSON_GetArraySize(outputs) > (int)RELAY_RULE_MAX_RULES) return false;
+
     const unsigned source_count = (unsigned)cJSON_GetArraySize(sources);
     for (unsigned source = 0; source < source_count; ++source) {
         relay_source_config_t parsed = {0};
@@ -221,29 +302,28 @@ bool relay_rule_config_json_parse(const cJSON *root, relay_rule_config_t *config
             source_index_by_name(config, parsed.name) >= 0) return false;
         config->sources[20U + source] = parsed;
     }
+
     bool used[RELAY_RULE_MAX_RULES] = {0};
-    const unsigned rule_count = (unsigned)cJSON_GetArraySize(rules);
-    for (unsigned position = 0; position < rule_count; ++position) {
-        cJSON *rule_json = cJSON_GetArrayItem(rules, position);
-        cJSON *rule_number = cJSON_GetObjectItemCaseSensitive(rule_json, "rule");
-        unsigned r = position; /* Backward compatibility with the former full array. */
-        if (rule_number != NULL) {
-            if (!cJSON_IsNumber(rule_number) || rule_number->valueint < 1 ||
-                rule_number->valueint > RELAY_RULE_MAX_RULES) return false;
-            r = (unsigned)rule_number->valueint - 1U;
-        }
+    const unsigned output_count = (unsigned)cJSON_GetArraySize(outputs);
+    for (unsigned position = 0; position < output_count; ++position) {
+        cJSON *output_json = cJSON_GetArrayItem(outputs, position);
+        if (!cJSON_IsObject(output_json) ||
+            !integer(output_json, "output", 1, RELAY_RULE_MAX_RULES, &value)) return false;
+        const unsigned r = (unsigned)value - 1U;
         if (used[r]) return false;
         used[r] = true;
-        cJSON *label = cJSON_GetObjectItemCaseSensitive(rule_json, "label");
-        cJSON *cases = cJSON_GetObjectItemCaseSensitive(rule_json, "cases");
-        relay_output_rule_t *rule = &config->rules[r];
-        if (!cJSON_IsObject(rule_json) || !cJSON_IsString(label) || label->valuestring == NULL ||
-            strlen(label->valuestring) >= sizeof(rule->label) || !boolean(rule_json, "enabled", &rule->enabled) || !cJSON_IsArray(cases) ||
-            cJSON_GetArraySize(cases) > RELAY_RULE_MAX_CASES) return false;
-        strlcpy(rule->label, label->valuestring, sizeof(rule->label));
-        rule->case_count = (uint8_t)cJSON_GetArraySize(cases);
-        for (unsigned c = 0; c < rule->case_count; ++c) {
-            if (!parse_case(cJSON_GetArrayItem(cases, c), &rule->cases[c], config)) return false;
+
+        cJSON *label = cJSON_GetObjectItemCaseSensitive(output_json, "label");
+        cJSON *cases = cJSON_GetObjectItemCaseSensitive(output_json, "cases");
+        relay_output_rule_t *output = &config->rules[r];
+        if (!cJSON_IsString(label) || label->valuestring == NULL ||
+            strlen(label->valuestring) >= sizeof(output->label) ||
+            !boolean(output_json, "enabled", &output->enabled) || !cJSON_IsArray(cases) ||
+            cJSON_GetArraySize(cases) > (int)RELAY_RULE_MAX_CASES) return false;
+        strlcpy(output->label, label->valuestring, sizeof(output->label));
+        output->case_count = (uint8_t)cJSON_GetArraySize(cases);
+        for (unsigned c = 0; c < output->case_count; ++c) {
+            if (!parse_case(cJSON_GetArrayItem(cases, c), &output->cases[c], config)) return false;
         }
     }
     return true;
@@ -254,66 +334,67 @@ cJSON *relay_rule_config_json_create(void)
     relay_rule_config_t *config = malloc(sizeof(*config));
     if (config == NULL) return NULL;
     relay_rule_engine_snapshot(config);
-    cJSON *root = rules_json(config);
+    cJSON *root = outputs_json(config);
     free(config);
     return root;
 }
 
 cJSON *relay_rule_status_json_create(void)
 {
-    relay_rule_status_t *rules = malloc(sizeof(*rules) * RELAY_RULE_MAX_RULES);
+    relay_rule_status_t *outputs = malloc(sizeof(*outputs) * RELAY_RULE_MAX_RULES);
     relay_rule_source_status_t *sources = malloc(sizeof(*sources) * RELAY_RULE_MAX_SOURCES);
-    if (rules == NULL || sources == NULL) {
-        free(rules);
+    if (outputs == NULL || sources == NULL) {
+        free(outputs);
         free(sources);
         return NULL;
     }
     const uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    relay_rule_engine_get_status(rules, sources, now_ms);
-    cJSON *rule_array = cJSON_CreateArray();
-    if (rule_array == NULL) {
-        free(rules);
+    relay_rule_engine_get_status(outputs, sources, now_ms);
+    cJSON *output_array = cJSON_CreateArray();
+    if (output_array == NULL) {
+        free(outputs);
         free(sources);
         return NULL;
     }
     for (unsigned i = 0; i < RELAY_RULE_MAX_RULES; ++i) {
-        if (!rules[i].configured) continue;
+        if (!outputs[i].configured) continue;
         cJSON *item = cJSON_CreateObject();
-        cJSON_AddNumberToObject(item, "rule", i + 1U);
-        cJSON_AddBoolToObject(item, "enabled", rules[i].enabled);
-        if (!rules[i].enabled) {
-            cJSON_AddItemToArray(rule_array, item);
+        cJSON_AddNumberToObject(item, "output", i + 1U);
+        cJSON_AddBoolToObject(item, "enabled", outputs[i].enabled);
+        if (!outputs[i].enabled) {
+            cJSON_AddItemToArray(output_array, item);
             continue;
         }
-        cJSON_AddBoolToObject(item, "valid", rules[i].valid);
-        cJSON_AddBoolToObject(item, "state", rules[i].state);
-        cJSON_AddBoolToObject(item, "pulse_active", rules[i].pulse_active);
-        if (rules[i].valid) {
-            cJSON_AddNumberToObject(item, "selected_case", rules[i].selected_case);
+        cJSON_AddBoolToObject(item, "valid", outputs[i].valid);
+        cJSON_AddBoolToObject(item, "state", outputs[i].state);
+        cJSON_AddBoolToObject(item, "pulse_active", outputs[i].pulse_active);
+        cJSON_AddBoolToObject(item, "pwm_active", outputs[i].pwm_active);
+        if (outputs[i].valid) cJSON_AddNumberToObject(item, "selected_case", outputs[i].selected_case);
+        if (outputs[i].valid && outputs[i].pulse_active) {
+            cJSON_AddNumberToObject(item, "pulse_on_time_ms", outputs[i].pulse_on_time_ms);
+            cJSON_AddNumberToObject(item, "pulse_period_ms", outputs[i].pulse_period_ms);
+            cJSON_AddNumberToObject(item, "pulse_next_on_ms", outputs[i].pulse_next_on_ms);
         }
-        if (rules[i].valid && rules[i].pulse_active) {
-            cJSON_AddNumberToObject(item, "pulse_on_time_ms", rules[i].pulse_on_time_ms);
-            cJSON_AddNumberToObject(item, "pulse_period_ms", rules[i].pulse_period_ms);
-            cJSON_AddNumberToObject(item, "pulse_next_on_ms", rules[i].pulse_next_on_ms);
-        }
-        if (!rules[i].valid) {
-            cJSON_AddNumberToObject(item, "invalid_case", rules[i].invalid_case);
-            cJSON_AddNumberToObject(item, "invalid_test", rules[i].invalid_test);
-            cJSON_AddBoolToObject(item, "invalid_pulse_source", rules[i].invalid_pulse_source);
-            cJSON_AddNumberToObject(item, "invalid_reason", rules[i].invalid_reason);
-            if (rules[i].invalid_source >= 0 &&
-                (unsigned)rules[i].invalid_source < RELAY_RULE_MAX_SOURCES) {
-                const relay_rule_source_status_t *source =
-                    &sources[(unsigned)rules[i].invalid_source];
+        if (outputs[i].valid && outputs[i].pwm_active)
+            cJSON_AddNumberToObject(item, "duty_percent", outputs[i].duty_percent);
+        if (!outputs[i].valid) {
+            cJSON_AddNumberToObject(item, "invalid_case", outputs[i].invalid_case);
+            cJSON_AddNumberToObject(item, "invalid_test", outputs[i].invalid_test);
+            cJSON_AddBoolToObject(item, "invalid_pulse_source", outputs[i].invalid_pulse_source);
+            cJSON_AddBoolToObject(item, "invalid_pwm_source", outputs[i].invalid_pwm_source);
+            cJSON_AddNumberToObject(item, "invalid_reason", outputs[i].invalid_reason);
+            if (outputs[i].invalid_source >= 0 &&
+                (unsigned)outputs[i].invalid_source < RELAY_RULE_MAX_SOURCES) {
+                const relay_rule_source_status_t *source = &sources[(unsigned)outputs[i].invalid_source];
                 cJSON_AddStringToObject(item, "invalid_source_name", source->name);
                 cJSON_AddNumberToObject(item, "invalid_source_age_ms", source->age_ms);
                 cJSON_AddNumberToObject(item, "invalid_source_zero_streak", source->zero_streak);
                 cJSON_AddNumberToObject(item, "invalid_source_zero_confirm_samples", source->zero_confirm_samples);
             }
         }
-        cJSON_AddItemToArray(rule_array, item);
+        cJSON_AddItemToArray(output_array, item);
     }
-    free(rules);
+    free(outputs);
     free(sources);
-    return rule_array;
+    return output_array;
 }

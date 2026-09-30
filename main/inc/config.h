@@ -8,8 +8,9 @@
 
 #define CONFIG_CHANNELS 10       ///< Number of ADC input channels
 #define CONFIG_NAME_LEN 32      ///< Maximum characters for channel name
-#define CONFIG_VERSION 13       ///< Configuration structure version number (increment for new fields or layout changes)
+#define CONFIG_VERSION 14       ///< Configuration structure version number (increment for new fields or layout changes)
 #define ESPNOW_MAX_CLIENTS 4    ///< Maximum number of unencrypted ESP-NOW destinations
+#define ESPNOW_CLIENT_LABEL_LEN 32 ///< Maximum stored ESP-NOW client label bytes, including NUL
 
 /// Per-channel median filter strength levels
 /// stored in the 8‑bit `filtering` field below.
@@ -63,8 +64,9 @@ typedef struct {
 } channel_config_t;
 
 typedef struct {
-    uint8_t mac[ESP_NOW_ETH_ALEN]; ///< Destination STA MAC address
-    bool relay_can;                ///< Include frames received from the physical CAN bus
+    uint8_t mac[ESP_NOW_ETH_ALEN];        ///< Destination STA MAC address
+    bool relay_can;                       ///< Include frames received from the physical CAN bus
+    char label[ESPNOW_CLIENT_LABEL_LEN]; ///< Optional human-readable client label
 } espnow_client_config_t;
 
 /// Runtime board configuration used by the firmware.

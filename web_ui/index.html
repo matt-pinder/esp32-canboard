@@ -215,6 +215,9 @@
         width: 18ch;
         text-transform: uppercase;
       }
+      .espnow-client-label {
+        width: 18ch;
+      }
       .espnow-clients {
         display: flex;
         flex-direction: column;
@@ -548,6 +551,9 @@
         min-width: 560px !important;
         max-width: 760px;
       }
+      .lookup-actions {
+        margin-top: 0.5rem;
+      }
       .empty-row {
         padding: 1rem !important;
         color: #697887;
@@ -807,15 +813,17 @@
       </table>
     </form>
     <section class="card" id="relay-rules-card">
-      <h2>Relay rules</h2>
+      <h2>Outputs</h2>
       <p class="rules-intro">
         Build named output commands from local sensors or imported CAN signals.
-        Outputs are broadcast on <code>CAN base + 5</code>.
+        Binary state/valid/pulse is broadcast on <code>CAN base + 5</code>; PWM duty is paired on <code>CAN base + 6</code>.
       </p>
       <p class="hint">
         The first matching case wins. Tests inside one case are ANDed;
-        additional cases provide ELSE-IF/OR behavior. Missing or stale required
-        data forces the output safely OFF.
+        additional cases provide ELSE-IF/OR behavior. IF/AND tests select the
+        case; PULSE and PWM lookup tables then determine pulse timing or duty
+        rather than forcing the state bit ON. Missing or stale required data
+        forces the output safely OFF.
       </p>
       <div class="rules-reference-toolbar">
         <label
@@ -825,13 +833,13 @@
             type="file"
             accept=".dbc,text/plain" /></label
         ><button type="button" id="rules-dbc">
-          Download output relay reference DBC
+          Download Output reference DBC
         </button>
         <span id="rules-status"></span>
       </div>
       <span id="rule-dbc-status" class="hint"
         >Select a reference DBC to populate CAN message and field choices in
-        rule tests.</span
+        Output tests.</span
       >
       <div class="rules-table-wrap">
         <table class="output-rules-table">
@@ -851,10 +859,10 @@
       </div>
       <div class="section-heading">
         <button type="button" id="rule-add" class="primary-button">
-          Add rule</button
+          Add Output</button
         ><span class="hint"
-          >Configure expands the rule's ordered cases and optional pulse
-          table.</span
+          >Configure expands the Output's ordered cases and optional PULSE/PWM
+          lookup table.</span
         >
       </div>
     </section>
@@ -895,6 +903,7 @@
         "Custom NTC",
       ];
       const ESPNOW_MAX_CLIENTS = 4;
+      const ESPNOW_CLIENT_LABEL_MAX_BYTES = 31;
       let config = null;
       const loadingOverlay = document.getElementById("loading-overlay");
       const overlayText = document.getElementById("overlay-text");
@@ -972,6 +981,7 @@
       function getEspnowClientsFromForm() {
         return Array.from(document.querySelectorAll(".espnow-client-row")).map(
           (row) => ({
+            label: row.querySelector(".espnow-client-label").value.trim(),
             mac: normalizeMacAddress(
               row.querySelector(".espnow-client-mac").value,
             ),
@@ -986,7 +996,11 @@
           .slice(0, ESPNOW_MAX_CLIENTS)
           .map(
             (client, index) => `<div class="espnow-client-row">
-              <label>Client ${index + 1} MAC:</label>
+              <label>Client ${index + 1}:</label>
+              <input class="espnow-client-label" maxlength="31"
+                aria-label="Client ${index + 1} label" title="Optional label used to identify this ESP-NOW client"
+                placeholder="Label" value="${html(client.label || "")}">
+              <label>MAC:</label>
               <input class="mac-input espnow-client-mac" maxlength="17"
                 pattern="(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12}"
                 title="Enter a MAC address such as AA:BB:CC:DD:EE:FF"
@@ -1104,6 +1118,9 @@
         }
         const espnowMacSet = new Set();
         espnowClients.forEach((client, index) => {
+          if (new TextEncoder().encode(client.label || "").length > ESPNOW_CLIENT_LABEL_MAX_BYTES) {
+            error += `ESP-NOW client ${index + 1} label is too long. `;
+          }
           if (!isValidMacAddress(client.mac)) {
             error += `ESP-NOW client ${index + 1} MAC invalid. `;
           } else if (espnowMacSet.has(client.mac)) {
@@ -1114,6 +1131,13 @@
         });
         if (espnowClients.length > ESPNOW_MAX_CLIENTS) {
           error += `ESP-NOW supports up to ${ESPNOW_MAX_CLIENTS} clients. `;
+        }
+        const canStartId = parseCanIdInput(
+          document.getElementById("base-can-id").value,
+          NaN,
+        );
+        if (isNaN(canStartId) || canStartId < 0 || canStartId > 0x7f9) {
+          error += "CAN Base ID must be between 0x000 and 0x7F9. ";
         }
         const gpsEnabled = document.getElementById("gps-enabled").checked;
         if (gpsEnabled) {
@@ -1250,7 +1274,7 @@
       async function loadConfig() {
         const res = await fetch("/api/config");
         config = await res.json();
-        setLoadedRules(config.rules);
+        setLoadedRules(config.outputs);
         fillTable();
         // Set CAN speed dropdown
         document.getElementById("can-speed").value =
@@ -1280,6 +1304,7 @@
           : config.espnow_target_mac
             ? [
                 {
+                  label: "",
                   mac: config.espnow_target_mac,
                   relay_can: config.can_relay_espnow_enabled === true,
                 },
@@ -1344,10 +1369,10 @@
 
           relayRuleStatus = [];
           const receivedAt = Date.now();
-          (Array.isArray(live.rules) ? live.rules : []).forEach((rule) => {
-            const index = Number(rule?.rule) - 1;
-            if (index >= 0 && index < 16) {
-              relayRuleStatus[index] = { ...rule, received_at_ms: receivedAt };
+          (Array.isArray(live.outputs) ? live.outputs : []).forEach((output) => {
+            const index = Number(output?.output) - 1;
+            if (index >= 0 && index < 8) {
+              relayRuleStatus[index] = { ...output, received_at_ms: receivedAt };
             }
           });
           updateRuleStatusCells();
@@ -1433,7 +1458,8 @@
         config.pullup_vref_divider_high_ohm = isNaN(pvh)
           ? config.pullup_vref_divider_high_ohm || 5850
           : pvh;
-        config.rules = sparseRulesPayload();
+        config.outputs = sparseRulesPayload();
+        delete config.rules;
         try {
           const resp = await fetch("/api/config", {
             method: "POST",
@@ -1441,7 +1467,7 @@
             body: JSON.stringify(config),
           });
           if (resp.ok) {
-            setStatus("Configuration and output rules saved.", false, true);
+            setStatus("Configuration and Outputs saved.", false, true);
           } else {
             setStatus(await resp.text() || "Failed to save configuration.", true);
           }
@@ -1547,7 +1573,7 @@
       document.getElementById("add-espnow-client").onclick = function () {
         const clients = getEspnowClientsFromForm();
         if (clients.length >= ESPNOW_MAX_CLIENTS) return;
-        clients.push({ mac: "", relay_can: false });
+        clients.push({ label: "", mac: "", relay_can: false });
         renderEspnowClients(clients);
         updateTransportControls();
       };
@@ -1636,7 +1662,7 @@
           )
           .join("");
       const actionChoices = (selected) =>
-        ["OFF", "ON", "PULSE"]
+        ["OFF", "ON", "PULSE", "PWM"]
           .map(
             (name, value) =>
               `<option value="${value}" ${value === Number(selected) ? "selected" : ""}>${name}</option>`,
@@ -1738,7 +1764,7 @@
           <button class="danger-button" type="button" data-click="remove-test" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">Remove</button></div>`;
       }
       function caseEditor(entry, rule, caseIndex) {
-        const pulseRows = entry.pulse_points
+        const pulseRows = (entry.pulse_points || [])
           .map(
             (point, p) =>
               `<tr><td><input type="number" step="any" value="${point.input_value}" data-change="point-input" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="Signal value"></td><td><input type="number" min="0" step="0.001" value="${Number(point.on_time_ms) / 1000}" data-change="point-on" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="ON seconds"></td><td><input type="number" min="0.001" step="0.001" value="${Number(point.period_ms) / 1000}" data-change="point-period" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="Cycle seconds"></td><td><button class="danger-button" type="button" data-click="remove-point" data-r="${rule}" data-c="${caseIndex}" data-p="${p}">Remove</button></td></tr>`,
@@ -1746,9 +1772,19 @@
           .join("");
         const pulse =
           entry.action === 2
-            ? `<div class="pulse-panel"><div class="pulse-header"><label>Pulse lookup source<select data-change="pulse-source" data-r="${rule}" data-c="${caseIndex}">${sourceChoices(entry.pulse_source_index)}</select></label><label>Pulse source hysteresis<input type="number" min="0" step="any" value="${num(entry.pulse_hysteresis)}" data-change="pulse-hysteresis" data-r="${rule}" data-c="${caseIndex}" aria-label="Pulse source hysteresis"></label><button type="button" data-click="add-point" data-r="${rule}" data-c="${caseIndex}">Add lookup row</button><span class="hint">Hysteresis is measured from the cycle-start value. Exceeding it recalculates the current countdown from the original start time and updates ON duration while ON.</span></div><div class="rules-table-wrap"><table class="pulse-table"><thead><tr><th>Signal value</th><th>ON time (seconds)</th><th>Cycle period (seconds)</th><th></th></tr></thead><tbody>${pulseRows || `<tr><td class="empty-row" colspan="4">Add at least one pulse lookup row.</td></tr>`}</tbody></table></div></div>`
+            ? `<div class="pulse-panel"><div class="pulse-header"><label>Pulse lookup source<select data-change="pulse-source" data-r="${rule}" data-c="${caseIndex}">${sourceChoices(entry.pulse_source_index)}</select></label><label>Pulse source hysteresis<input type="number" min="0" step="any" value="${num(entry.pulse_hysteresis)}" data-change="pulse-hysteresis" data-r="${rule}" data-c="${caseIndex}" aria-label="Pulse source hysteresis"></label><span class="hint">Hysteresis is measured from the cycle-start value. Exceeding it recalculates the current countdown from the original start time and updates ON duration while ON.</span></div><div class="rules-table-wrap"><table class="pulse-table"><thead><tr><th>Signal value</th><th>ON time (seconds)</th><th>Cycle period (seconds)</th><th></th></tr></thead><tbody>${pulseRows || `<tr><td class="empty-row" colspan="4">Add at least one PULSE lookup row.</td></tr>`}</tbody></table></div><div class="lookup-actions"><button type="button" data-click="add-point" data-r="${rule}" data-c="${caseIndex}">Add lookup row</button></div></div>`
             : "";
-        return `<section class="logic-case"><div class="logic-case-header"><strong>${caseIndex === 0 ? "IF" : "ELSE IF"} — Case ${caseIndex + 1}</strong><button class="danger-button" type="button" data-click="remove-case" data-r="${rule}" data-c="${caseIndex}">Remove case</button></div>${entry.tests.map((test, t) => testEditor(test, rule, caseIndex, t)).join("")}<div class="case-actions"><button type="button" data-click="add-test" data-r="${rule}" data-c="${caseIndex}">Add AND test</button><span class="hint">All tests above must pass.</span></div><div class="case-result"><strong>THEN</strong><select data-change="case-action" data-r="${rule}" data-c="${caseIndex}">${actionChoices(entry.action)}</select></div>${pulse}</section>`;
+        const pwmRows = (entry.pwm_points || [])
+          .map(
+            (point, p) =>
+              `<tr><td><input type="number" step="any" value="${point.input_value}" data-change="pwm-point-input" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="Signal value"></td><td><input type="number" min="0" max="100" step="1" value="${point.duty_percent}" data-change="pwm-point-duty" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="Duty %"></td><td><button class="danger-button" type="button" data-click="remove-pwm-point" data-r="${rule}" data-c="${caseIndex}" data-p="${p}">Remove</button></td></tr>`,
+          )
+          .join("");
+        const pwm =
+          entry.action === 3
+            ? `<div class="pulse-panel"><div class="pulse-header"><label>PWM lookup source<select data-change="pwm-source" data-r="${rule}" data-c="${caseIndex}">${sourceChoices(entry.pwm_source_index)}</select></label><label>PWM source hysteresis<input type="number" min="0" step="any" value="${num(entry.pwm_hysteresis)}" data-change="pwm-hysteresis" data-r="${rule}" data-c="${caseIndex}" aria-label="PWM source hysteresis"></label><span class="hint">Duty is clamped to the nearest endpoint and linearly interpolated between rows. The accepted lookup input is held until the source changes by more than this hysteresis.</span></div><div class="rules-table-wrap"><table class="pulse-table"><thead><tr><th>Signal value</th><th>Duty (%)</th><th></th></tr></thead><tbody>${pwmRows || `<tr><td class="empty-row" colspan="3">Add at least one PWM lookup row.</td></tr>`}</tbody></table></div><div class="lookup-actions"><button type="button" data-click="add-pwm-point" data-r="${rule}" data-c="${caseIndex}">Add lookup row</button></div></div>`
+            : "";
+        return `<section class="logic-case"><div class="logic-case-header"><strong>${caseIndex === 0 ? "IF" : "ELSE IF"} — Case ${caseIndex + 1}</strong><button class="danger-button" type="button" data-click="remove-case" data-r="${rule}" data-c="${caseIndex}">Remove case</button></div>${entry.tests.map((test, t) => testEditor(test, rule, caseIndex, t)).join("")}<div class="case-actions"><button type="button" data-click="add-test" data-r="${rule}" data-c="${caseIndex}">Add AND test</button><span class="hint">All tests above must pass.</span></div><div class="case-result"><strong>THEN</strong><select data-change="case-action" data-r="${rule}" data-c="${caseIndex}">${actionChoices(entry.action)}</select></div>${pulse}${pwm}</section>`;
       }
       function renderRuleEditor() {
         if (!relayRules) return;
@@ -1757,16 +1793,20 @@
             .map((r) => {
               const rule = relayRules.rules[r];
               const actions = rule.cases
-                .map((entry) => ["OFF", "ON", "PULSE"][entry.action])
+                .map((entry) => ["OFF", "ON", "PULSE", "PWM"][entry.action])
                 .join(" → ");
               const summary = rule.cases.length
                 ? `${rule.cases.length} case${rule.cases.length === 1 ? "" : "s"} · ${actions}`
                 : "No cases · defaults OFF";
               const expanded = expandedRuleRows.has(r);
-              return `<tr class="rule-summary-row"><td class="rule-number">${r + 1}</td><td><input aria-label="Rule ${r + 1} output label" data-change="rule-label" data-r="${r}" value="${html(rule.label)}"></td><td class="rule-enabled"><input aria-label="Rule ${r + 1} enabled" type="checkbox" data-change="rule-enabled" data-r="${r}" ${rule.enabled ? "checked" : ""}></td><td>${summary}</td><td class="rule-command">Bit ${r + 1}</td><td class="rule-live-status" data-rule-live="${r}">Waiting for status…</td><td><div class="row-actions"><button type="button" data-click="toggle-detail" data-r="${r}">${expanded ? "Close" : "Configure"}</button><button class="danger-button" type="button" data-click="remove-rule" data-r="${r}">Remove</button></div></td></tr><tr class="rule-detail-row" id="rule-detail-${r}" ${expanded ? "" : "hidden"}><td colspan="7"><div class="rule-detail"><div class="rule-detail-title"><strong>${html(rule.label)} — ordered logic</strong><span class="hint">No matching case means valid OFF.</span></div>${rule.cases.map((entry, c) => caseEditor(entry, r, c)).join("")}${rule.cases.length < 4 ? `<button type="button" data-click="add-case" data-r="${r}">Add ELSE-IF case</button>` : ""}</div></td></tr>`;
+              const usesPwm = rule.cases.some((entry) => Number(entry.action) === 3);
+              const publishedAs = usesPwm
+                ? `Bit ${r + 1} + duty ${r + 1}`
+                : `Bit ${r + 1}`;
+              return `<tr class="rule-summary-row"><td class="rule-number">${r + 1}</td><td><input aria-label="Output ${r + 1} label" data-change="rule-label" data-r="${r}" value="${html(rule.label)}"></td><td class="rule-enabled"><input aria-label="Output ${r + 1} enabled" type="checkbox" data-change="rule-enabled" data-r="${r}" ${rule.enabled ? "checked" : ""}></td><td>${summary}</td><td class="rule-command">${publishedAs}</td><td class="rule-live-status" data-rule-live="${r}">Waiting for status…</td><td><div class="row-actions"><button type="button" data-click="toggle-detail" data-r="${r}">${expanded ? "Close" : "Configure"}</button><button class="danger-button" type="button" data-click="remove-rule" data-r="${r}">Remove</button></div></td></tr><tr class="rule-detail-row" id="rule-detail-${r}" ${expanded ? "" : "hidden"}><td colspan="7"><div class="rule-detail"><div class="rule-detail-title"><strong>${html(rule.label)} — ordered logic</strong><span class="hint">No matching case means valid OFF.</span></div>${rule.cases.map((entry, c) => caseEditor(entry, r, c)).join("")}${rule.cases.length < 4 ? `<button type="button" data-click="add-case" data-r="${r}">Add ELSE-IF case</button>` : ""}</div></td></tr>`;
             })
             .join("") ||
-          '<tr><td class="empty-row" colspan="7">No output rules yet. Select Add rule to create the first command bit.</td></tr>';
+          '<tr><td class="empty-row" colspan="7">No Outputs yet. Select Add Output to create the first command.</td></tr>';
         updateRuleStatusCells();
       }
       const formatRuleSeconds = (milliseconds) => {
@@ -1787,8 +1827,10 @@
               ? { name: status.invalid_source_name, type: 1 }
               : null);
           const location = status.invalid_pulse_source
-            ? `Case ${Number(status.invalid_case) + 1} pulse source`
-            : `Case ${Number(status.invalid_case) + 1}, test ${Number(status.invalid_test) + 1}`;
+            ? `Case ${Number(status.invalid_case) + 1} PULSE source`
+            : status.invalid_pwm_source
+              ? `Case ${Number(status.invalid_case) + 1} PWM source`
+              : `Case ${Number(status.invalid_case) + 1}, test ${Number(status.invalid_test) + 1}`;
           let reason = "is unavailable";
           if (Number(status.invalid_reason) === 1)
             reason = "has not been received";
@@ -1803,6 +1845,10 @@
           return `<strong>Invalid · OFF</strong><br>${html(location)}: ${html(sourceLabel(source))} ${html(reason)}`;
         }
         let state = status.state ? "ON" : "OFF";
+        if (Number(status.selected_case) < 0)
+          return `<strong>OFF</strong> · No matching case`;
+        if (status.pwm_active)
+          return `<strong>${state}</strong> · PWM ${Number(status.duty_percent) || 0}% · Case ${Number(status.selected_case) + 1}`;
         if (!status.pulse_active)
           return `<strong>${state}</strong> · Case ${Number(status.selected_case) + 1}`;
         const onTime = Number(status.pulse_on_time_ms) || 0;
@@ -1840,6 +1886,9 @@
         pulse_source_index: 0,
         pulse_hysteresis: 0,
         pulse_points: [],
+        pwm_source_index: 0,
+        pwm_hysteresis: 0,
+        pwm_points: [],
       });
       function ensureCanSource(messageIndex, signalIndex) {
         const message = dbcMessages[messageIndex],
@@ -1898,6 +1947,10 @@
           entry.pulse_source_index = num(el.value);
         else if (kind === "pulse-hysteresis")
           entry.pulse_hysteresis = Math.max(0, num(el.value));
+        else if (kind === "pwm-source")
+          entry.pwm_source_index = num(el.value);
+        else if (kind === "pwm-hysteresis")
+          entry.pwm_hysteresis = Math.max(0, num(el.value));
         else if (kind === "test-mode") {
           const key = testKey(r, c, t);
           testSourceModes.set(key, el.value);
@@ -1946,6 +1999,10 @@
           entry.pulse_points[p].period_ms = Math.round(
             num(el.value, 0.001) * 1000,
           );
+        else if (kind === "pwm-point-input")
+          entry.pwm_points[p].input_value = num(el.value);
+        else if (kind === "pwm-point-duty")
+          entry.pwm_points[p].duty_percent = num(el.value);
         else if (kind === "source-name") source.name = el.value;
         else if (kind === "source-id")
           source.can_id = Number.parseInt(el.value, 0) || 0;
@@ -1985,6 +2042,12 @@
             period_ms: 1000,
           });
         else if (kind === "remove-point") entry.pulse_points.splice(p, 1);
+        else if (kind === "add-pwm-point" && entry.pwm_points.length < 8)
+          entry.pwm_points.push({
+            input_value: entry.pwm_points.length,
+            duty_percent: 0,
+          });
+        else if (kind === "remove-pwm-point") entry.pwm_points.splice(p, 1);
         else if (kind === "remove-source")
           relayRules.sources[s] = {
             name: "",
@@ -2002,7 +2065,7 @@
           };
         else if (kind === "remove-rule") {
           relayRules.rules[r] = {
-            label: `Rule ${r + 1}`,
+            label: `Output ${r + 1}`,
             enabled: false,
             cases: [],
           };
@@ -2078,15 +2141,15 @@
       document.getElementById("rule-add").onclick = () => {
         if (!relayRules) return;
         const slot = relayRules.rules.findIndex(
-          (rule, index) =>
+          (output, index) =>
             !visibleRuleRows.includes(index) &&
-            !rule.enabled &&
-            !rule.cases.length,
+            !output.enabled &&
+            !output.cases.length,
         );
         if (slot < 0)
-          return ruleStatus("All 16 output rules are already in use.");
+          return ruleStatus("All 8 Outputs are already in use.");
         relayRules.rules[slot] = {
-          label: `Rule ${slot + 1}`,
+          label: `Output ${slot + 1}`,
           enabled: true,
           cases: [defaultCase()],
         };
@@ -2141,23 +2204,21 @@
           sources.findIndex(
             (source) => source.type !== 0 && source.name === name,
           );
-        const expanded = Array.from({ length: 16 }, (_, index) => ({
-          rule: index + 1,
-          label: `Rule ${index + 1}`,
+        const expanded = Array.from({ length: 8 }, (_, index) => ({
+          label: `Output ${index + 1}`,
           enabled: false,
           cases: [],
         }));
         for (
           let position = 0;
-          position < (payload.rules || []).length;
+          position < (payload.outputs || []).length;
           ++position
         ) {
-          const saved = payload.rules[position],
-            slot = Number(saved.rule || position + 1) - 1;
+          const saved = payload.outputs[position],
+            slot = Number(saved.output) - 1;
           if (slot >= 0 && slot < expanded.length) {
             expanded[slot] = {
               ...saved,
-              rule: slot + 1,
               cases: (saved.cases || []).map((entry) => ({
                 ...entry,
                 pulse_source_index:
@@ -2166,6 +2227,12 @@
                     : 0,
                 pulse_hysteresis: num(entry.pulse_hysteresis),
                 pulse_points: entry.action === 2 ? entry.pulse_points || [] : [],
+                pwm_source_index:
+                  entry.action === 3
+                    ? sourceIndex(entry.pwm_source_name)
+                    : 0,
+                pwm_hysteresis: num(entry.pwm_hysteresis),
+                pwm_points: entry.action === 3 ? entry.pwm_points || [] : [],
                 tests: (entry.tests || []).map((test) => ({
                   ...test,
                   source_index:
@@ -2178,23 +2245,24 @@
         return { ...payload, sources, rules: expanded };
       }
       function setLoadedRules(payload) {
-        if (!payload) throw new Error("Configuration does not contain output rules.");
+        if (!payload)
+          throw new Error("Configuration does not contain Outputs.");
         relayRules = expandSparseRules(payload);
         visibleRuleRows = relayRules.rules
-          .map((rule, index) =>
-            rule.enabled || rule.cases.length ? index : -1,
+          .map((output, index) =>
+            output.enabled || output.cases.length ? index : -1,
           )
           .filter((index) => index >= 0);
         expandedRuleRows.clear();
         renderRuleEditor();
       }
       function sparseRulesPayload() {
-        const configuredRules = relayRules.rules
-          .map((rule, index) => ({ ...rule, rule: index + 1 }))
-          .filter((rule) => rule.enabled || rule.cases.length);
+        const configuredOutputs = relayRules.rules
+          .map((output, index) => ({ ...output, output: index + 1 }))
+          .filter((output) => output.enabled || output.cases.length);
         const usedCanSources = new Set();
-        configuredRules.forEach((rule) =>
-          rule.cases.forEach((entry) => {
+        configuredOutputs.forEach((output) =>
+          output.cases.forEach((entry) => {
             entry.tests.forEach((test) => {
               if (
                 test.type === 0 &&
@@ -2207,6 +2275,11 @@
               relayRules.sources[entry.pulse_source_index]?.type === 1
             )
               usedCanSources.add(entry.pulse_source_index);
+            if (
+              entry.action === 3 &&
+              relayRules.sources[entry.pwm_source_index]?.type === 1
+            )
+              usedCanSources.add(entry.pwm_source_index);
           }),
         );
         const compactSource = (source) => ({
@@ -2221,11 +2294,11 @@
           offset: source.offset,
           zero_confirm_samples: source.zero_confirm_samples,
         });
-        const compactRules = configuredRules.map((rule) => ({
-          rule: rule.rule,
-          label: rule.label,
-          enabled: rule.enabled,
-          cases: rule.cases.map((entry) => {
+        const compactOutputs = configuredOutputs.map((output) => ({
+          output: output.output,
+          label: output.label,
+          enabled: output.enabled,
+          cases: output.cases.map((entry) => {
             const compact = {
               action: entry.action,
               tests: entry.tests.map((test) => {
@@ -2247,53 +2320,84 @@
                 relayRules.sources[entry.pulse_source_index]?.name || "";
               compact.pulse_hysteresis = num(entry.pulse_hysteresis);
               compact.pulse_points = entry.pulse_points;
+            } else if (entry.action === 3) {
+              compact.pwm_source_name =
+                relayRules.sources[entry.pwm_source_index]?.name || "";
+              compact.pwm_hysteresis = num(entry.pwm_hysteresis);
+              compact.pwm_points = entry.pwm_points.map((point) => ({
+                input_value: point.input_value,
+                duty_percent: point.duty_percent,
+              }));
             }
             return compact;
           }),
         }));
         return {
-          version: relayRules.version,
+          version: 2,
           signal_timeout_ms: relayRules.signal_timeout_ms,
           sources: [...usedCanSources].map((index) =>
             compactSource(relayRules.sources[index]),
           ),
-          rules: compactRules,
+          outputs: compactOutputs,
         };
       }
       function validateRulesForSave() {
         const publishIntervalMs =
           Number(document.getElementById("can-tx-rate").value) === 50 ? 20 : 40;
         for (let r = 0; r < relayRules.rules.length; ++r) {
-          const rule = relayRules.rules[r];
-          if (!rule.enabled) continue;
-          if (!rule.cases.length)
-            return `Rule ${r + 1} (${rule.label}) needs at least one case.`;
-          for (let c = 0; c < rule.cases.length; ++c) {
-            const entry = rule.cases[c];
+          const output = relayRules.rules[r];
+          if (output.enabled && !output.cases.length)
+            return `Output ${r + 1} (${output.label}) needs at least one case.`;
+          if (!output.cases.length) continue;
+          for (let c = 0; c < output.cases.length; ++c) {
+            const entry = output.cases[c];
             if (!entry.tests.length)
-              return `Rule ${r + 1}, case ${c + 1} needs at least one test.`;
-            if (entry.action !== 2) continue;
-            if (num(entry.pulse_hysteresis, -1) < 0)
-              return `Rule ${r + 1}, case ${c + 1}: pulse source hysteresis cannot be negative.`;
-            if (!entry.pulse_points.length)
-              return `Rule ${r + 1}, case ${c + 1} uses PULSE but has no lookup rows.`;
-            for (let p = 0; p < entry.pulse_points.length; ++p) {
-              const point = entry.pulse_points[p],
-                location = `Rule ${r + 1}, case ${c + 1}, pulse row ${p + 1}`;
-              if (point.period_ms <= 0)
-                return `${location}: cycle period must be greater than zero.`;
-              if (point.on_time_ms > point.period_ms)
-                return `${location}: ON time (${point.on_time_ms / 1000}s) cannot exceed cycle period (${point.period_ms / 1000}s).`;
-              if (
-                p > 0 &&
-                point.input_value <= entry.pulse_points[p - 1].input_value
-              )
-                return `${location}: signal values must increase from one row to the next.`;
-              if (point.on_time_ms > 0 && point.on_time_ms < publishIntervalMs)
-                return `${location}: ON time must be at least ${publishIntervalMs / 1000}s at the configured publish rate.`;
-              const offTime = point.period_ms - point.on_time_ms;
-              if (offTime > 0 && offTime < publishIntervalMs)
-                return `${location}: OFF time must be at least ${publishIntervalMs / 1000}s at the configured publish rate.`;
+              return `Output ${r + 1}, case ${c + 1} needs at least one test.`;
+            if (entry.action === 2) {
+              if (num(entry.pulse_hysteresis, -1) < 0)
+                return `Output ${r + 1}, case ${c + 1}: PULSE source hysteresis cannot be negative.`;
+              if (!entry.pulse_points.length)
+                return `Output ${r + 1}, case ${c + 1} uses PULSE but has no lookup rows.`;
+              for (let p = 0; p < entry.pulse_points.length; ++p) {
+                const point = entry.pulse_points[p],
+                  location = `Output ${r + 1}, case ${c + 1}, PULSE row ${p + 1}`;
+                if (!Number.isFinite(Number(point.input_value)))
+                  return `${location}: signal value must be finite.`;
+                if (point.period_ms <= 0)
+                  return `${location}: cycle period must be greater than zero.`;
+                if (point.on_time_ms > point.period_ms)
+                  return `${location}: ON time (${point.on_time_ms / 1000}s) cannot exceed cycle period (${point.period_ms / 1000}s).`;
+                if (
+                  p > 0 &&
+                  point.input_value <= entry.pulse_points[p - 1].input_value
+                )
+                  return `${location}: signal values must increase from one row to the next.`;
+                if (point.on_time_ms > 0 && point.on_time_ms < publishIntervalMs)
+                  return `${location}: ON time must be at least ${publishIntervalMs / 1000}s at the configured publish rate.`;
+                const offTime = point.period_ms - point.on_time_ms;
+                if (offTime > 0 && offTime < publishIntervalMs)
+                  return `${location}: OFF time must be at least ${publishIntervalMs / 1000}s at the configured publish rate.`;
+              }
+            } else if (entry.action === 3) {
+              if (num(entry.pwm_hysteresis, -1) < 0)
+                return `Output ${r + 1}, case ${c + 1}: PWM source hysteresis cannot be negative.`;
+              if (!entry.pwm_points.length)
+                return `Output ${r + 1}, case ${c + 1} uses PWM but has no lookup rows.`;
+              for (let p = 0; p < entry.pwm_points.length; ++p) {
+                const point = entry.pwm_points[p],
+                  input = Number(point.input_value),
+                  duty = Number(point.duty_percent),
+                  location = `Output ${r + 1}, case ${c + 1}, PWM row ${p + 1}`;
+                if (!Number.isFinite(input))
+                  return `${location}: input value must be finite.`;
+                if (!Number.isInteger(duty) || duty < 0 || duty > 100)
+                  return `${location}: duty must be an integer from 0 to 100.`;
+                if (
+                  p > 0 &&
+                  input <= Number(entry.pwm_points[p - 1].input_value)
+                )
+                  return `${location}: input values must increase strictly from one row to the next.`;
+              }
             }
           }
         }
@@ -2301,25 +2405,37 @@
       }
       document.getElementById("rules-dbc").onclick = () => {
         try {
-          const rules = relayRules;
-          const base = Number(config?.can_start_id || 0x100),
-            id = base + 5;
+          const outputs = relayRules;
+          const base = parseCanIdInput(
+              document.getElementById("base-can-id").value,
+              Number(config?.can_start_id || 0x100),
+            ),
+            binaryId = base + 5,
+            dutyId = base + 6;
+          if (base < 0 || base > 0x7f9)
+            throw new Error("CAN base ID must be 0x000-0x7F9");
           const clean = (name, index) =>
-            String(name || `Rule${index + 1}`)
+            String(name || `Output${index + 1}`)
               .replace(/[^A-Za-z0-9_]/g, "_")
-              .replace(/^([^A-Za-z_])/, "R_$1");
-          let dbc = `VERSION ""\n\nBO_ ${id} relayRuleOutputs: 8 Vector__XXX\n`;
-          (rules.rules || []).forEach((rule, index) => {
-            const name = clean(rule.label, index);
+              .replace(/^([^A-Za-z_])/, "O_$1");
+          let dbc = `VERSION ""\n\nBO_ ${binaryId} OutputBinaryCommands: 8 Vector__XXX\n`;
+          (outputs.rules || []).forEach((output, index) => {
+            const name = clean(output.label, index);
             dbc += ` SG_ ${name}_state : ${index}|1@1+ (1,0) [0|1] "" Vector__XXX\n SG_ ${name}_valid : ${16 + index}|1@1+ (1,0) [0|1] "" Vector__XXX\n SG_ ${name}_pulse : ${32 + index}|1@1+ (1,0) [0|1] "" Vector__XXX\n`;
           });
           dbc +=
-            ' SG_ relayRuleCounter : 48|8@1+ (1,0) [0|255] "" Vector__XXX\n SG_ relayRuleProtocolVersion : 56|8@1+ (1,0) [0|255] "" Vector__XXX\n';
+            ' SG_ OutputCounter : 48|8@1+ (1,0) [0|255] "" Vector__XXX\n SG_ OutputProtocolVersion : 56|8@1+ (1,0) [2|2] "" Vector__XXX\n';
+          dbc += `\nBO_ ${dutyId} OutputDutyCommands: 8 Vector__XXX\n`;
+          (outputs.rules || []).forEach((output, index) => {
+            const name = clean(output.label, index);
+            dbc += ` SG_ ${name}_duty : ${index * 7}|7@1+ (1,0) [0|100] "%" Vector__XXX\n`;
+          });
+          dbc += ' SG_ OutputDutyCounter : 56|8@1+ (1,0) [0|255] "" Vector__XXX\n';
           const link = document.createElement("a");
           link.href = URL.createObjectURL(
             new Blob([dbc], { type: "text/plain" }),
           );
-          link.download = "esp32-canboard-relay-rules.dbc";
+          link.download = "esp32-canboard-outputs.dbc";
           link.click();
           URL.revokeObjectURL(link.href);
         } catch (e) {

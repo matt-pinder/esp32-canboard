@@ -1,0 +1,40 @@
+VERSION ""
+
+BO_ 261 OutputBinaryCommands: 8 Vector__XXX
+ SG_ Output1_state : 0|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output2_state : 1|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output3_state : 2|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output4_state : 3|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output5_state : 4|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output6_state : 5|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output7_state : 6|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output8_state : 7|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output1_valid : 16|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output2_valid : 17|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output3_valid : 18|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output4_valid : 19|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output5_valid : 20|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output6_valid : 21|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output7_valid : 22|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output8_valid : 23|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output1_pulse : 32|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output2_pulse : 33|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output3_pulse : 34|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output4_pulse : 35|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output5_pulse : 36|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output6_pulse : 37|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output7_pulse : 38|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Output8_pulse : 39|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ OutputCounter : 48|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ OutputProtocolVersion : 56|8@1+ (1,0) [2|2] "" Vector__XXX
+
+BO_ 262 OutputDutyCommands: 8 Vector__XXX
+ SG_ Output1_duty : 0|7@1+ (1,0) [0|100] "%" Vector__XXX
+ SG_ Output2_duty : 7|7@1+ (1,0) [0|100] "%" Vector__XXX
+ SG_ Output3_duty : 14|7@1+ (1,0) [0|100] "%" Vector__XXX
+ SG_ Output4_duty : 21|7@1+ (1,0) [0|100] "%" Vector__XXX
+ SG_ Output5_duty : 28|7@1+ (1,0) [0|100] "%" Vector__XXX
+ SG_ Output6_duty : 35|7@1+ (1,0) [0|100] "%" Vector__XXX
+ SG_ Output7_duty : 42|7@1+ (1,0) [0|100] "%" Vector__XXX
+ SG_ Output8_duty : 49|7@1+ (1,0) [0|100] "%" Vector__XXX
+ SG_ OutputDutyCounter : 56|8@1+ (1,0) [0|255] "" Vector__XXX

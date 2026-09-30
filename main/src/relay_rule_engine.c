@@ -12,12 +12,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-#define TAG "RELAY_RULES"
-#define RULE_CONFIG_VERSION 1U
+#define TAG "OUTPUTS"
+#define RULE_CONFIG_VERSION 2U
 #define RULE_CONFIG_PARTITION "rules"
 #define ZERO_CONFIRM_DEFAULT 11U
 #define RULE_COMPACT_MAGIC 0x52554C32U
-#define RULE_COMPACT_VERSION 2U
+#define RULE_COMPACT_VERSION 3U
 #define RULE_SLOT_MAGIC 0x52534C54U
 #define RULE_SLOT_COUNT 2U
 
@@ -52,29 +52,6 @@ typedef struct {
     relay_output_rule_t rule;
 } compact_rule_t;
 
-/* Version 1 stored the rule structs before pulse-source hysteresis was added. */
-typedef struct {
-    uint8_t test_count;
-    relay_rule_test_t tests[RELAY_RULE_MAX_TESTS];
-    relay_action_t action;
-    uint8_t pulse_source_index;
-    uint8_t pulse_point_count;
-    relay_pulse_point_t pulse_points[RELAY_RULE_MAX_PULSE_POINTS];
-} relay_rule_case_v1_t;
-
-typedef struct {
-    char label[RELAY_RULE_NAME_LENGTH];
-    bool enabled;
-    uint8_t case_count;
-    relay_rule_case_v1_t cases[RELAY_RULE_MAX_CASES];
-} relay_output_rule_v1_t;
-
-typedef struct {
-    uint8_t slot;
-    uint8_t reserved[3];
-    relay_output_rule_v1_t rule;
-} compact_rule_v1_t;
-
 typedef struct {
     bool present;
     bool accepted_valid;
@@ -94,10 +71,15 @@ typedef struct {
     uint32_t pulse_period_ms;
     float pulse_input_value;
     bool pulse_input_valid;
+    bool pwm_active;
+    uint8_t duty_percent;
+    float pwm_input_value;
+    bool pwm_input_valid;
     int8_t invalid_case;
     int8_t invalid_test;
     int8_t invalid_source;
     bool invalid_pulse_source;
+    bool invalid_pwm_source;
     relay_rule_invalid_reason_t invalid_reason;
 } rule_runtime_t;
 
@@ -116,8 +98,8 @@ static const char *comparison_name(relay_compare_t comparison)
 
 static const char *action_name(relay_action_t action)
 {
-    static const char *const names[] = {"OFF", "ON", "PULSE"};
-    return action <= RELAY_ACTION_PULSE ? names[action] : "?";
+    static const char *const names[] = {"OFF", "ON", "PULSE", "PWM"};
+    return action <= RELAY_ACTION_PWM ? names[action] : "?";
 }
 
 static void log_source(unsigned index, const relay_source_config_t *source, const char *indent)
@@ -142,28 +124,27 @@ static void log_source(unsigned index, const relay_source_config_t *source, cons
 
 static void log_rule_config(const relay_rule_config_t *config)
 {
-    unsigned configured_rules = 0U;
+    unsigned configured_outputs = 0U;
     unsigned can_sources = 0U;
     for (unsigned i = 0; i < RELAY_RULE_MAX_RULES; ++i)
-        configured_rules += config->rules[i].enabled || config->rules[i].case_count > 0U;
+        configured_outputs += config->rules[i].enabled || config->rules[i].case_count > 0U;
     for (unsigned i = 0; i < RELAY_RULE_MAX_SOURCES; ++i)
         can_sources += config->sources[i].type == RELAY_SOURCE_CAN;
 
-    ESP_LOGI(TAG, "Loaded relay_rule_config_t:");
-    ESP_LOGI(TAG, "  version=%lu signal_timeout_ms=%lu configured_rules=%u can_sources=%u publish_rate_hz=%u",
+    ESP_LOGI(TAG, "Loaded Output configuration:");
+    ESP_LOGI(TAG, "  version=%lu signal_timeout_ms=%lu configured_outputs=%u can_sources=%u publish_rate_hz=%u",
              (unsigned long)config->version, (unsigned long)config->signal_timeout_ms,
-             configured_rules, can_sources, (unsigned)publish_rate_hz);
+             configured_outputs, can_sources, (unsigned)publish_rate_hz);
 
     for (unsigned r = 0; r < RELAY_RULE_MAX_RULES; ++r) {
         const relay_output_rule_t *rule = &config->rules[r];
         if (!rule->enabled && rule->case_count == 0U) continue;
-        ESP_LOGI(TAG, "  rule[%u]: label=\"%s\" enabled=%d published_bit=%u cases=%u",
+        ESP_LOGI(TAG, "  output[%u]: label=\"%s\" enabled=%d published_bit=%u cases=%u",
                  r, rule->label, rule->enabled, r + 1U, (unsigned)rule->case_count);
         for (unsigned c = 0; c < rule->case_count; ++c) {
             const relay_rule_case_t *entry = &rule->cases[c];
-            ESP_LOGI(TAG, "    case[%u]: tests=%u action=%s pulse_hysteresis=%.6g", c,
-                     (unsigned)entry->test_count, action_name(entry->action),
-                     (double)entry->pulse_hysteresis);
+            ESP_LOGI(TAG, "    case[%u]: tests=%u action=%s", c,
+                     (unsigned)entry->test_count, action_name(entry->action));
             for (unsigned t = 0; t < entry->test_count; ++t) {
                 const relay_rule_test_t *test = &entry->tests[t];
                 if (test->type == RELAY_TEST_UPTIME) {
@@ -182,18 +163,29 @@ static void log_rule_config(const relay_rule_config_t *config)
                     log_source(test->source_index, &config->sources[test->source_index], "        ");
                 }
             }
-            if (entry->action != RELAY_ACTION_PULSE) continue;
-            log_source(entry->pulse_source_index,
-                       &config->sources[entry->pulse_source_index], "      pulse ");
-            for (unsigned p = 0; p < entry->pulse_point_count; ++p) {
-                const relay_pulse_point_t *point = &entry->pulse_points[p];
-                ESP_LOGI(TAG,
-                         "      pulse_point[%u]: input=%.6g on=%lu.%03lu s period=%lu.%03lu s",
-                         p, (double)point->input_value,
-                         (unsigned long)(point->on_time_ms / 1000U),
-                         (unsigned long)(point->on_time_ms % 1000U),
-                         (unsigned long)(point->period_ms / 1000U),
-                         (unsigned long)(point->period_ms % 1000U));
+            if (entry->action == RELAY_ACTION_PULSE) {
+                ESP_LOGI(TAG, "      pulse_hysteresis=%.6g", (double)entry->pulse_hysteresis);
+                log_source(entry->pulse_source_index,
+                           &config->sources[entry->pulse_source_index], "      pulse ");
+                for (unsigned p = 0; p < entry->pulse_point_count; ++p) {
+                    const relay_pulse_point_t *point = &entry->pulse_points[p];
+                    ESP_LOGI(TAG,
+                             "      pulse_point[%u]: input=%.6g on=%lu.%03lu s period=%lu.%03lu s",
+                             p, (double)point->input_value,
+                             (unsigned long)(point->on_time_ms / 1000U),
+                             (unsigned long)(point->on_time_ms % 1000U),
+                             (unsigned long)(point->period_ms / 1000U),
+                             (unsigned long)(point->period_ms % 1000U));
+                }
+            } else if (entry->action == RELAY_ACTION_PWM) {
+                ESP_LOGI(TAG, "      pwm_hysteresis=%.6g", (double)entry->pwm_hysteresis);
+                log_source(entry->pwm_source_index,
+                           &config->sources[entry->pwm_source_index], "      PWM ");
+                for (unsigned p = 0; p < entry->pwm_point_count; ++p) {
+                    const relay_pwm_point_t *point = &entry->pwm_points[p];
+                    ESP_LOGI(TAG, "      pwm_point[%u]: input=%.6g duty=%u%%", p,
+                             (double)point->input_value, (unsigned)point->duty_percent);
+                }
             }
         }
     }
@@ -225,7 +217,7 @@ void relay_rule_engine_set_defaults(relay_rule_config_t *config)
     config->signal_timeout_ms = 1000U;
     for (unsigned i = 0; i < RELAY_RULE_MAX_RULES; ++i) {
         snprintf(config->rules[i].label, sizeof(config->rules[i].label),
-                 "Rule %u", i + 1U);
+                 "Output %u", i + 1U);
     }
     /* These are always available; the remaining slots are for reusable DBC
      * signals received from CAN. */
@@ -278,12 +270,12 @@ bool relay_rule_engine_validate(const relay_rule_config_t *config, uint8_t can_t
         const relay_output_rule_t *output = &config->rules[rule];
         if (strnlen(output->label, sizeof(output->label)) >= sizeof(output->label) ||
             output->case_count > RELAY_RULE_MAX_CASES) return false;
-        if (!output->enabled) continue;
-        if (output->case_count == 0U) return false;
+        if (output->enabled && output->case_count == 0U) return false;
+        if (output->case_count == 0U) continue;
         for (unsigned c = 0; c < output->case_count; ++c) {
             const relay_rule_case_t *entry = &output->cases[c];
             if (entry->test_count == 0U || entry->test_count > RELAY_RULE_MAX_TESTS ||
-                entry->action > RELAY_ACTION_PULSE) return false;
+                entry->action > RELAY_ACTION_PWM) return false;
             for (unsigned test = 0; test < entry->test_count; ++test) {
                 const relay_rule_test_t *predicate = &entry->tests[test];
                 if (predicate->type > RELAY_TEST_UPTIME || predicate->comparison > RELAY_COMPARE_NE ||
@@ -305,6 +297,19 @@ bool relay_rule_engine_validate(const relay_rule_config_t *config, uint8_t can_t
                         (p->on_time_ms != p->period_ms && p->period_ms - p->on_time_ms < interval) ||
                         (point > 0U && p->input_value <= entry->pulse_points[point - 1U].input_value)) return false;
                 }
+            } else if (entry->action == RELAY_ACTION_PWM) {
+                if (entry->pwm_source_index >= RELAY_RULE_MAX_SOURCES ||
+                    config->sources[entry->pwm_source_index].type == RELAY_SOURCE_UNUSED ||
+                    entry->pwm_point_count == 0U ||
+                    entry->pwm_point_count > RELAY_RULE_MAX_PWM_POINTS ||
+                    !finite_float(entry->pwm_hysteresis) || entry->pwm_hysteresis < 0.0f) return false;
+                for (unsigned point = 0; point < entry->pwm_point_count; ++point) {
+                    const relay_pwm_point_t *p = &entry->pwm_points[point];
+                    if (!finite_float(p->input_value) || p->duty_percent > 100U ||
+                        (point > 0U && p->input_value <= entry->pwm_points[point - 1U].input_value)) {
+                        return false;
+                    }
+                }
             }
         }
     }
@@ -315,16 +320,16 @@ static bool decode_config(uint8_t *blob, size_t length, relay_rule_config_t *con
 {
     if (blob == NULL || length < sizeof(compact_header_t)) return false;
     compact_header_t *header = (compact_header_t *)blob;
-    const bool legacy_v1 = header->version == 1U;
-    const size_t rule_size = legacy_v1 ? sizeof(compact_rule_v1_t) : sizeof(compact_rule_t);
     const size_t expected = sizeof(*header) + header->source_count * sizeof(compact_source_t) +
-                            header->rule_count * rule_size;
+                            header->rule_count * sizeof(compact_rule_t);
     const uint32_t saved_crc = header->crc32;
     header->crc32 = 0U;
     if (header->magic != RULE_COMPACT_MAGIC ||
-        (!legacy_v1 && header->version != RULE_COMPACT_VERSION) ||
-        header->source_count > RELAY_RULE_MAX_SOURCES || header->rule_count > RELAY_RULE_MAX_RULES ||
-        header->total_size != length || expected != length || saved_crc != crc32(blob, length)) {
+        header->version != RULE_COMPACT_VERSION ||
+        header->source_count > RELAY_RULE_MAX_SOURCES ||
+        header->rule_count > RELAY_RULE_MAX_RULES ||
+        header->total_size != length || expected != length ||
+        saved_crc != crc32(blob, length)) {
         return false;
     }
     relay_rule_engine_set_defaults(config);
@@ -334,38 +339,16 @@ static bool decode_config(uint8_t *blob, size_t length, relay_rule_config_t *con
     bool used_rules[RELAY_RULE_MAX_RULES] = {0};
     for (unsigned i = 0; i < header->source_count; ++i) {
         compact_source_t entry;
-        memcpy(&entry, blob + offset, sizeof(entry)); offset += sizeof(entry);
+        memcpy(&entry, blob + offset, sizeof(entry));
+        offset += sizeof(entry);
         if (entry.slot >= RELAY_RULE_MAX_SOURCES || used_sources[entry.slot]) return false;
         used_sources[entry.slot] = true;
         config->sources[entry.slot] = entry.source;
     }
     for (unsigned i = 0; i < header->rule_count; ++i) {
-        if (legacy_v1) {
-            compact_rule_v1_t entry;
-            memcpy(&entry, blob + offset, sizeof(entry)); offset += sizeof(entry);
-            if (entry.slot >= RELAY_RULE_MAX_RULES || used_rules[entry.slot] ||
-                entry.rule.case_count > RELAY_RULE_MAX_CASES) return false;
-            used_rules[entry.slot] = true;
-            relay_output_rule_t *rule = &config->rules[entry.slot];
-            memcpy(rule->label, entry.rule.label, sizeof(rule->label));
-            rule->enabled = entry.rule.enabled;
-            rule->case_count = entry.rule.case_count;
-            for (unsigned c = 0; c < rule->case_count; ++c) {
-                const relay_rule_case_v1_t *old_case = &entry.rule.cases[c];
-                relay_rule_case_t *new_case = &rule->cases[c];
-                new_case->test_count = old_case->test_count;
-                memcpy(new_case->tests, old_case->tests, sizeof(new_case->tests));
-                new_case->action = old_case->action;
-                new_case->pulse_source_index = old_case->pulse_source_index;
-                new_case->pulse_point_count = old_case->pulse_point_count;
-                memcpy(new_case->pulse_points, old_case->pulse_points,
-                       sizeof(new_case->pulse_points));
-                new_case->pulse_hysteresis = 0.0f;
-            }
-            continue;
-        }
         compact_rule_t entry;
-        memcpy(&entry, blob + offset, sizeof(entry)); offset += sizeof(entry);
+        memcpy(&entry, blob + offset, sizeof(entry));
+        offset += sizeof(entry);
         if (entry.slot >= RELAY_RULE_MAX_RULES || used_rules[entry.slot]) return false;
         used_rules[entry.slot] = true;
         config->rules[entry.slot] = entry.rule;
@@ -411,7 +394,7 @@ static int newest_slot(const bool valid[RULE_SLOT_COUNT],
     return (int32_t)(headers[1].generation - headers[0].generation) > 0 ? 1 : 0;
 }
 
-static bool load_config(relay_rule_config_t *config)
+static bool load_config(relay_rule_config_t *config, bool *record_present)
 {
     const esp_partition_t *partition = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, RULE_CONFIG_PARTITION);
@@ -421,6 +404,7 @@ static bool load_config(relay_rule_config_t *config)
     for (unsigned slot = 0; slot < RULE_SLOT_COUNT; ++slot)
         valid[slot] = read_rule_slot(partition, slot, &headers[slot], &payloads[slot]);
 
+    if (record_present != NULL) *record_present = valid[0] || valid[1];
     const int newest = newest_slot(valid, headers);
     bool loaded = newest >= 0 && decode_config(payloads[newest], headers[newest].payload_size, config);
     if (!loaded && newest >= 0) {
@@ -505,7 +489,7 @@ static bool save_config(const relay_rule_config_t *config)
     free(verified_payload);
     if (!verified) result = ESP_FAIL;
     if (result == ESP_OK) {
-        ESP_LOGI(TAG, "Saved compact rules: %u configured rules, %u CAN sources, %u bytes",
+        ESP_LOGI(TAG, "Saved Outputs: %u configured Outputs, %u CAN sources, %u bytes",
                  (unsigned)rule_count, (unsigned)source_count, (unsigned)stored_length);
     }
     free(stored);
@@ -521,17 +505,27 @@ void relay_rule_engine_init(void)
     rule_runtime = heap_caps_calloc(RELAY_RULE_MAX_RULES, sizeof(*rule_runtime),
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (active_config == NULL || source_runtime == NULL || rule_runtime == NULL) {
-        ESP_LOGE(TAG, "Could not allocate rule engine state in PSRAM");
+        ESP_LOGE(TAG, "Could not allocate Output engine state in PSRAM");
         abort();
     }
     rule_mutex = xSemaphoreCreateMutex();
     if (rule_mutex == NULL) abort();
-    if (load_config(active_config)) {
-        ESP_LOGI(TAG, "Relay rule config loaded from dedicated rules partition");
+    bool existing_record = false;
+    if (load_config(active_config, &existing_record)) {
+        ESP_LOGI(TAG, "Output configuration loaded from dedicated storage");
     } else {
-        ESP_LOGW(TAG, "No valid relay rule config found; using defaults");
+        if (existing_record) {
+            ESP_LOGW(TAG, "Legacy pre-Output record rejected by configuration version %u; initializing eight empty Outputs",
+                     RULE_CONFIG_VERSION);
+        } else {
+            ESP_LOGW(TAG, "No valid Output configuration found; initializing eight empty Outputs");
+        }
         relay_rule_engine_set_defaults(active_config);
-        if (!save_config(active_config)) ESP_LOGW(TAG, "Could not persist default rules");
+        if (!save_config(active_config)) {
+            ESP_LOGW(TAG, "Could not persist empty Output configuration");
+        } else if (existing_record && !save_config(active_config)) {
+            ESP_LOGW(TAG, "Could not replace the legacy backup slot with empty Outputs");
+        }
     }
     log_rule_config(active_config);
     reset_runtime();
@@ -727,7 +721,39 @@ static bool pulse_value(const relay_rule_case_t *entry, float input, uint32_t no
            now_ms - runtime->pulse_started_ms < runtime->pulse_on_time_ms;
 }
 
-void relay_rule_engine_make_command(uint32_t now_ms, relay_command_t *command)
+static uint8_t interpolate_pwm_duty(const relay_rule_case_t *entry, float input)
+{
+    if (input <= entry->pwm_points[0].input_value) return entry->pwm_points[0].duty_percent;
+    const unsigned last = entry->pwm_point_count - 1U;
+    if (input >= entry->pwm_points[last].input_value) return entry->pwm_points[last].duty_percent;
+
+    unsigned upper = 1U;
+    while (upper < entry->pwm_point_count && input > entry->pwm_points[upper].input_value) ++upper;
+    const relay_pwm_point_t *a = &entry->pwm_points[upper - 1U];
+    const relay_pwm_point_t *b = &entry->pwm_points[upper];
+    const float ratio = (input - a->input_value) / (b->input_value - a->input_value);
+    long duty = lroundf((float)a->duty_percent +
+                        ratio * ((float)b->duty_percent - (float)a->duty_percent));
+    if (duty < 0L) duty = 0L;
+    if (duty > 100L) duty = 100L;
+    return (uint8_t)duty;
+}
+
+static uint8_t pwm_value(const relay_rule_case_t *entry, float input, bool continue_lookup,
+                         rule_runtime_t *runtime)
+{
+    if (!continue_lookup || !runtime->pwm_input_valid) {
+        runtime->pwm_input_value = input;
+        runtime->pwm_input_valid = true;
+        runtime->duty_percent = interpolate_pwm_duty(entry, input);
+    } else if (fabsf(input - runtime->pwm_input_value) > entry->pwm_hysteresis) {
+        runtime->pwm_input_value = input;
+        runtime->duty_percent = interpolate_pwm_duty(entry, input);
+    }
+    return runtime->duty_percent;
+}
+
+void relay_rule_engine_make_command(uint32_t now_ms, output_command_t *command)
 {
     if (command == NULL || rule_mutex == NULL) return;
     memset(command, 0, sizeof(*command));
@@ -737,11 +763,14 @@ void relay_rule_engine_make_command(uint32_t now_ms, relay_command_t *command)
         const relay_output_rule_t *output = &active_config->rules[r];
         rule_runtime_t *runtime = &rule_runtime[r];
         const bool was_pulse_active = runtime->pulse_active;
+        const bool was_pwm_active = runtime->pwm_active;
         const bool was_on = runtime->state;
         const int8_t previous_case = runtime->selected_case;
-        runtime->state = false; runtime->valid = false; runtime->pulse_active = false; runtime->selected_case = -1;
+        runtime->state = false; runtime->valid = false; runtime->pulse_active = false;
+        runtime->pwm_active = false; runtime->selected_case = -1;
         runtime->invalid_case = -1; runtime->invalid_test = -1; runtime->invalid_source = -1;
-        runtime->invalid_pulse_source = false; runtime->invalid_reason = RELAY_RULE_INVALID_NONE;
+        runtime->invalid_pulse_source = false; runtime->invalid_pwm_source = false;
+        runtime->invalid_reason = RELAY_RULE_INVALID_NONE;
         if (!output->enabled) continue;
         bool invalid = false;
         for (unsigned c = 0; c < output->case_count; ++c) {
@@ -782,6 +811,23 @@ void relay_rule_engine_make_command(uint32_t now_ms, relay_command_t *command)
                 runtime->state = pulse_value(entry, source->accepted_value, now_ms,
                                              was_pulse_active && previous_case == (int8_t)c,
                                              was_on, runtime);
+            } else if (entry->action == RELAY_ACTION_PWM) {
+                const source_runtime_t *source = &source_runtime[entry->pwm_source_index];
+                if (!source->accepted_valid ||
+                    now_ms - source->last_seen_ms >= active_config->signal_timeout_ms) {
+                    runtime->valid = false;
+                    runtime->invalid_case = (int8_t)c;
+                    runtime->invalid_source = (int8_t)entry->pwm_source_index;
+                    runtime->invalid_pwm_source = true;
+                    runtime->invalid_reason = invalid_source_reason(source, now_ms);
+                    invalid = true;
+                    break;
+                }
+                runtime->pwm_active = true;
+                runtime->duty_percent = pwm_value(
+                    entry, source->accepted_value,
+                    was_pwm_active && previous_case == (int8_t)c, runtime);
+                runtime->state = runtime->duty_percent == 100U;
             }
             break;
         }
@@ -793,9 +839,16 @@ void relay_rule_engine_make_command(uint32_t now_ms, relay_command_t *command)
             runtime->pulse_input_value = 0.0f;
             runtime->pulse_input_valid = false;
         }
-        if (runtime->state) command->state_mask |= (uint16_t)(1U << r);
-        if (runtime->valid) command->valid_mask |= (uint16_t)(1U << r);
-        if (runtime->pulse_active) command->pulse_mask |= (uint16_t)(1U << r);
+        if (!runtime->pwm_active) {
+            runtime->pwm_input_value = 0.0f;
+            runtime->pwm_input_valid = false;
+            runtime->duty_percent = 0U;
+        }
+        if (runtime->state) command->state_mask |= (uint8_t)(1U << r);
+        if (runtime->valid) command->valid_mask |= (uint8_t)(1U << r);
+        if (runtime->pulse_active) command->pulse_mask |= (uint8_t)(1U << r);
+        if (runtime->valid && runtime->pwm_active)
+            command->duty_percent[r] = runtime->duty_percent;
     }
     xSemaphoreGive(rule_mutex);
 }
@@ -819,6 +872,8 @@ void relay_rule_engine_get_status(relay_rule_status_t rules[RELAY_RULE_MAX_RULES
             .valid = runtime->valid,
             .state = runtime->state,
             .pulse_active = runtime->pulse_active,
+            .pwm_active = runtime->pwm_active,
+            .duty_percent = runtime->duty_percent,
             .selected_case = runtime->selected_case,
             .pulse_on_time_ms = runtime->pulse_on_time_ms,
             .pulse_period_ms = runtime->pulse_period_ms,
@@ -827,6 +882,7 @@ void relay_rule_engine_get_status(relay_rule_status_t rules[RELAY_RULE_MAX_RULES
             .invalid_test = runtime->invalid_test,
             .invalid_source = runtime->invalid_source,
             .invalid_pulse_source = runtime->invalid_pulse_source,
+            .invalid_pwm_source = runtime->invalid_pwm_source,
             .invalid_reason = runtime->invalid_reason,
         };
     }

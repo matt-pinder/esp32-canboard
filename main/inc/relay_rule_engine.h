@@ -6,11 +6,12 @@
 #include "driver/twai_types_legacy.h"
 #include "relay_command_protocol.h"
 
-#define RELAY_RULE_MAX_RULES 16U
+#define RELAY_RULE_MAX_RULES OUTPUT_COMMAND_COUNT
 #define RELAY_RULE_MAX_SOURCES 64U
 #define RELAY_RULE_MAX_CASES 4U
 #define RELAY_RULE_MAX_TESTS 4U
 #define RELAY_RULE_MAX_PULSE_POINTS 8U
+#define RELAY_RULE_MAX_PWM_POINTS 8U
 #define RELAY_RULE_NAME_LENGTH 32U
 
 typedef enum {
@@ -33,6 +34,7 @@ typedef enum {
     RELAY_ACTION_OFF = 0,
     RELAY_ACTION_ON,
     RELAY_ACTION_PULSE,
+    RELAY_ACTION_PWM,
 } relay_action_t;
 
 typedef enum {
@@ -45,6 +47,11 @@ typedef struct {
     uint32_t on_time_ms;
     uint32_t period_ms;
 } relay_pulse_point_t;
+
+typedef struct {
+    float input_value;
+    uint8_t duty_percent;
+} relay_pwm_point_t;
 
 typedef struct {
     char name[RELAY_RULE_NAME_LENGTH];
@@ -78,6 +85,10 @@ typedef struct {
     uint8_t pulse_point_count;
     relay_pulse_point_t pulse_points[RELAY_RULE_MAX_PULSE_POINTS];
     float pulse_hysteresis;
+    uint8_t pwm_source_index;
+    uint8_t pwm_point_count;
+    relay_pwm_point_t pwm_points[RELAY_RULE_MAX_PWM_POINTS];
+    float pwm_hysteresis;
 } relay_rule_case_t;
 
 typedef struct {
@@ -118,6 +129,8 @@ typedef struct {
     bool valid;
     bool state;
     bool pulse_active;
+    bool pwm_active;
+    uint8_t duty_percent;
     int8_t selected_case;
     uint32_t pulse_on_time_ms;
     uint32_t pulse_period_ms;
@@ -126,6 +139,7 @@ typedef struct {
     int8_t invalid_test;
     int8_t invalid_source;
     bool invalid_pulse_source;
+    bool invalid_pwm_source;
     relay_rule_invalid_reason_t invalid_reason;
 } relay_rule_status_t;
 
@@ -139,7 +153,7 @@ bool relay_rule_engine_validate(const relay_rule_config_t *config, uint8_t can_t
 void relay_rule_engine_ingest_can(const twai_message_t *message, uint32_t now_ms);
 void relay_rule_engine_ingest_local(uint8_t channel, bool converted, float value,
                                     uint32_t now_ms);
-void relay_rule_engine_make_command(uint32_t now_ms, relay_command_t *command);
+void relay_rule_engine_make_command(uint32_t now_ms, output_command_t *command);
 void relay_rule_engine_get_status(relay_rule_status_t rules[RELAY_RULE_MAX_RULES],
                                   relay_rule_source_status_t sources[RELAY_RULE_MAX_SOURCES],
                                   uint32_t now_ms);

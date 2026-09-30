@@ -100,30 +100,193 @@ static void test_malformed_packets(void)
     assert(espnow_can_encode_batch(packet, sizeof(packet), &meta, &frame, 0U) == 0U);
 }
 
-static void test_relay_command_encoding(void)
+static void reference_pack_duty(uint8_t data[OUTPUT_DUTY_FRAME_DLC],
+                                const uint8_t duties[OUTPUT_COMMAND_COUNT], uint8_t counter)
 {
-    const relay_command_t command = {
-        .state_mask = 0x8001U, .valid_mask = 0x0F02U,
-        .pulse_mask = 0x4004U, .counter = 0xA5U,
+    memset(data, 0, OUTPUT_DUTY_FRAME_DLC);
+    for (unsigned output = 0; output < OUTPUT_COMMAND_COUNT; ++output)
+    {
+        for (unsigned bit = 0; bit < 7U; ++bit)
+        {
+            if ((duties[output] & (1U << bit)) == 0U) continue;
+            const unsigned packed_bit = output * 7U + bit;
+            data[packed_bit / 8U] |= (uint8_t)(1U << (packed_bit % 8U));
+        }
+    }
+    data[7] = counter;
+}
+
+static void test_output_binary_encoding(void)
+{
+    const output_command_t command = {
+        .state_mask = 0x81U,
+        .valid_mask = 0x42U,
+        .pulse_mask = 0x24U,
+        .counter = 0xA5U,
     };
-    uint8_t bytes[RELAY_COMMAND_FRAME_DLC];
-    relay_command_encode(bytes, &command);
-    const uint8_t expected[RELAY_COMMAND_FRAME_DLC] =
-        {0x01U, 0x80U, 0x02U, 0x0FU, 0x04U, 0x40U, 0xA5U, 0x01U};
+    uint8_t bytes[OUTPUT_BINARY_FRAME_DLC];
+    assert(output_binary_encode(bytes, &command));
+    const uint8_t expected[OUTPUT_BINARY_FRAME_DLC] =
+        {0x81U, 0x00U, 0x42U, 0x00U, 0x24U, 0x00U, 0xA5U, 0x02U};
     assert(memcmp(bytes, expected, sizeof(bytes)) == 0);
-    relay_command_t decoded;
-    assert(relay_command_decode(bytes, &decoded));
-    assert(memcmp(&command, &decoded, sizeof(command)) == 0);
-    bytes[7] = 2U;
-    assert(!relay_command_decode(bytes, &decoded));
-    assert(relay_command_can_id(0x7FAU) == 0x7FFU);
+
+    output_command_t decoded;
+    assert(output_binary_decode(bytes, &decoded));
+    assert(decoded.state_mask == command.state_mask);
+    assert(decoded.valid_mask == command.valid_mask);
+    assert(decoded.pulse_mask == command.pulse_mask);
+    assert(decoded.counter == command.counter);
+
+    bytes[7] = 1U;
+    assert(!output_binary_decode(bytes, &decoded));
+    bytes[7] = OUTPUT_COMMAND_PROTOCOL_VERSION;
+    bytes[1] = 1U;
+    assert(!output_binary_decode(bytes, &decoded));
+    bytes[1] = 0U;
+    bytes[3] = 1U;
+    assert(!output_binary_decode(bytes, &decoded));
+    bytes[3] = 0U;
+    bytes[5] = 1U;
+    assert(!output_binary_decode(bytes, &decoded));
+
+    assert(output_command_base_can_id_valid(0x000U));
+    assert(output_command_base_can_id_valid(0x7F9U));
+    assert(!output_command_base_can_id_valid(0x7FAU));
+    assert(output_binary_can_id(0x7F9U) == 0x7FEU);
+    assert(output_duty_can_id(0x7F9U) == 0x7FFU);
+    assert(output_command_can_id_reserved(0x100U, 0x105U));
+    assert(output_command_can_id_reserved(0x100U, 0x106U));
+    assert(!output_command_can_id_reserved(0x100U, 0x104U));
+}
+
+static void test_output_duty_encoding(void)
+{
+    output_command_t command = {
+        .duty_percent = {0U, 1U, 99U, 100U, 1U, 99U, 100U, 0U},
+        .counter = 0xFEU,
+    };
+    uint8_t bytes[OUTPUT_DUTY_FRAME_DLC];
+    uint8_t expected[OUTPUT_DUTY_FRAME_DLC];
+    reference_pack_duty(expected, command.duty_percent, command.counter);
+    assert(output_duty_encode(bytes, &command));
+    assert(memcmp(bytes, expected, sizeof(bytes)) == 0);
+
+    output_command_t decoded = {0};
+    assert(output_duty_decode(bytes, &decoded));
+    assert(memcmp(decoded.duty_percent, command.duty_percent,
+                  sizeof(command.duty_percent)) == 0);
+    assert(decoded.counter == command.counter);
+
+    static const uint8_t boundaries[] = {0U, 1U, 99U, 100U};
+    for (unsigned output = 0; output < OUTPUT_COMMAND_COUNT; ++output)
+    {
+        for (unsigned value = 0; value < sizeof(boundaries); ++value)
+        {
+            memset(&command, 0, sizeof(command));
+            command.duty_percent[output] = boundaries[value];
+            command.counter = (uint8_t)(output * 16U + value);
+            reference_pack_duty(expected, command.duty_percent, command.counter);
+            assert(output_duty_encode(bytes, &command));
+            assert(memcmp(bytes, expected, sizeof(bytes)) == 0);
+            memset(&decoded, 0, sizeof(decoded));
+            assert(output_duty_decode(bytes, &decoded));
+            assert(decoded.duty_percent[output] == boundaries[value]);
+            assert(decoded.counter == command.counter);
+        }
+    }
+
+    for (unsigned output = 0; output < OUTPUT_COMMAND_COUNT; ++output)
+    {
+        for (unsigned invalid = 101U; invalid <= 127U; ++invalid)
+        {
+            memset(&command, 0, sizeof(command));
+            command.duty_percent[output] = (uint8_t)invalid;
+            assert(!output_duty_encode(bytes, &command));
+
+            memset(bytes, 0, sizeof(bytes));
+            uint8_t malformed[OUTPUT_COMMAND_COUNT] = {0};
+            malformed[output] = (uint8_t)invalid;
+            reference_pack_duty(bytes, malformed, 0U);
+            assert(!output_duty_decode(bytes, &decoded));
+        }
+    }
+}
+
+static void test_output_pair_espnow_order(void)
+{
+    const output_command_t command = {
+        .state_mask = 0x80U,
+        .valid_mask = 0xFFU,
+        .pulse_mask = 0x01U,
+        .duty_percent = {0U, 1U, 25U, 50U, 75U, 99U, 100U, 0U},
+        .counter = 0x5AU,
+    };
+    espnow_can_frame_t frames[2] = {
+        {.identifier = output_binary_can_id(0x100U), .data_length_code = 8U},
+        {.identifier = output_duty_can_id(0x100U), .data_length_code = 8U},
+    };
+    assert(output_binary_encode(frames[0].data, &command));
+    assert(output_duty_encode(frames[1].data, &command));
+
+    const espnow_can_batch_meta_t meta = {.sequence = 9U};
+    uint8_t packet[ESPNOW_CAN_MAX_PACKET_SIZE];
+    const size_t size = espnow_can_encode_batch(packet, sizeof(packet), &meta, frames, 2U);
+    assert(size != 0U);
+
+    espnow_can_batch_meta_t decoded_meta;
+    uint8_t count = 0U;
+    assert(espnow_can_decode_header(packet, size, &decoded_meta, &count));
+    assert(count == 2U);
+    espnow_can_frame_t binary_frame;
+    espnow_can_frame_t duty_frame;
+    assert(espnow_can_decode_frame(packet, size, 0U, &binary_frame));
+    assert(espnow_can_decode_frame(packet, size, 1U, &duty_frame));
+    assert(binary_frame.identifier == 0x105U);
+    assert(duty_frame.identifier == 0x106U);
+
+    output_command_t paired;
+    assert(output_command_decode_pair(binary_frame.data, duty_frame.data, &paired));
+    assert(paired.counter == command.counter);
+    assert(memcmp(paired.duty_percent, command.duty_percent,
+                  sizeof(command.duty_percent)) == 0);
+}
+
+static void test_output_pairing(void)
+{
+    output_command_t command = {
+        .state_mask = 0x01U,
+        .valid_mask = 0x03U,
+        .pulse_mask = 0x02U,
+        .duty_percent = {100U, 0U, 1U, 99U, 50U, 25U, 75U, 100U},
+        .counter = 0xFFU,
+    };
+    uint8_t binary[OUTPUT_BINARY_FRAME_DLC];
+    uint8_t duty[OUTPUT_DUTY_FRAME_DLC];
+    assert(output_binary_encode(binary, &command));
+    assert(output_duty_encode(duty, &command));
+
+    output_command_t decoded;
+    assert(output_command_decode_pair(binary, duty, &decoded));
+    assert(decoded.counter == 0xFFU);
+    assert(decoded.state_mask == command.state_mask);
+    assert(memcmp(decoded.duty_percent, command.duty_percent,
+                  sizeof(command.duty_percent)) == 0);
+
+    duty[7] = 0U; /* Normal counter wrap for the next pair, mismatch for this pair. */
+    assert(!output_command_decode_pair(binary, duty, &decoded));
+    binary[6] = 0U;
+    assert(output_command_decode_pair(binary, duty, &decoded));
+    assert(decoded.counter == 0U);
 }
 
 int main(void)
 {
     test_round_trips();
     test_malformed_packets();
-    test_relay_command_encoding();
+    test_output_binary_encoding();
+    test_output_duty_encoding();
+    test_output_pair_espnow_order();
+    test_output_pairing();
     puts("espnow_can_protocol tests passed");
     return 0;
 }

@@ -188,7 +188,8 @@ esp_err_t can_deinit(void) {
 void can_transmit_frame(const twai_message_t *message, const char *label) {
     static TickType_t last_espnow_warn = 0;
 
-    if (!message->extd && message->identifier != relay_command_can_id(board_cfg.can_start_id)) {
+    if (!message->extd &&
+        !output_command_can_id_reserved(board_cfg.can_start_id, message->identifier)) {
         relay_rule_engine_ingest_can(message,
                                      (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
     }
@@ -269,7 +270,8 @@ void canReceiveDispatch(void *arg)
             }
             drained++;
             received_count++;
-            if (!message.extd && message.identifier == relay_command_can_id(board_cfg.can_start_id)) {
+            if (!message.extd &&
+                output_command_can_id_reserved(board_cfg.can_start_id, message.identifier)) {
                 continue;
             }
             relay_rule_engine_ingest_can(&message,
@@ -480,12 +482,24 @@ void canTransmit(void *arg)
 
         can_transmit_frame(&msg5, "dynamic msg5");
 
-        relay_command_t relay_command;
-        relay_rule_engine_make_command(rules_now_ms, &relay_command);
-        twai_message_t relay_command_message = init_twai_message(
-            relay_command_can_id(board_cfg.can_start_id));
-        relay_command_encode(relay_command_message.data, &relay_command);
-        can_transmit_frame(&relay_command_message, "relay rules");
+        output_command_t output_command;
+        relay_rule_engine_make_command(rules_now_ms, &output_command);
+
+        twai_message_t output_binary_message = init_twai_message(
+            output_binary_can_id(board_cfg.can_start_id));
+        if (output_binary_encode(output_binary_message.data, &output_command)) {
+            can_transmit_frame(&output_binary_message, "Output binary commands");
+        } else {
+            ESP_LOGE(can_log, "Failed to encode Output binary command frame");
+        }
+
+        twai_message_t output_duty_message = init_twai_message(
+            output_duty_can_id(board_cfg.can_start_id));
+        if (output_duty_encode(output_duty_message.data, &output_command)) {
+            can_transmit_frame(&output_duty_message, "Output duty commands");
+        } else {
+            ESP_LOGE(can_log, "Failed to encode Output duty command frame");
+        }
 
         bool any_emub = false;
         uint8_t emub_bytes[8] = {0};

@@ -3,7 +3,7 @@
 
 /// @brief Start HTTP server with REST API endpoints and SPIFFS mount
 /// Serves index.min.html.gz from SPIFFS and provides REST API for:
-/// - GET /api/config: Retrieve aggregate board and output-rule configuration
+/// - GET /api/config: Retrieve aggregate board and Output configuration
 /// - POST /api/config: Validate, persist, and apply the whole configuration
 /// - POST /api/reboot: Reboot the device
 /// - GET /api/ntc_tables: List available NTC lookup tables

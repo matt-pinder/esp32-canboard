@@ -29,7 +29,7 @@ The web UI allows you to:
 - View and edit per-channel settings (name, sensor type, pull-up, **filter level** dropdown, pressure calibration).
 - Configure required CAN parameters - Base ID and bus speed.
 - Configure CAN and ESP-NOW output, including optional CAN bus relay over ESP-NOW.
-- Configure up to 16 relay output rules using local sensor values, DBC-imported CAN signals, timers, and pulse lookup tables.
+- Configure up to 8 Outputs using local sensor values, DBC-imported CAN signals, timers, PULSE lookup tables, and PWM duty lookup tables.
 - Adjust pullup vref calculation voltage to allow for LDO regulator output/load.
 - View current input voltages and calculated values in real time.
 - Backup the entire configuration to a JSON file.
@@ -40,12 +40,12 @@ The web UI allows you to:
 | Function | Description |
 |:----|:----|
 | Save Config | Save current UI settings to the dedicated `config` NVS partition. Changes are validated, persisted and applied immediately. |
-| Backup | Download one JSON snapshot containing the board configuration and output rules. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
-| Restore | Select a previously exported JSON file. The backend validates and applies the board configuration and output rules together while retaining their separate flash records. |
+| Backup | Download one JSON snapshot containing the board configuration and Outputs. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
+| Restore | Select a previously exported JSON file. The backend validates and applies the board configuration and Outputs together while retaining their separate flash records. Legacy `rules` data is never imported. |
 | Reboot Device | Reboots the device. |
 
 **Notes:**
-- Board configuration is persisted as one current record in the dedicated `config` NVS partition. Relay rules use a separate CRC-checked raw `rules` partition with atomic A/B writes, so rule size and updates cannot exhaust board-configuration NVS.
+- Board configuration is persisted as one current record in the dedicated `config` NVS partition. Outputs use the existing CRC-checked raw `rules` partition with atomic A/B writes; the partition location is unchanged even though the user-facing feature is now named Outputs.
 - On boot, firmware automatically imports a valid legacy `/spiffs/config.bin` into NVS when one is still present and verifies the committed record. The legacy file is left untouched.
 - Normal `idf.py flash` updates the application and SPIFFS web assets, but does not write the dedicated `config` partition. Before the first upgrade from a SPIFFS-stored configuration, export a JSON backup (or flash/boot the migration firmware without its SPIFFS target once); a normal project flash replaces the old shared SPIFFS image before firmware can import its config file.
 - `erase-flash`, whole-chip images, or explicitly flashing address `0x200000` will still erase configuration; ordinary application/partition-table flashing will not.
@@ -54,7 +54,7 @@ The web UI allows you to:
 
 ## CAN Output
 
-The device transmits five input-data frames and one relay-rule command frame starting at the configured base ID. All frames use DLC=8 and little-endian byte ordering.
+The device transmits five input-data frames followed by two Output command frames starting at the configured base ID. All frames use standard 11-bit CAN identifiers and DLC 8. Because the two Output frames occupy `Base ID + 5` and `Base ID + 6`, the configurable CAN base ID is restricted to `0x000` through `0x7F9`.
 
 | CAN ID | Name | Payload |
 |:---|:---|:---|
@@ -63,9 +63,13 @@ The device transmits five input-data frames and one relay-rule command frame sta
 | Base ID + 2 | analogVoltage_3 | Inputs 8..9 as two uint16 (bytes 0..3), dynamic0 (bytes 4..5), dynamic1 (bytes 6..7) |
 | Base ID + 3 | dynamicSignals_1 | dynamic2, dynamic3, dynamic4, dynamic5 as four 2-byte values (bytes 0..7) |
 | Base ID + 4 | dynamicSignals_2 | dynamic6, dynamic7, dynamic8, dynamic9 as four 2-byte values (bytes 0..7) |
-| Base ID + 5 | relayRuleCommands | Rule state, validity and pulse-mode bitmasks, followed by a rolling counter and format version |
+| Base ID + 5 | OutputBinaryCommands | Eight state bits, eight validity bits, eight pulse-mode bits, rolling counter, protocol version 2 |
+| Base ID + 6 | OutputDutyCommands | Eight packed 7-bit duty percentages and the matching rolling counter |
+
+The two Output frames are generated from one engine evaluation and one rolling counter. They are emitted in the order `Base + 5`, then `Base + 6`, after the five sensor frames at the configured 25 Hz or 50 Hz rate. When physical CAN is enabled both frames are sent to CAN, and both are also sent to every ESP-NOW client. The two Output CAN IDs are reserved: externally received frames colliding with either ID are not accepted as Output source data and are not re-relayed.
 
 Encoding rules for dynamic values (one per input):
+
 | Channel | Type | Encoding |
 |:---|:---|:---|
 |analogVoltage|-|unsigned uint16 = voltage * 1000 (resolution 0.001 V)|
@@ -73,45 +77,90 @@ Encoding rules for dynamic values (one per input):
 |dynamicSignal|Pressure|unsigned uint16 = pressure_kPa * 100 (resolution 0.01 kPa)|
 |dynamicSignal|NTC|signed int16 = temperature_C * 1 (°C as integer)|
 
-Example DBC for signal names and scaling: [dbc/esp32-canboard.dbc](dbc/esp32-canboard.dbc)
+Example DBCs for signal names and scaling are [dbc/esp32-canboard.dbc](dbc/esp32-canboard.dbc) and [dbc/esp32-canboard-outputs.dbc](dbc/esp32-canboard-outputs.dbc). The web UI also generates an Output DBC using the current base ID and configured Output labels.
 
-### Relay rule command frame
+### Outputs
 
-The standard CAN frame at `Base ID + 5` publishes the final output of all 16 relay rules. It always has DLC 8. Rule 1 uses bit 0 of each mask, Rule 2 uses bit 1, through to Rule 16 using bit 15.
+There are eight configurable Outputs. Ordered cases retain the existing first-match `IF` / `ELSE IF` behavior; tests within one case are ANDed, while additional cases provide OR-through-ELSE-IF behavior. The tests only select which case runs: a matching PULSE case still derives its ON/OFF phase from the pulse lookup, and a matching PWM case still derives duty from the PWM lookup (with binary `state=1` only at exactly 100% duty). Existing OFF, ON, and PULSE actions retain their binary behavior. PWM is a fourth action and has its own numeric duty value; it does not replace or reinterpret the binary state, valid, or pulse signals.
 
-In a downloaded output DBC, `Rule_x` is replaced by the sanitized configured output label. For example, a rule labelled `Diff Temp` produces `Diff_Temp_state`, `Diff_Temp_valid`, and `Diff_Temp_pulse`.
+Each PWM case selects one lookup source, a source hysteresis, and one through eight `{input_value, duty_percent}` rows. Input values must be finite and strictly increasing, and duties must be integer percentages from 0 through 100. Values below or above the lookup range clamp to the nearest endpoint. Values between rows are linearly interpolated and rounded to the nearest percentage. Duty is calculated immediately when a PWM case is entered, then held until the source differs from the accepted lookup input by **more than** the configured hysteresis. Entering another case, replacing configuration, startup, or source invalidation resets that PWM runtime state.
+
+Source freshness and zero-confirmation rules apply equally to tests, PULSE lookup sources, and PWM lookup sources. A missing, stale, or not-yet-confirmed PWM source publishes `valid=0`, `state=0`, `pulse=0`, and duty `0`.
+
+#### `Base ID + 5`: binary Output frame
+
+Protocol version 2 keeps binary state, validity, and pulse mode independent. Only the low byte of each former 16-bit mask is used; the upper byte is required to be zero.
 
 | Bytes | Encoding | Meaning |
 |:---|:---|:---|
-| 0..1 | uint16 little-endian | `Rule_x_state` bits |
-| 2..3 | uint16 little-endian | `Rule_x_valid` bits |
-| 4..5 | uint16 little-endian | `Rule_x_pulse` bits |
-| 6 | uint8 | Rolling frame counter, wrapping from 255 to 0 |
-| 7 | uint8 | Frame format version, currently `1` |
+| 0 | uint8 bitmask | Output 1..8 state bits |
+| 1 | uint8 | Reserved, must be `0` |
+| 2 | uint8 bitmask | Output 1..8 validity bits |
+| 3 | uint8 | Reserved, must be `0` |
+| 4 | uint8 bitmask | Output 1..8 PULSE-mode bits |
+| 5 | uint8 | Reserved, must be `0` |
+| 6 | uint8 | Rolling counter, wraps `255 -> 0` |
+| 7 | uint8 | Protocol version, exactly `2` |
 
-For each rule:
+For one Output, the action semantics are:
 
-- `Rule_x_state` is the rule's final commanded output at this instant. `1` requests relay ON and `0` requests relay OFF.
-- `Rule_x_valid` says whether the rule had all data required to make a safe decision. A consumer must energize a relay only when both `state` and `valid` are `1`. A stale, missing, or still-zero-confirming required source clears `valid` and forces the command safely OFF.
-- `Rule_x_pulse` says that the currently selected rule case is using the PULSE action. It is mode/status information, not an ON command. It remains `1` during both the ON and OFF portions of the pulse cycle; `state` identifies the current portion. A continuous ON rule has `pulse=0`, while a pulse lookup that currently resolves to continuous ON can have both `state=1` and `pulse=1`.
+| Action / condition | state | valid | pulse | duty |
+|:---|:---:|:---:|:---:|:---:|
+| OFF | 0 | 1 | 0 | 0 |
+| ON | 1 | 1 | 0 | 0 |
+| PULSE, currently OFF | 0 | 1 | 1 | 0 |
+| PULSE, currently ON | 1 | 1 | 1 | 0 |
+| PWM, duty 0..99% | 0 | 1 | 0 | 0..99 |
+| PWM, duty exactly 100% | 1 | 1 | 0 | 100 |
+| Invalid / stale | 0 | 0 | 0 | 0 |
 
-The relay output decision is therefore:
+For OFF/ON/PULSE consumers, the safe applied binary state remains:
 
 ```text
-applied relay state = Rule_x_valid AND Rule_x_state
+applied binary state = valid AND state
 ```
 
-Examples for an otherwise empty command frame (`CC` is the rolling counter):
+For PWM, `state` is **not** a PWM-enabled flag. It is `1` only when the calculated duty is exactly 100%; duty 0 through 99 publishes `state=0`. Downstream configuration determines whether an Output should consume the duty field.
 
-| Situation | State / valid / pulse | CAN data bytes |
+Examples for an otherwise empty binary frame (`CC` is the shared rolling counter):
+
+| Situation | state / valid / pulse | `Base + 5` data bytes |
 |:---|:---|:---|
-| Rule 1 continuously ON | `1 / 1 / 0` | `01 00 01 00 00 00 CC 01` |
-| Rule 1 validly OFF because no case matched | `0 / 1 / 0` | `00 00 01 00 00 00 CC 01` |
-| Rule 2 in the ON portion of a pulse cycle | `1 / 1 / 1` | `02 00 02 00 02 00 CC 01` |
-| Rule 2 in the OFF portion of the same pulse cycle | `0 / 1 / 1` | `00 00 02 00 02 00 CC 01` |
-| Rule 2 invalid because its required input is stale | `0 / 0 / 0` | `00 00 00 00 00 00 CC 01` |
+| Output 1 continuously ON | `1 / 1 / 0` | `01 00 01 00 00 00 CC 02` |
+| Output 1 validly OFF | `0 / 1 / 0` | `00 00 01 00 00 00 CC 02` |
+| Output 2 in PULSE ON phase | `1 / 1 / 1` | `02 00 02 00 02 00 CC 02` |
+| Output 2 in PULSE OFF phase | `0 / 1 / 1` | `00 00 02 00 02 00 CC 02` |
+| Output 1 PWM at 50% | `0 / 1 / 0` | `00 00 01 00 00 00 CC 02` |
+| Output 1 PWM at 100% | `1 / 1 / 0` | `01 00 01 00 00 00 CC 02` |
+| Output invalid | `0 / 0 / 0` | `00 00 00 00 00 00 CC 02` |
 
-For example, `Rule_2_pulse=1` and `Rule_2_state=0` does not indicate a fault: it means Rule 2 is validly waiting in the OFF portion of its pulse cycle. Conversely, `Rule_2_valid=0` is fail-safe OFF even if a malformed or older sender were to leave its state bit set.
+#### `Base ID + 6`: duty frame
+
+The duty frame packs eight unsigned 7-bit fields into bits 0 through 55. Values 101 through 127 are malformed and must be rejected by a consumer.
+
+| Output | Start bit | Length | Valid values |
+|:---:|:---:|:---:|:---:|
+| 1 | 0 | 7 | 0..100 |
+| 2 | 7 | 7 | 0..100 |
+| 3 | 14 | 7 | 0..100 |
+| 4 | 21 | 7 | 0..100 |
+| 5 | 28 | 7 | 0..100 |
+| 6 | 35 | 7 | 0..100 |
+| 7 | 42 | 7 | 0..100 |
+| 8 | 49 | 7 | 0..100 |
+| Counter | 56 | 8 | 0..255 |
+
+OFF, ON, and PULSE actions always publish duty `0`. Only the selected PWM action publishes a 0..100 value, and invalid PWM Outputs publish `0`. For example, Output 1 at 50% produces `32 00 00 00 00 00 00 CC`; Output 1 at 100% produces `64 00 00 00 00 00 00 CC`. A cross-byte example with duties `{0, 1, 99, 100, 1, 99, 100, 0}` produces `80 C0 98 1C 18 93 01 CC`.
+
+A PWM consumer must treat `Base + 5` and `Base + 6` as one paired command. Accept duty only when both frames are correctly formed, both are fresh according to the consumer's timeout policy, and both counters match. A malformed frame, protocol-version error, duty outside 0..100, counter mismatch, or stale/missing partner must force applied duty to zero. Counter wrap from `255` to `0` is normal.
+
+### Output configuration compatibility
+
+The aggregate JSON property is `outputs`, containing Output configuration version `2`, `signal_timeout_ms`, the used CAN `sources`, and a sparse `outputs` array numbered 1 through 8. PWM cases serialize `pwm_source_name`, `pwm_hysteresis`, and `pwm_points`. Live status is exposed as `/api/live_values.outputs`, including `duty_percent` for the selected valid PWM case.
+
+The compact raw-partition record format is also versioned independently. Existing pre-Output records are deliberately incompatible: no old record decoder or migration path is used. On first boot with an old rule record, firmware rejects it, initializes eight empty Outputs, and immediately commits the new empty record into both slots of the existing CRC-checked A/B storage so no legacy payload remains as a fallback. The physical raw partition remains named `rules` and remains at the same partition-table location.
+
+Old aggregate backups may still restore unrelated board settings. A legacy top-level `rules` property is always ignored. If a backup has no valid versioned `outputs` property, Outputs are reset to eight empty entries and the restore response/log contains a warning; legacy rules are never translated, preserved, or imported. The one previously valid edge-case base ID `0x7FA` is clamped to `0x7F9` during backup import so those unrelated settings can still be restored under the new two-frame ID reservation.
 
 ### E46 M3 MK60 cluster emulator (capture-first)
 
@@ -147,6 +196,8 @@ is reapplied or the board restarts.
 When ESP-NOW and **Relay CAN bus** are enabled, externally received CAN frames are sent byte-for-byte to the configured ESP-NOW target as `twai_message_t` values. Physical CAN transmission of the board's own sensor frames may remain disabled; the TWAI controller and CAN speed setting remain active for receiving relay traffic. The CAN receive filter is enabled only while relay mode is active.
 
 Relay traffic is best-effort and lower priority than the board's sensor and GPS output. A received frame remains pending while the ESP-NOW sender is occupied, without blocking ADC sampling or locally generated transmissions. A heavily loaded CAN bus can still produce traffic faster than the receive queue and ESP-NOW link can forward it.
+
+Each configured ESP-NOW client can also have an optional human-readable label. The label is persisted with the board configuration and included in configuration export/import JSON alongside that client's MAC address and relay setting. Existing configurations migrate with blank client labels.
 
 ESP-NOW and the local configuration access point use Wi-Fi channel 1. The receiving ESP-NOW device must also operate on channel 1.
 

@@ -12,6 +12,7 @@
 #include "inc/http_server.h"
 #include "inc/inputs.h"
 #include "inc/wifi_config.h"
+#include "inc/relay_command_protocol.h"
 #include "inc/relay_rule_http.h"
 #include "esp_wifi.h"
 #include "cJSON.h"
@@ -58,24 +59,24 @@ static char *receive_request_body(httpd_req_t *req)
     return body;
 }
 
-static bool append_rules_json(char **json, size_t json_pos)
+static bool append_outputs_json(char **json, size_t json_pos)
 {
-    cJSON *rules = relay_rule_config_json_create();
-    if (rules == NULL) return false;
-    char *rules_text = cJSON_PrintUnformatted(rules);
-    cJSON_Delete(rules);
-    if (rules_text == NULL) return false;
+    cJSON *outputs = relay_rule_config_json_create();
+    if (outputs == NULL) return false;
+    char *outputs_text = cJSON_PrintUnformatted(outputs);
+    cJSON_Delete(outputs);
+    if (outputs_text == NULL) return false;
 
-    const size_t required = json_pos + strlen(rules_text) + 16U;
+    const size_t required = json_pos + strlen(outputs_text) + 18U;
     char *expanded = realloc(*json, required);
     if (expanded == NULL) {
-        free(rules_text);
+        free(outputs_text);
         return false;
     }
     *json = expanded;
     snprintf(expanded + json_pos, required - json_pos,
-             "],\"rules\":%s}\n", rules_text);
-    free(rules_text);
+             "],\"outputs\":%s}\n", outputs_text);
+    free(outputs_text);
     return true;
 }
 
@@ -140,11 +141,18 @@ static bool read_transport_config(cJSON *root, board_config_t *cfg) {
         for (int i = 0; i < client_count; ++i) {
             cJSON *client = cJSON_GetArrayItem(clients, i);
             cJSON *mac = cJSON_GetObjectItem(client, "mac");
+            cJSON *label = cJSON_GetObjectItem(client, "label");
             cJSON *relay_can = cJSON_GetObjectItem(client, "relay_can");
             if (!cJSON_IsObject(client) || !cJSON_IsString(mac) || mac->valuestring == NULL ||
                 !parse_mac(mac->valuestring, cfg->espnow_clients[i].mac) ||
+                (label != NULL && (!cJSON_IsString(label) || label->valuestring == NULL ||
+                                   strlen(label->valuestring) >= ESPNOW_CLIENT_LABEL_LEN)) ||
                 (relay_can != NULL && !cJSON_IsBool(relay_can))) {
                 return false;
+            }
+            if (label != NULL) {
+                snprintf(cfg->espnow_clients[i].label, sizeof(cfg->espnow_clients[i].label),
+                         "%s", label->valuestring);
             }
             cfg->espnow_clients[i].relay_can = relay_can != NULL && cJSON_IsTrue(relay_can);
             for (int j = 0; j < i; ++j) {
@@ -170,22 +178,40 @@ static bool read_transport_config(cJSON *root, board_config_t *cfg) {
 }
 
 static bool format_espnow_clients_json(const board_config_t *cfg, char *out, size_t out_len) {
-    size_t pos = 0U;
-    int written = snprintf(out, out_len, "[");
-    if (written < 0 || (size_t)written >= out_len) return false;
-    pos = (size_t)written;
+    cJSON *clients = cJSON_CreateArray();
+    if (clients == NULL) return false;
+
+    bool success = true;
     for (uint8_t i = 0; i < cfg->espnow_client_count; ++i) {
+        cJSON *client = cJSON_CreateObject();
+        if (client == NULL || !cJSON_AddItemToArray(clients, client)) {
+            cJSON_Delete(client);
+            success = false;
+            break;
+        }
+
         char mac[18];
         format_mac(cfg->espnow_clients[i].mac, mac, sizeof(mac));
-        written = snprintf(out + pos, out_len - pos,
-                           "%s{\"mac\":\"%s\",\"relay_can\":%s}",
-                           i == 0U ? "" : ",", mac,
-                           cfg->espnow_clients[i].relay_can ? "true" : "false");
-        if (written < 0 || (size_t)written >= out_len - pos) return false;
-        pos += (size_t)written;
+        if (cJSON_AddStringToObject(client, "label", cfg->espnow_clients[i].label) == NULL ||
+            cJSON_AddStringToObject(client, "mac", mac) == NULL ||
+            cJSON_AddBoolToObject(client, "relay_can", cfg->espnow_clients[i].relay_can) == NULL) {
+            success = false;
+            break;
+        }
     }
-    written = snprintf(out + pos, out_len - pos, "]");
-    return written >= 0 && (size_t)written < out_len - pos;
+
+    char *text = success ? cJSON_PrintUnformatted(clients) : NULL;
+    cJSON_Delete(clients);
+    if (text == NULL) return false;
+
+    const size_t text_len = strlen(text);
+    if (text_len >= out_len) {
+        free(text);
+        return false;
+    }
+    memcpy(out, text, text_len + 1U);
+    free(text);
+    return true;
 }
 
 static bool read_mk60_config(cJSON *root, board_config_t *cfg) {
@@ -394,47 +420,47 @@ static bool apply_runtime_config(const board_config_t *cfg) {
 }
 
 static bool save_aggregate_config(const board_config_t *cfg,
-                                  const relay_rule_config_t *rules,
-                                  bool update_rules)
+                                  const relay_rule_config_t *outputs,
+                                  bool update_outputs)
 {
     const board_config_t previous_board = board_cfg;
-    relay_rule_config_t *previous_rules = NULL;
+    relay_rule_config_t *previous_outputs = NULL;
 
-    if (update_rules) {
-        previous_rules = malloc(sizeof(*previous_rules));
-        if (previous_rules == NULL) return false;
-        relay_rule_engine_snapshot(previous_rules);
+    if (update_outputs) {
+        previous_outputs = malloc(sizeof(*previous_outputs));
+        if (previous_outputs == NULL) return false;
+        relay_rule_engine_snapshot(previous_outputs);
         relay_rule_engine_set_publish_rate(cfg->can_tx_hz);
-        if (!relay_rule_engine_replace_and_save(rules)) {
-            ESP_LOGE(TAG, "Aggregate save failed while writing relay rules");
+        if (!relay_rule_engine_replace_and_save(outputs)) {
+            ESP_LOGE(TAG, "Aggregate save failed while writing Outputs");
             relay_rule_engine_set_publish_rate(previous_board.can_tx_hz);
-            free(previous_rules);
+            free(previous_outputs);
             return false;
         }
     }
 
     if (!config_save(cfg)) {
         ESP_LOGE(TAG, "Aggregate save failed while writing board configuration");
-        if (update_rules) {
+        if (update_outputs) {
             relay_rule_engine_set_publish_rate(previous_board.can_tx_hz);
-            relay_rule_engine_replace_and_save(previous_rules);
+            relay_rule_engine_replace_and_save(previous_outputs);
         }
-        free(previous_rules);
+        free(previous_outputs);
         return false;
     }
 
     if (!apply_runtime_config(cfg)) {
         ESP_LOGE(TAG, "Aggregate save failed while applying runtime transport configuration");
         config_save(&previous_board);
-        if (update_rules) {
+        if (update_outputs) {
             relay_rule_engine_set_publish_rate(previous_board.can_tx_hz);
-            relay_rule_engine_replace_and_save(previous_rules);
+            relay_rule_engine_replace_and_save(previous_outputs);
         }
-        free(previous_rules);
+        free(previous_outputs);
         return false;
     }
 
-    free(previous_rules);
+    free(previous_outputs);
     return true;
 }
 
@@ -507,7 +533,7 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     
     size_t json_pos = 0;
     const size_t json_max = 8192;
-    char espnow_clients[384];
+    char espnow_clients[1024];
     char mk60_json[768];
     char gps_mac[18];
     if (!format_espnow_clients_json(&cfg, espnow_clients, sizeof(espnow_clients))) {
@@ -574,8 +600,8 @@ esp_err_t config_get_handler(httpd_req_t *req) {
         }
     }
     
-    if (!append_rules_json(&json, json_pos)) {
-        ESP_LOGE(TAG, "Failed to append rules to configuration JSON");
+    if (!append_outputs_json(&json, json_pos)) {
+        ESP_LOGE(TAG, "Failed to append Outputs to configuration JSON");
         free(json);
         httpd_resp_send_500(req);
         return ESP_FAIL;
@@ -723,6 +749,14 @@ esp_err_t config_post_handler(httpd_req_t *req) {
             }
         }
     }
+    if (!output_command_base_can_id_valid(cfg.can_start_id)) {
+        ESP_LOGW(TAG, "Invalid CAN base ID 0x%lX; Output frames require 0x000-0x%X",
+                 (unsigned long)cfg.can_start_id, OUTPUT_CAN_BASE_MAX);
+        cJSON_Delete(root);
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "CAN base ID must be 0x000-0x7F9");
+        return ESP_FAIL;
+    }
 
     cJSON *can_tx_hz = cJSON_GetObjectItem(root, "can_tx_hz");
     if (can_tx_hz && cJSON_IsNumber(can_tx_hz)) {
@@ -776,20 +810,20 @@ esp_err_t config_post_handler(httpd_req_t *req) {
         }
     }
 
-    relay_rule_config_t *rules = malloc(sizeof(*rules));
-    cJSON *rules_json = cJSON_GetObjectItemCaseSensitive(root, "rules");
-    if (rules == NULL || !cJSON_IsObject(rules_json) ||
-        !relay_rule_config_json_parse(rules_json, rules) ||
-        !relay_rule_engine_validate(rules, cfg.can_tx_hz)) {
-        ESP_LOGW(TAG, "Invalid or missing aggregate rule configuration");
-        free(rules);
+    relay_rule_config_t *outputs = malloc(sizeof(*outputs));
+    cJSON *outputs_json = cJSON_GetObjectItemCaseSensitive(root, "outputs");
+    if (outputs == NULL || !cJSON_IsObject(outputs_json) ||
+        !relay_rule_config_json_parse(outputs_json, outputs) ||
+        !relay_rule_engine_validate(outputs, cfg.can_tx_hz)) {
+        ESP_LOGW(TAG, "Invalid or missing aggregate Output configuration");
+        free(outputs);
         cJSON_Delete(root);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid rule configuration");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Output configuration");
         return ESP_FAIL;
     }
 
-    const bool saved = save_aggregate_config(&cfg, rules, true);
-    free(rules);
+    const bool saved = save_aggregate_config(&cfg, outputs, true);
+    free(outputs);
     cJSON_Delete(root);
     if (!saved) {
         ESP_LOGE(TAG, "Failed to save aggregate configuration");
@@ -798,7 +832,7 @@ esp_err_t config_post_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
     
-    ESP_LOGI(TAG, "Board and rule configuration updated successfully");
+    ESP_LOGI(TAG, "Board and Output configuration updated successfully");
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
@@ -971,14 +1005,14 @@ esp_err_t live_values_get_handler(httpd_req_t *req) {
     char *rule_status_text = rule_status ? cJSON_PrintUnformatted(rule_status) : NULL;
     cJSON_Delete(rule_status);
     if (rule_status_text == NULL) {
-        ESP_LOGE(TAG, "Failed to build compact rule status JSON");
+        ESP_LOGE(TAG, "Failed to build compact Output status JSON");
         free(json);
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
 
     written = snprintf(json + json_pos, json_max - json_pos,
-                       "],\"rules\":%s}\n", rule_status_text);
+                       "],\"outputs\":%s}\n", rule_status_text);
     free(rule_status_text);
     if (written < 0 || (size_t)written >= (json_max - json_pos)) {
         ESP_LOGE(TAG, "Failed to finalize live values JSON");
@@ -1022,7 +1056,7 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
 
     size_t json_pos = 0;
     const size_t json_max = 8192;
-    char espnow_clients[384];
+    char espnow_clients[1024];
     char mk60_json[768];
     char gps_mac[18];
     if (!format_espnow_clients_json(cfg, espnow_clients, sizeof(espnow_clients))) {
@@ -1086,8 +1120,8 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
         }
     }
 
-    if (!append_rules_json(&json, json_pos)) {
-        ESP_LOGE(TAG, "Failed to append rules to exported configuration");
+    if (!append_outputs_json(&json, json_pos)) {
+        ESP_LOGE(TAG, "Failed to append Outputs to exported configuration");
         free(json);
         free(cfg);
         httpd_resp_send_500(req);
@@ -1122,6 +1156,7 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
 
     board_config_t cfg;
     config_set_defaults(&cfg);
+    bool can_base_clamped = false;
 
     cJSON *channels = cJSON_GetObjectItem(root, "channels");
     if (!channels || !cJSON_IsArray(channels) || cJSON_GetArraySize(channels) != CONFIG_CHANNELS) {
@@ -1241,6 +1276,19 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
             }
         }
     }
+    if (cfg.can_start_id == OUTPUT_CAN_BASE_MAX + 1U) {
+        ESP_LOGW(TAG, "Legacy CAN base ID 0x%lX in import is no longer valid with the duty frame; clamping to 0x%X",
+                 (unsigned long)cfg.can_start_id, OUTPUT_CAN_BASE_MAX);
+        cfg.can_start_id = OUTPUT_CAN_BASE_MAX;
+        can_base_clamped = true;
+    } else if (!output_command_base_can_id_valid(cfg.can_start_id)) {
+        ESP_LOGW(TAG, "Invalid CAN base ID 0x%lX in import; Output frames require 0x000-0x%X",
+                 (unsigned long)cfg.can_start_id, OUTPUT_CAN_BASE_MAX);
+        cJSON_Delete(root);
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "CAN base ID must be 0x000-0x7F9");
+        return ESP_FAIL;
+    }
 
     cJSON *can_tx_hz = cJSON_GetObjectItem(root, "can_tx_hz");
     if (can_tx_hz && cJSON_IsNumber(can_tx_hz)) {
@@ -1277,42 +1325,40 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
     }
     cfg.pullup_vref_mv = board_cfg.pullup_vref_mv;
 
-    relay_rule_config_t *rules = NULL;
-    bool legacy_without_rules = false;
-    cJSON *rules_json = cJSON_GetObjectItemCaseSensitive(root, "rules");
-    if (rules_json != NULL) {
-        rules = malloc(sizeof(*rules));
-        const bool valid_rules = rules != NULL && cJSON_IsObject(rules_json) &&
-                                 relay_rule_config_json_parse(rules_json, rules) &&
-                                 relay_rule_engine_validate(rules, cfg.can_tx_hz);
-        if (!valid_rules) {
-            ESP_LOGW(TAG, "Invalid rule configuration in import");
-            free(rules);
+    relay_rule_config_t *outputs = malloc(sizeof(*outputs));
+    if (outputs == NULL) {
+        cJSON_Delete(root);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    cJSON *outputs_json = cJSON_GetObjectItemCaseSensitive(root, "outputs");
+    cJSON *legacy_rules_json = cJSON_GetObjectItemCaseSensitive(root, "rules");
+    const bool legacy_rules_ignored = legacy_rules_json != NULL;
+    const bool outputs_reset = outputs_json == NULL;
+    if (outputs_json != NULL) {
+        const bool valid_outputs = cJSON_IsObject(outputs_json) &&
+                                   relay_rule_config_json_parse(outputs_json, outputs) &&
+                                   relay_rule_engine_validate(outputs, cfg.can_tx_hz);
+        if (!valid_outputs) {
+            ESP_LOGW(TAG, "Invalid Output configuration in import");
+            free(outputs);
             cJSON_Delete(root);
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid rule configuration");
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Output configuration");
             return ESP_FAIL;
         }
     } else {
-        ESP_LOGW(TAG, "Legacy import has no rules; preserving active rules");
-        legacy_without_rules = true;
-        rules = malloc(sizeof(*rules));
-        if (rules == NULL) {
-            cJSON_Delete(root);
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
-        }
-        relay_rule_engine_snapshot(rules);
-        if (!relay_rule_engine_validate(rules, cfg.can_tx_hz)) {
-            free(rules);
-            cJSON_Delete(root);
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                                "Existing rules are incompatible with imported TX rate");
-            return ESP_FAIL;
+        relay_rule_engine_set_defaults(outputs);
+        if (legacy_rules_ignored) {
+            ESP_LOGW(TAG, "Legacy 'rules' property ignored; restoring board settings with eight empty Outputs");
+        } else {
+            ESP_LOGW(TAG, "Backup has no 'outputs' property; restoring board settings with eight empty Outputs");
         }
     }
+    if (legacy_rules_ignored && outputs_json != NULL)
+        ESP_LOGW(TAG, "Legacy 'rules' property ignored; only the versioned 'outputs' property is restored");
 
-    bool saved = save_aggregate_config(&cfg, rules, true);
-    free(rules);
+    bool saved = save_aggregate_config(&cfg, outputs, true);
+    free(outputs);
     if (!saved) {
         ESP_LOGE(TAG, "Failed to save imported aggregate configuration");
         cJSON_Delete(root);
@@ -1323,9 +1369,32 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
 
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, legacy_without_rules ?
-                       "{\"ok\":true,\"warning\":\"Backup contained no rules; active rules were preserved\"}" :
-                       "{\"ok\":true}");
+    const char *output_warning = NULL;
+    if (outputs_reset && legacy_rules_ignored) {
+        output_warning = "Legacy rules were ignored; Outputs were reset to empty";
+    } else if (outputs_reset) {
+        output_warning = "Backup contained no Outputs; Outputs were reset to empty";
+    } else if (legacy_rules_ignored) {
+        output_warning = "Legacy rules were ignored; versioned Outputs were restored";
+    }
+
+    if (can_base_clamped || output_warning != NULL) {
+        char response[256];
+        if (can_base_clamped && output_warning != NULL) {
+            snprintf(response, sizeof(response),
+                     "{\"ok\":true,\"warning\":\"CAN base ID 0x7FA was clamped to 0x7F9; %s\"}",
+                     output_warning);
+        } else if (can_base_clamped) {
+            snprintf(response, sizeof(response),
+                     "{\"ok\":true,\"warning\":\"CAN base ID 0x7FA was clamped to 0x7F9\"}");
+        } else {
+            snprintf(response, sizeof(response), "{\"ok\":true,\"warning\":\"%s\"}",
+                     output_warning);
+        }
+        httpd_resp_sendstr(req, response);
+    } else {
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+    }
     return ESP_OK;
 }
 

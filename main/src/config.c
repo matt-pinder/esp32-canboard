@@ -4,9 +4,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "inc/relay_command_protocol.h"
 
 #define LEGACY_CONFIG_FILE_PATH "/spiffs/config.bin"
 #define CONFIG_NVS_PARTITION "config"
@@ -35,6 +37,11 @@ typedef struct {
 } board_config_persist_v10_t;
 
 typedef struct {
+    uint8_t mac[ESP_NOW_ETH_ALEN];
+    bool relay_can;
+} espnow_client_config_v13_t;
+
+typedef struct {
     uint32_t version;
     uint32_t can_start_id;
     uint32_t can_speed_kbps;
@@ -47,7 +54,7 @@ typedef struct {
     uint32_t gps_can_start_id;
     uint8_t gps_target_mac[ESP_NOW_ETH_ALEN];
     uint8_t espnow_client_count;
-    espnow_client_config_t espnow_clients[ESPNOW_MAX_CLIENTS];
+    espnow_client_config_v13_t espnow_clients[ESPNOW_MAX_CLIENTS];
     uint32_t crc32;
 } board_config_persist_v11_t;
 
@@ -64,10 +71,29 @@ typedef struct {
     uint32_t gps_can_start_id;
     uint8_t gps_target_mac[ESP_NOW_ETH_ALEN];
     uint8_t espnow_client_count;
-    espnow_client_config_t espnow_clients[ESPNOW_MAX_CLIENTS];
+    espnow_client_config_v13_t espnow_clients[ESPNOW_MAX_CLIENTS];
     mk60_emulator_config_t mk60_emulator;
     uint32_t crc32;
 } board_config_persist_v12_t;
+
+typedef struct {
+    uint32_t version;
+    uint32_t can_start_id;
+    uint32_t can_speed_kbps;
+    uint8_t can_tx_hz;
+    bool can_enabled;
+    bool espnow_enabled;
+    uint16_t pullup_vref_divider_high_ohm;
+    channel_config_t channels[CONFIG_CHANNELS];
+    bool gps_enabled;
+    uint32_t gps_can_start_id;
+    uint8_t gps_target_mac[ESP_NOW_ETH_ALEN];
+    uint8_t espnow_client_count;
+    espnow_client_config_v13_t espnow_clients[ESPNOW_MAX_CLIENTS];
+    mk60_emulator_config_t mk60_emulator;
+    uint8_t gps_update_rate_hz;
+    uint32_t crc32;
+} board_config_persist_v13_t;
 
 typedef struct {
     uint32_t version;
@@ -88,7 +114,9 @@ typedef struct {
     uint32_t crc32;
 } board_config_persist_t;
 
-_Static_assert(sizeof(board_config_persist_t) != sizeof(board_config_persist_v12_t),
+_Static_assert(sizeof(board_config_persist_t) != sizeof(board_config_persist_v13_t),
+               "v14 persisted config must remain distinguishable from v13 by payload size");
+_Static_assert(sizeof(board_config_persist_v13_t) != sizeof(board_config_persist_v12_t),
                "v13 persisted config must remain distinguishable from v12 by payload size");
 
 typedef enum {
@@ -118,10 +146,11 @@ static void log_board_config(const board_config_t *cfg) {
              config_has_espnow_relay_client(cfg));
     for (uint8_t i = 0; i < cfg->espnow_client_count; ++i) {
         const espnow_client_config_t *client = &cfg->espnow_clients[i];
-        ESP_LOGI(TAG, "    client[%u]=%02X:%02X:%02X:%02X:%02X:%02X relay_can=%d",
+        ESP_LOGI(TAG, "    client[%u]=%02X:%02X:%02X:%02X:%02X:%02X label=\"%s\" relay_can=%d",
                  (unsigned)i,
                  client->mac[0], client->mac[1], client->mac[2],
                  client->mac[3], client->mac[4], client->mac[5],
+                 client->label,
                  client->relay_can);
     }
     ESP_LOGI(TAG, "  pullup_vref_divider_high_ohm=%u crc32=0x%08lX",
@@ -235,6 +264,37 @@ static void runtime_from_persist(const board_config_persist_t *persisted, board_
     cfg->crc32 = persisted->crc32;
 }
 
+static void copy_legacy_espnow_clients(uint8_t count,
+                                       const espnow_client_config_v13_t source[ESPNOW_MAX_CLIENTS],
+                                       espnow_client_config_t destination[ESPNOW_MAX_CLIENTS]) {
+    const uint8_t copy_count = count < ESPNOW_MAX_CLIENTS ? count : ESPNOW_MAX_CLIENTS;
+    for (uint8_t i = 0; i < copy_count; ++i) {
+        memcpy(destination[i].mac, source[i].mac, ESP_NOW_ETH_ALEN);
+        destination[i].relay_can = source[i].relay_can;
+    }
+}
+
+static void runtime_from_v13(const board_config_persist_v13_t *persisted, board_config_t *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->version = persisted->version;
+    cfg->can_start_id = persisted->can_start_id;
+    cfg->can_speed_kbps = persisted->can_speed_kbps;
+    cfg->can_tx_hz = persisted->can_tx_hz;
+    cfg->can_enabled = persisted->can_enabled;
+    cfg->espnow_enabled = persisted->espnow_enabled;
+    cfg->pullup_vref_divider_high_ohm = persisted->pullup_vref_divider_high_ohm;
+    memcpy(cfg->channels, persisted->channels, sizeof(cfg->channels));
+    cfg->gps_enabled = persisted->gps_enabled;
+    cfg->gps_can_start_id = persisted->gps_can_start_id;
+    memcpy(cfg->gps_target_mac, persisted->gps_target_mac, sizeof(cfg->gps_target_mac));
+    cfg->espnow_client_count = persisted->espnow_client_count;
+    copy_legacy_espnow_clients(cfg->espnow_client_count, persisted->espnow_clients, cfg->espnow_clients);
+    cfg->mk60_emulator = persisted->mk60_emulator;
+    cfg->gps_update_rate_hz = persisted->gps_update_rate_hz;
+    cfg->pullup_vref_mv = 5025;
+    cfg->crc32 = persisted->crc32;
+}
+
 static void runtime_from_v12(const board_config_persist_v12_t *persisted, board_config_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
     cfg->version = persisted->version;
@@ -250,7 +310,7 @@ static void runtime_from_v12(const board_config_persist_v12_t *persisted, board_
     memcpy(cfg->gps_target_mac, persisted->gps_target_mac, sizeof(cfg->gps_target_mac));
     cfg->gps_update_rate_hz = 10;
     cfg->espnow_client_count = persisted->espnow_client_count;
-    memcpy(cfg->espnow_clients, persisted->espnow_clients, sizeof(cfg->espnow_clients));
+    copy_legacy_espnow_clients(cfg->espnow_client_count, persisted->espnow_clients, cfg->espnow_clients);
     cfg->mk60_emulator = persisted->mk60_emulator;
     cfg->pullup_vref_mv = 5025;
     cfg->crc32 = persisted->crc32;
@@ -271,7 +331,7 @@ static void runtime_from_v11(const board_config_persist_v11_t *persisted, board_
     memcpy(cfg->gps_target_mac, persisted->gps_target_mac, sizeof(cfg->gps_target_mac));
     cfg->gps_update_rate_hz = 10;
     cfg->espnow_client_count = persisted->espnow_client_count;
-    memcpy(cfg->espnow_clients, persisted->espnow_clients, sizeof(cfg->espnow_clients));
+    copy_legacy_espnow_clients(cfg->espnow_client_count, persisted->espnow_clients, cfg->espnow_clients);
     cfg->pullup_vref_mv = 5025;
     cfg->crc32 = persisted->crc32;
 }
@@ -311,7 +371,8 @@ bool config_has_espnow_relay_client(const board_config_t *cfg) {
 }
 
 static bool config_semantically_valid(const board_config_t *cfg) {
-    if (cfg->version != CONFIG_VERSION || cfg->can_start_id > 0x7FA || cfg->gps_can_start_id > 0x7FA ||
+    if (cfg->version != CONFIG_VERSION || !output_command_base_can_id_valid(cfg->can_start_id) ||
+        cfg->gps_can_start_id > 0x7FA ||
         (cfg->can_speed_kbps != 125 && cfg->can_speed_kbps != 250 &&
          cfg->can_speed_kbps != 500 && cfg->can_speed_kbps != 1000) ||
         (cfg->can_tx_hz != 25 && cfg->can_tx_hz != 50) ||
@@ -326,7 +387,10 @@ static bool config_semantically_valid(const board_config_t *cfg) {
 
     const uint8_t zero_mac[ESP_NOW_ETH_ALEN] = {0};
     for (uint8_t i = 0; i < cfg->espnow_client_count; ++i) {
-        if (memcmp(cfg->espnow_clients[i].mac, zero_mac, sizeof(zero_mac)) == 0) return false;
+        if (memcmp(cfg->espnow_clients[i].mac, zero_mac, sizeof(zero_mac)) == 0 ||
+            memchr(cfg->espnow_clients[i].label, '\0', ESPNOW_CLIENT_LABEL_LEN) == NULL) {
+            return false;
+        }
         for (uint8_t j = 0; j < i; ++j) {
             if (memcmp(cfg->espnow_clients[i].mac, cfg->espnow_clients[j].mac, ESP_NOW_ETH_ALEN) == 0) {
                 return false;
@@ -393,11 +457,22 @@ static bool normalize_config(board_config_t *cfg) {
             cfg->mk60_emulator.trigger_dlc = 8U;
         }
         if (old_version < 13) cfg->gps_update_rate_hz = 10;
+        if (old_version < 14) {
+            for (uint8_t i = 0; i < cfg->espnow_client_count && i < ESPNOW_MAX_CLIENTS; ++i) {
+                cfg->espnow_clients[i].label[0] = '\0';
+            }
+        }
         cfg->version = CONFIG_VERSION;
         changed = true;
     }
     if (cfg->can_tx_hz != 25 && cfg->can_tx_hz != 50) {
         cfg->can_tx_hz = 25;
+        changed = true;
+    }
+    if (!output_command_base_can_id_valid(cfg->can_start_id)) {
+        ESP_LOGW(TAG, "CAN base ID 0x%lX exceeds Output protocol maximum 0x%X; clamping",
+                 (unsigned long)cfg->can_start_id, OUTPUT_CAN_BASE_MAX);
+        cfg->can_start_id = OUTPUT_CAN_BASE_MAX;
         changed = true;
     }
     if (cfg->gps_can_start_id > 0x7FA) {
@@ -472,6 +547,7 @@ static bool decode_record(const uint8_t *record, size_t record_size, board_confi
     if (record_read_u32(record + 12) != crc32(payload, payload_size)) return false;
 
     if (payload_size != sizeof(board_config_persist_t) &&
+        payload_size != sizeof(board_config_persist_v13_t) &&
         payload_size != sizeof(board_config_persist_v12_t) &&
         payload_size != sizeof(board_config_persist_v11_t) &&
         payload_size != sizeof(board_config_persist_v10_t)) return false;
@@ -485,6 +561,10 @@ static bool decode_record(const uint8_t *record, size_t record_size, board_confi
         board_config_persist_t *current = persisted;
         valid = current->crc32 == crc32(current, offsetof(board_config_persist_t, crc32));
         if (valid) runtime_from_persist(current, cfg);
+    } else if (payload_size == sizeof(board_config_persist_v13_t)) {
+        board_config_persist_v13_t *v13 = persisted;
+        valid = v13->crc32 == crc32(v13, offsetof(board_config_persist_v13_t, crc32));
+        if (valid) runtime_from_v13(v13, cfg);
     } else if (payload_size == sizeof(board_config_persist_v12_t)) {
         board_config_persist_v12_t *v12 = persisted;
         valid = v12->crc32 == crc32(v12, offsetof(board_config_persist_v12_t, crc32));
