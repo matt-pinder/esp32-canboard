@@ -11,4 +11,7 @@ static inline size_t test_strlcpy(char *dst, const char *src, size_t size)
     }
     return length;
 }
+#ifdef strlcpy
+#undef strlcpy
+#endif
 #define strlcpy test_strlcpy

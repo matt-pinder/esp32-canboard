@@ -20,6 +20,8 @@ This project targets ESP-IDF 6.0.2. Activate the 6.0.2 environment before runnin
 
 The board keeps its WiFi access point available continuously. To reduce idle memory use, the web server starts when a client associates with the access point and stops when that client disconnects.
 
+Copy `main/inc/secrets.example.h` to the ignored `main/inc/secrets.h` and define infrastructure credentials with `KNOWN_WIFI_NETWORKS(X)`. Networks are tried in list order when ESP-NOW is disabled; the configuration access point remains available throughout.
+
 | SSID | WPA2 Key | Web UI |
 |:---|:---|:---|
 | ESP32-CanBoard | canconfig | http://192.168.4.1 |
@@ -47,10 +49,11 @@ The web UI allows you to:
 
 **Notes:**
 - Board configuration is persisted as one current record in the dedicated `config` NVS partition. Conditions and Outputs are persisted together in the existing CRC-checked raw `rules` partition with atomic A/B writes; the partition location is unchanged even though the user-facing feature is now named Outputs.
-- On boot, firmware automatically imports a valid legacy `/spiffs/config.bin` into NVS when one is still present and verifies the committed record. The legacy file is left untouched.
-- Normal `idf.py flash` updates the application and SPIFFS web assets, but does not write the dedicated `config` partition. Before the first upgrade from a SPIFFS-stored configuration, export a JSON backup (or flash/boot the migration firmware without its SPIFFS target once); a normal project flash replaces the old shared SPIFFS image before firmware can import its config file.
+- Only the current version-15 NVS board record is accepted. Pre-v15 NVS records and `/spiffs/config.bin` are deliberately unsupported after the verified 2026-10-05 aggregate backup.
+- Normal `idf.py flash` updates the application and SPIFFS web assets, but does not write the dedicated `config` partition.
 - `erase-flash`, whole-chip images, or explicitly flashing address `0x200000` will still erase configuration; ordinary application/partition-table flashing will not.
 - After restoring a new configuration via the web UI the changes are applied immediately.
+- The current checked-in recovery export is `config/esp32-canboard-config-051026-090441.json` (SHA-256 `25cc3a9ffa824093bf31c163345749b8048a588224715e386e33c09e3a9b6c78`). It contains all ten channels, two ESP-NOW clients, current GPS-source fields, Output schema version 4, one Condition, and three configured Outputs.
 
 
 ## CAN Output
@@ -201,7 +204,7 @@ This change deliberately **does not introduce a configuration version 5**. Versi
 
 Pre-Output rule records remain deliberately incompatible and are not translated: on first boot with one of those old records, firmware initializes eight empty Outputs and no Conditions and commits the empty current record into both CRC-checked A/B slots. The physical raw partition remains named `rules` and remains at the same partition-table location.
 
-Old aggregate backups may still restore unrelated board settings when they do not contain an `outputs` property. A legacy top-level `rules` property is always ignored. A present but malformed/current-incompatible `outputs` object is rejected rather than guessed or translated. The one previously valid edge-case base ID `0x7FA` is clamped to `0x7F9` during backup import so unrelated board settings can still be restored under the two-frame ID reservation.
+Aggregate restore requires a valid current `outputs` object. Missing, malformed, or incompatible Output data and invalid CAN base IDs are rejected rather than reset, clamped, guessed, or translated. Legacy top-level `rules` backups are unsupported.
 
 Live status is exposed as `/api/live_values.conditions` for configured Conditions and `/api/live_values.outputs` for configured Outputs. Condition status includes boolean value, validity, whether a valid source has ever established the Condition, source freshness and source-invalid reason. Output live status still includes `duty_percent` for the selected valid PWM case.
 
@@ -236,13 +239,25 @@ is reapplied or the board restarts.
 
 ### CAN relay over ESP-NOW
 
-When ESP-NOW and **Relay CAN bus** are enabled, externally received CAN frames are sent byte-for-byte to the configured ESP-NOW target as `twai_message_t` values. Physical CAN transmission of the board's own sensor frames may remain disabled; the TWAI controller and CAN speed setting remain active for receiving relay traffic. The CAN receive filter is enabled only while relay mode is active.
+When ESP-NOW and **Relay CAN bus** are enabled for a client, externally received CAN frames are encoded into the same portable raw-CAN batch protocol as the board's own frames. The wire format is not an in-memory `twai_message_t`: version 1 uses a 14-byte little-endian header followed by one to eighteen fixed 13-byte CAN records, for a maximum packet size of 248 bytes. Physical CAN transmission of the board's own sensor frames may remain disabled; the TWAI controller and CAN speed setting remain active while relay reception, MK60 emulation, or externally sourced Output rules need CAN input.
 
-Relay traffic is best-effort and lower priority than the board's sensor and GPS output. A received frame remains pending while the ESP-NOW sender is occupied, without blocking ADC sampling or locally generated transmissions. A heavily loaded CAN bus can still produce traffic faster than the receive queue and ESP-NOW link can forward it.
+Relay traffic is best-effort and lower priority than the board's sensor and GPS output. The bounded 128-frame queue discards its oldest frame when full instead of blocking ADC sampling or locally generated transmissions. Frames are batched for up to 5 ms. Each client has its own sequence and delivery state; after three consecutive delivery failures only that client backs off to one probe per second, while healthy clients continue at normal rate.
 
 Each configured ESP-NOW client can also have an optional human-readable label. The label is persisted with the board configuration and included in configuration export/import JSON alongside that client's MAC address and relay setting. Existing configurations migrate with blank client labels.
 
-ESP-NOW and the local configuration access point use Wi-Fi channel 1. The receiving ESP-NOW device must also operate on channel 1.
+ESP-NOW and the local configuration access point use Wi-Fi channel 1. The receiving ESP-NOW device must also operate on channel 1 and must give this board its station MAC as the permitted sender. Configure the receiver's station MAC as a client here; enable **Relay CAN bus** for that client only when physical CAN frames received by this board must also reach it. Locally generated sensor, Output, and GPS frames are sent to every configured client. ESP-NOW is unencrypted, so receiver MAC filtering rejects unrelated senders but is not cryptographic authentication.
+
+While ESP-NOW is enabled, this firmware deliberately keeps the station radio on channel 1 and does not join a configured infrastructure network. The configuration SoftAP remains available and owns the fixed radio channel.
+
+### Connected repository contract
+
+| Repository | Role | ESP-NOW/CAN requirement |
+|:---|:---|:---|
+| `esp32-r8` | R8 dashboard/logger | Add its reported station MAC as a client; it defaults to permitting canboard STA MAC `DC:DA:0C:3B:B2:0C`. It decodes classic standard, non-RTR data frames only. |
+| `esp32-e36` | E36 dashboard/logger | Add its reported station MAC as a client; it defaults to permitting canboard STA MAC `DC:DA:0C:3C:E8:08`. It decodes classic standard, non-RTR data frames only. |
+| `esp32-output` | Output/PWM receiver and optional GPS responder | Add its displayed station MAC as a client. Output command frames use `Base + 5` and `Base + 6`; GPS response uses the separate 42-byte `GP` version-1 snapshot. |
+
+The raw-CAN batch format is version 1 in all four repositories. Dashboard DBCs, telemetry schemas, RTCs, UI projects, hardware pins, NVS namespaces, and default sender MACs are vehicle profiles and are intentionally not interchangeable.
 
 ## Dragy GPS Output
 

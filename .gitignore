@@ -8,4 +8,4 @@ skdconfig.defaults
 sdkconfig.old
 .devcontainer/*
 managed_components/*
-main/src/secrets.h
+main/inc/secrets.h

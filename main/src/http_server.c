@@ -1230,7 +1230,6 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
 
     board_config_t cfg;
     config_set_defaults(&cfg);
-    bool can_base_clamped = false;
 
     cJSON *channels = cJSON_GetObjectItem(root, "channels");
     if (!channels || !cJSON_IsArray(channels) || cJSON_GetArraySize(channels) != CONFIG_CHANNELS) {
@@ -1350,12 +1349,7 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
             }
         }
     }
-    if (cfg.can_start_id == OUTPUT_CAN_BASE_MAX + 1U) {
-        ESP_LOGW(TAG, "Legacy CAN base ID 0x%lX in import is no longer valid with the duty frame; clamping to 0x%X",
-                 (unsigned long)cfg.can_start_id, OUTPUT_CAN_BASE_MAX);
-        cfg.can_start_id = OUTPUT_CAN_BASE_MAX;
-        can_base_clamped = true;
-    } else if (!output_command_base_can_id_valid(cfg.can_start_id)) {
+    if (!output_command_base_can_id_valid(cfg.can_start_id)) {
         ESP_LOGW(TAG, "Invalid CAN base ID 0x%lX in import; Output frames require 0x000-0x%X",
                  (unsigned long)cfg.can_start_id, OUTPUT_CAN_BASE_MAX);
         cJSON_Delete(root);
@@ -1406,30 +1400,16 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
     cJSON *outputs_json = cJSON_GetObjectItemCaseSensitive(root, "outputs");
-    cJSON *legacy_rules_json = cJSON_GetObjectItemCaseSensitive(root, "rules");
-    const bool legacy_rules_ignored = legacy_rules_json != NULL;
-    const bool outputs_reset = outputs_json == NULL;
-    if (outputs_json != NULL) {
-        const bool valid_outputs = cJSON_IsObject(outputs_json) &&
-                                   relay_rule_config_json_parse(outputs_json, outputs) &&
-                                   relay_rule_engine_validate(outputs, cfg.can_tx_hz);
-        if (!valid_outputs) {
-            ESP_LOGW(TAG, "Invalid Condition/Output configuration in import");
-            free(outputs);
-            cJSON_Delete(root);
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Condition/Output configuration");
-            return ESP_FAIL;
-        }
-    } else {
-        relay_rule_engine_set_defaults(outputs);
-        if (legacy_rules_ignored) {
-            ESP_LOGW(TAG, "Legacy 'rules' property ignored; restoring board settings with eight empty Outputs");
-        } else {
-            ESP_LOGW(TAG, "Backup has no 'outputs' property; restoring board settings with eight empty Outputs");
-        }
+    const bool valid_outputs = cJSON_IsObject(outputs_json) &&
+                               relay_rule_config_json_parse(outputs_json, outputs) &&
+                               relay_rule_engine_validate(outputs, cfg.can_tx_hz);
+    if (!valid_outputs) {
+        ESP_LOGW(TAG, "Missing or invalid current Condition/Output configuration in import");
+        free(outputs);
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Current Outputs configuration is required");
+        return ESP_FAIL;
     }
-    if (legacy_rules_ignored && outputs_json != NULL)
-        ESP_LOGW(TAG, "Legacy 'rules' property ignored; only the versioned 'outputs' property is restored");
 
     bool saved = save_aggregate_config(&cfg, outputs, true);
     free(outputs);
@@ -1443,32 +1423,7 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
 
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
-    const char *output_warning = NULL;
-    if (outputs_reset && legacy_rules_ignored) {
-        output_warning = "Legacy rules were ignored; Outputs were reset to empty";
-    } else if (outputs_reset) {
-        output_warning = "Backup contained no Outputs; Outputs were reset to empty";
-    } else if (legacy_rules_ignored) {
-        output_warning = "Legacy rules were ignored; versioned Outputs were restored";
-    }
-
-    if (can_base_clamped || output_warning != NULL) {
-        char response[256];
-        if (can_base_clamped && output_warning != NULL) {
-            snprintf(response, sizeof(response),
-                     "{\"ok\":true,\"warning\":\"CAN base ID 0x7FA was clamped to 0x7F9; %s\"}",
-                     output_warning);
-        } else if (can_base_clamped) {
-            snprintf(response, sizeof(response),
-                     "{\"ok\":true,\"warning\":\"CAN base ID 0x7FA was clamped to 0x7F9\"}");
-        } else {
-            snprintf(response, sizeof(response), "{\"ok\":true,\"warning\":\"%s\"}",
-                     output_warning);
-        }
-        httpd_resp_sendstr(req, response);
-    } else {
-        httpd_resp_sendstr(req, "{\"ok\":true}");
-    }
+    httpd_resp_sendstr(req, "{\"ok\":true}");
     return ESP_OK;
 }
 

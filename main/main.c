@@ -36,8 +36,8 @@ void app_main(void)
 {
     static const char *log_tag = "APP";
     
-    // Mount the legacy/web SPIFFS without formatting. config_load() prefers the
-    // dedicated NVS partition and imports /spiffs/config.bin only when NVS is empty.
+    // Mount web SPIFFS without formatting. Persistent configuration lives only
+    // in the dedicated config NVS partition.
     esp_err_t spiffs_ret = esp_vfs_spiffs_register(&(esp_vfs_spiffs_conf_t){
         .base_path = "/spiffs",
         .partition_label = NULL,
@@ -49,7 +49,7 @@ void app_main(void)
     } else if (spiffs_ret != ESP_OK) {
         ESP_LOGW(log_tag, "Failed to mount SPIFFS: %s", esp_err_to_name(spiffs_ret));
     } else {
-        ESP_LOGI(log_tag, "SPIFFS mounted for web assets and legacy config import");
+        ESP_LOGI(log_tag, "SPIFFS mounted for web assets");
     }
     if (!config_load(&board_cfg)) {
         ESP_LOGW(log_tag, "Config CRC invalid or not found, using defaults");

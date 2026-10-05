@@ -104,9 +104,9 @@ typedef struct {
 /// @return true only after commit and read-back verification succeed
 bool config_save(const board_config_t *cfg);
 
-/// @brief Load configuration from NVS, importing legacy SPIFFS once if needed
+/// @brief Load the current configuration record from dedicated NVS
 /// @param cfg Pointer to configuration structure to populate
-/// @return true if a valid NVS or legacy configuration was loaded
+/// @return true only if a valid current-version NVS record was loaded
 bool config_load(board_config_t *cfg);
 
 /// @brief Initialize configuration structure with factory defaults

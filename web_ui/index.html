@@ -434,7 +434,10 @@
       .condition-row {
         display: grid;
         grid-template-columns:
-          minmax(145px, 0.85fr) 105px minmax(150px, 1.15fr) minmax(115px, 0.85fr)
+          minmax(145px, 0.85fr) 105px minmax(150px, 1.15fr) minmax(
+            115px,
+            0.85fr
+          )
           72px minmax(82px, 0.55fr) minmax(105px, 0.62fr) minmax(125px, 0.72fr)
           minmax(150px, 0.85fr) auto;
         align-items: start;
@@ -471,10 +474,14 @@
         color: #536271;
       }
       .condition-reference-test {
-        grid-template-columns: 105px minmax(180px, 1.2fr) minmax(95px, 0.45fr) auto;
+        grid-template-columns:
+          105px minmax(180px, 1.2fr) minmax(95px, 0.45fr)
+          auto;
       }
       .trigger-timer-config.condition-trigger-config {
-        grid-template-columns: minmax(88px, 0.55fr) minmax(180px, 1.2fr) minmax(100px, 0.55fr) minmax(105px, 0.65fr);
+        grid-template-columns:
+          minmax(88px, 0.55fr) minmax(180px, 1.2fr) minmax(100px, 0.55fr)
+          minmax(105px, 0.65fr);
       }
       .rules-table-wrap {
         overflow-x: auto;
@@ -919,15 +926,28 @@
               >
                 Scan BLE
               </button>
-              <span id="ble-scan-status" class="scan-status gps-setting dragy-gps-setting"></span>
+              <span
+                id="ble-scan-status"
+                class="scan-status gps-setting dragy-gps-setting"
+              ></span>
               <span class="gps-setting espnow-gps-setting">
                 <label for="gps-espnow-peer">Response Peer:</label>
-                <select id="gps-espnow-peer" name="gps_espnow_peer_mac"></select>
+                <select
+                  id="gps-espnow-peer"
+                  name="gps_espnow_peer_mac"
+                ></select>
               </span>
               <span class="gps-setting espnow-gps-setting">
                 <label for="gps-response-timeout">Stale Timeout:</label>
                 <span class="unit-wrap">
-                  <input id="gps-response-timeout" name="gps_response_timeout_ms" type="number" min="100" max="60000" value="1000" />
+                  <input
+                    id="gps-response-timeout"
+                    name="gps_response_timeout_ms"
+                    type="number"
+                    min="100"
+                    max="60000"
+                    value="1000"
+                  />
                   <span class="unit">ms</span>
                 </span>
               </span>
@@ -1015,7 +1035,8 @@
       <h2>Outputs</h2>
       <p class="rules-intro">
         Build named output commands from local sensors or imported CAN signals.
-        Binary state/valid/pulse is broadcast on <code>CAN base + 5</code>; PWM duty is paired on <code>CAN base + 6</code>.
+        Binary state/valid/pulse is broadcast on <code>CAN base + 5</code>; PWM
+        duty is paired on <code>CAN base + 6</code>.
       </p>
       <p class="hint">
         The first matching case wins. Tests inside one case are ANDed;
@@ -1046,9 +1067,15 @@
         <div class="conditions-panel-header">
           <div>
             <h3>Conditions</h3>
-            <span class="hint">Define a named true/false condition once and reuse it in multiple Output cases or Triggered timers. Stale behavior is applied only after the source has produced at least one valid sample.</span>
+            <span class="hint"
+              >Define a named true/false condition once and reuse it in multiple
+              Output cases or Triggered timers. Stale behavior is applied only
+              after the source has produced at least one valid sample.</span
+            >
           </div>
-          <button type="button" id="condition-add" class="primary-button">Add Condition</button>
+          <button type="button" id="condition-add" class="primary-button">
+            Add Condition
+          </button>
         </div>
         <div id="condition-editor"></div>
       </div>
@@ -1262,7 +1289,8 @@
           el.style.display = gpsEnabled ? "flex" : "none";
         });
         document.querySelectorAll(".dragy-gps-setting").forEach((el) => {
-          el.style.display = gpsEnabled && gpsSource === "dragy" ? "flex" : "none";
+          el.style.display =
+            gpsEnabled && gpsSource === "dragy" ? "flex" : "none";
         });
         document.querySelectorAll(".espnow-gps-setting").forEach((el) => {
           el.style.display =
@@ -1357,7 +1385,10 @@
         }
         const espnowMacSet = new Set();
         espnowClients.forEach((client, index) => {
-          if (new TextEncoder().encode(client.label || "").length > ESPNOW_CLIENT_LABEL_MAX_BYTES) {
+          if (
+            new TextEncoder().encode(client.label || "").length >
+            ESPNOW_CLIENT_LABEL_MAX_BYTES
+          ) {
             error += `ESP-NOW client ${index + 1} label is too long. `;
           }
           if (!isValidMacAddress(client.mac)) {
@@ -1389,10 +1420,16 @@
             error += "GPS Start ID must allow six 11-bit frames. ";
           }
           if (gpsSource === "dragy") {
-            if (!isValidMacAddress(document.getElementById("gps-target-mac").value)) {
+            if (
+              !isValidMacAddress(
+                document.getElementById("gps-target-mac").value,
+              )
+            ) {
               error += "GPS BLE MAC invalid. ";
             }
-            const gpsRate = parseInt(document.getElementById("gps-update-rate").value);
+            const gpsRate = parseInt(
+              document.getElementById("gps-update-rate").value,
+            );
             if (![10, 20, 25].includes(gpsRate)) {
               error += "Dragy update rate must be 10, 20, or 25Hz. ";
             }
@@ -1400,11 +1437,23 @@
             const responsePeer = normalizeMacAddress(
               document.getElementById("gps-espnow-peer").value,
             );
-            if (!espnowEnabled || !espnowClients.some((client) => normalizeMacAddress(client.mac) === responsePeer)) {
-              error += "GPS response peer must be a configured ESP-NOW client. ";
+            if (
+              !espnowEnabled ||
+              !espnowClients.some(
+                (client) => normalizeMacAddress(client.mac) === responsePeer,
+              )
+            ) {
+              error +=
+                "GPS response peer must be a configured ESP-NOW client. ";
             }
-            const timeout = Number(document.getElementById("gps-response-timeout").value);
-            if (!Number.isInteger(timeout) || timeout < 100 || timeout > 60000) {
+            const timeout = Number(
+              document.getElementById("gps-response-timeout").value,
+            );
+            if (
+              !Number.isInteger(timeout) ||
+              timeout < 100 ||
+              timeout > 60000
+            ) {
               error += "GPS response timeout must be 100–60000 ms. ";
             }
           }
@@ -1574,9 +1623,9 @@
         document.getElementById("gps-target-mac").value = normalizeMacAddress(
           config.gps_target_mac || "",
         );
-        document.getElementById("gps-update-rate").value = [10, 20, 25].includes(
-          config.gps_update_rate_hz,
-        )
+        document.getElementById("gps-update-rate").value = [
+          10, 20, 25,
+        ].includes(config.gps_update_rate_hz)
           ? config.gps_update_rate_hz
           : 10;
         document.getElementById("gps-espnow-peer").value = normalizeMacAddress(
@@ -1624,20 +1673,28 @@
           }
 
           relayConditionStatus = [];
-          (Array.isArray(live.conditions) ? live.conditions : []).forEach((condition) => {
-            const index = Number(condition?.condition) - 1;
-            if (index >= 0 && index < 16) relayConditionStatus[index] = condition;
-          });
+          (Array.isArray(live.conditions) ? live.conditions : []).forEach(
+            (condition) => {
+              const index = Number(condition?.condition) - 1;
+              if (index >= 0 && index < 16)
+                relayConditionStatus[index] = condition;
+            },
+          );
           updateConditionStatusCells();
 
           relayRuleStatus = [];
           const receivedAt = Date.now();
-          (Array.isArray(live.outputs) ? live.outputs : []).forEach((output) => {
-            const index = Number(output?.output) - 1;
-            if (index >= 0 && index < 8) {
-              relayRuleStatus[index] = { ...output, received_at_ms: receivedAt };
-            }
-          });
+          (Array.isArray(live.outputs) ? live.outputs : []).forEach(
+            (output) => {
+              const index = Number(output?.output) - 1;
+              if (index >= 0 && index < 8) {
+                relayRuleStatus[index] = {
+                  ...output,
+                  received_at_ms: receivedAt,
+                };
+              }
+            },
+          );
           updateRuleStatusCells();
         } catch (e) {
           for (let i = 0; i < 10; ++i) {
@@ -1741,9 +1798,16 @@
             body: JSON.stringify(config),
           });
           if (resp.ok) {
-            setStatus("Configuration, Conditions and Outputs saved.", false, true);
+            setStatus(
+              "Configuration, Conditions and Outputs saved.",
+              false,
+              true,
+            );
           } else {
-            setStatus(await resp.text() || "Failed to save configuration.", true);
+            setStatus(
+              (await resp.text()) || "Failed to save configuration.",
+              true,
+            );
           }
         } catch (e) {
           setStatus("Failed to save config.", true);
@@ -1827,11 +1891,14 @@
           if (resp.ok) {
             const result = await resp.json().catch(() => ({}));
             if (result.warning) setStatus(result.warning, true);
-            setTimeout(() => {
-              window.location.reload();
-            }, result.warning ? 2200 : 900);
+            setTimeout(
+              () => {
+                window.location.reload();
+              },
+              result.warning ? 2200 : 900,
+            );
           } else {
-            setStatus(await resp.text() || "Restore failed.", true);
+            setStatus((await resp.text()) || "Restore failed.", true);
           }
         } catch (e) {
           setStatus("Restore failed.", true);
@@ -1911,7 +1978,11 @@
       const num = (value, fallback = 0) =>
         Number.isFinite(Number(value)) ? Number(value) : fallback;
       const optionalNum = (value) => {
-        if (value === null || value === undefined || String(value).trim() === "")
+        if (
+          value === null ||
+          value === undefined ||
+          String(value).trim() === ""
+        )
           return null;
         const parsed = Number(value);
         return Number.isFinite(parsed) ? parsed : null;
@@ -1980,7 +2051,9 @@
           )
           .join("");
       const firstConditionIndex = () =>
-        (relayRules?.conditions || []).findIndex((condition) => condition?.label);
+        (relayRules?.conditions || []).findIndex(
+          (condition) => condition?.label,
+        );
       const validConditionIndex = (value) => {
         const index = Number(value);
         return Number.isInteger(index) &&
@@ -2108,37 +2181,48 @@
 
         if (mode === "condition") {
           const selectedCondition = Number(test.condition_index ?? 0),
-            options = conditionChoices(selectedCondition) || '<option value="">Add a Condition first</option>';
+            options =
+              conditionChoices(selectedCondition) ||
+              '<option value="">Add a Condition first</option>';
           return `<div class="logic-test condition-reference-test">
             ${modeField}
             <label class="logic-test-field"><select aria-label="Condition" data-change="condition-select" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${options}</select><span class="logic-test-field-label">Condition</span></label>
-            <label class="logic-test-field"><select aria-label="Condition expected value" data-change="condition-expected" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}"><option value="true" ${test.condition_expected !== false ? "selected" : ""}>True</option><option value="false" ${test.condition_expected === false ? "selected" : ""}>False</option></select><span class="logic-test-field-label">Must be</span></label>
+            <label class="logic-test-field"><select aria-label="Condition expected value" data-change="condition-expected" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}"><option value="true" ${test.condition_expected !== false ? "selected" : ""}>True</option><option value="false" ${test.condition_expected === false ? "selected" : ""}>False</option></select><span class="logic-test-field-label">Is</span></label>
             ${remove}
           </div>`;
         }
 
         if (mode === "trigger-timer") {
           const triggerMode = triggerTestSourceMode(test, key),
-            durationSeconds = Math.max(0, Number(test.trigger_duration_ms || 300000)) / 1000;
+            durationSeconds =
+              Math.max(0, Number(test.trigger_duration_ms || 300000)) / 1000;
           let triggerSourceControls = "",
             triggerPredicateControls = "",
             triggerHelp = "";
           if (triggerMode === "condition") {
-            const selectedCondition = Number(test.trigger_condition_index ?? firstConditionIndex()),
-              options = conditionChoices(selectedCondition) || '<option value="">Add a Condition first</option>';
+            const selectedCondition = Number(
+                test.trigger_condition_index ?? firstConditionIndex(),
+              ),
+              options =
+                conditionChoices(selectedCondition) ||
+                '<option value="">Add a Condition first</option>';
             triggerSourceControls = `<label><select aria-label="Trigger Condition" data-change="trigger-condition-select" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${options}</select><span class="trigger-timer-field-label">Condition</span></label><label><select aria-label="Trigger Condition value" data-change="trigger-condition-expected" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}"><option value="true" ${test.trigger_condition_expected === true ? "selected" : ""}>True</option><option value="false" ${test.trigger_condition_expected !== true ? "selected" : ""}>False</option></select><span class="trigger-timer-field-label">Trigger when</span></label>`;
-            triggerHelp = "Arms after the selected Condition is observed in the opposite state, starts when it changes to the requested state, then remains true for this period. A Condition may deliberately map a stale source to true/false after it has first been established.";
+            triggerHelp =
+              "Arms after the selected Condition is observed in the opposite state, starts when it changes to the requested state, then remains true for this period. A Condition may deliberately map a stale source to true/false after it has first been established.";
           } else {
-            triggerSourceControls = triggerMode === "can"
-              ? `<label><select aria-label="Trigger CAN message" data-change="trigger-can-message" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${canOptions.messageOptions || `<option value="">Select reference DBC first</option>`}</select><span class="trigger-timer-field-label">CAN message</span></label><label><select aria-label="Trigger CAN field" data-change="trigger-can-field" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${canOptions.fieldOptions || `<option value="">Select a DBC message</option>`}</select><span class="trigger-timer-field-label">Signal</span></label>`
-              : `<label><select aria-label="Trigger sensor input" data-change="trigger-sensor-channel" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${Array.from({ length: 10 }, (_, index) => `<option value="${index}" ${localChannel === index ? "selected" : ""}>Input ${index + 1}${config?.channels?.[index]?.name ? ` — ${html(config.channels[index].name)}` : ""}</option>`).join("")}</select><span class="trigger-timer-field-label">Sensor input</span></label><label><select aria-label="Trigger sensor measurement" data-change="trigger-sensor-measurement" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}"><option value="voltage" ${!localValue ? "selected" : ""}>Voltage</option><option value="value" ${localValue ? "selected" : ""}>Value</option></select><span class="trigger-timer-field-label">Measurement</span></label>`;
+            triggerSourceControls =
+              triggerMode === "can"
+                ? `<label><select aria-label="Trigger CAN message" data-change="trigger-can-message" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${canOptions.messageOptions || `<option value="">Select reference DBC first</option>`}</select><span class="trigger-timer-field-label">CAN message</span></label><label><select aria-label="Trigger CAN field" data-change="trigger-can-field" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${canOptions.fieldOptions || `<option value="">Select a DBC message</option>`}</select><span class="trigger-timer-field-label">Signal</span></label>`
+                : `<label><select aria-label="Trigger sensor input" data-change="trigger-sensor-channel" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${Array.from({ length: 10 }, (_, index) => `<option value="${index}" ${localChannel === index ? "selected" : ""}>Input ${index + 1}${config?.channels?.[index]?.name ? ` — ${html(config.channels[index].name)}` : ""}</option>`).join("")}</select><span class="trigger-timer-field-label">Sensor input</span></label><label><select aria-label="Trigger sensor measurement" data-change="trigger-sensor-measurement" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}"><option value="voltage" ${!localValue ? "selected" : ""}>Voltage</option><option value="value" ${localValue ? "selected" : ""}>Value</option></select><span class="trigger-timer-field-label">Measurement</span></label>`;
             triggerPredicateControls = `<label><select aria-label="Trigger comparison" data-change="test-comparison" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}">${comparisonChoices(test.comparison)}</select><span class="trigger-timer-field-label">Comparison</span></label>
               <label><input type="number" step="any" value="${test.threshold}" aria-label="Trigger threshold" data-change="test-threshold" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}"><span class="trigger-timer-field-label">Threshold</span></label>`;
-            triggerHelp = "Arms after the trigger condition is observed false, starts on the next false → true transition, then remains true for this period even if the raw trigger CAN source later goes stale.";
+            triggerHelp =
+              "Arms after the trigger condition is observed false, starts on the next false → true transition, then remains true for this period even if the raw trigger CAN source later goes stale.";
           }
-          const hysteresis = triggerMode === "condition"
-            ? ""
-            : `<div class="trigger-timer-hysteresis"><div class="trigger-timer-hysteresis-controls"><input type="checkbox" aria-label="Enable trigger hysteresis" data-change="test-hyst-enabled" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}" ${test.hysteresis_enabled ? "checked" : ""}><input type="number" min="0" step="any" value="${test.hysteresis}" aria-label="Trigger hysteresis amount" data-change="test-hyst" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}" ${test.hysteresis_enabled ? "" : "disabled"}></div><span class="trigger-timer-field-label">Hysteresis</span></div>`;
+          const hysteresis =
+            triggerMode === "condition"
+              ? ""
+              : `<div class="trigger-timer-hysteresis"><div class="trigger-timer-hysteresis-controls"><input type="checkbox" aria-label="Enable trigger hysteresis" data-change="test-hyst-enabled" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}" ${test.hysteresis_enabled ? "checked" : ""}><input type="number" min="0" step="any" value="${test.hysteresis}" aria-label="Trigger hysteresis amount" data-change="test-hyst" data-r="${rule}" data-c="${caseIndex}" data-t="${testIndex}" ${test.hysteresis_enabled ? "" : "disabled"}></div><span class="trigger-timer-field-label">Hysteresis</span></div>`;
           return `<div class="logic-test trigger-timer-test">
             ${modeField}
             <div class="trigger-timer-config ${triggerMode === "condition" ? "condition-trigger-config" : ""}">
@@ -2173,11 +2257,11 @@
         const permanentOnAbove = optionalNum(entry.pulse_permanent_on_above),
           pulseRowLimit = permanentOnAbove === null ? 8 : 7,
           pulseRows = (entry.pulse_points || [])
-          .map(
-            (point, p) =>
-              `<tr><td><input type="number" step="any" value="${point.input_value}" data-change="point-input" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="Signal value"></td><td><input type="number" min="0" step="0.001" value="${Number(point.on_time_ms) / 1000}" data-change="point-on" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="ON seconds"></td><td><input type="number" min="0.001" step="0.001" value="${Number(point.period_ms) / 1000}" data-change="point-period" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="Cycle seconds"></td><td><button class="danger-button" type="button" data-click="remove-point" data-r="${rule}" data-c="${caseIndex}" data-p="${p}">Remove</button></td></tr>`,
-          )
-          .join("");
+            .map(
+              (point, p) =>
+                `<tr><td><input type="number" step="any" value="${point.input_value}" data-change="point-input" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="Signal value"></td><td><input type="number" min="0" step="0.001" value="${Number(point.on_time_ms) / 1000}" data-change="point-on" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="ON seconds"></td><td><input type="number" min="0.001" step="0.001" value="${Number(point.period_ms) / 1000}" data-change="point-period" data-r="${rule}" data-c="${caseIndex}" data-p="${p}" placeholder="Cycle seconds"></td><td><button class="danger-button" type="button" data-click="remove-point" data-r="${rule}" data-c="${caseIndex}" data-p="${p}">Remove</button></td></tr>`,
+            )
+            .join("");
         const pulse =
           entry.action === 2
             ? `<div class="pulse-panel"><div class="pulse-header"><label>Pulse lookup source<select data-change="pulse-source" data-r="${rule}" data-c="${caseIndex}">${sourceChoices(entry.pulse_source_index)}</select></label><label>Pulse source hysteresis<input type="number" min="0" step="any" value="${num(entry.pulse_hysteresis)}" data-change="pulse-hysteresis" data-r="${rule}" data-c="${caseIndex}" aria-label="Pulse source hysteresis"></label><span class="hint">Hysteresis is measured from the cycle-start value. Exceeding it recalculates the current countdown from the original start time and updates ON duration while ON. ON time 0 means continuously OFF. Cycle period must be greater than zero.</span></div><div class="rules-table-wrap"><table class="pulse-table"><thead><tr><th>Signal value</th><th>ON time (seconds)</th><th>Cycle period (seconds)</th><th></th></tr></thead><tbody>${pulseRows || `<tr><td class="empty-row" colspan="4">Add at least one timed PULSE lookup row.</td></tr>`}</tbody></table></div><div class="lookup-actions"><button type="button" data-click="add-point" data-r="${rule}" data-c="${caseIndex}" ${entry.pulse_points.length >= pulseRowLimit ? "disabled" : ""}>Add lookup row</button><label class="pulse-permanent-on-field"><input type="number" step="any" value="${permanentOnAbove === null ? "" : permanentOnAbove}" placeholder="Disabled" data-change="pulse-permanent-on" data-r="${rule}" data-c="${caseIndex}" aria-label="Permanently ON at or above signal value"><span class="logic-test-field-label">Permanently ON at/above</span></label><span class="hint pulse-permanent-on-help">At and above this signal value the PULSE output stays continuously ON. Leave blank to disable.</span></div></div>`
@@ -2193,7 +2277,8 @@
             ? `<div class="pulse-panel"><div class="pulse-header"><label>PWM lookup source<select data-change="pwm-source" data-r="${rule}" data-c="${caseIndex}">${sourceChoices(entry.pwm_source_index)}</select></label><label>PWM source hysteresis<input type="number" min="0" step="any" value="${num(entry.pwm_hysteresis)}" data-change="pwm-hysteresis" data-r="${rule}" data-c="${caseIndex}" aria-label="PWM source hysteresis"></label><span class="hint">Duty is clamped to the nearest endpoint and linearly interpolated between rows. The accepted lookup input is held until the source changes by more than this hysteresis.</span></div><div class="rules-table-wrap"><table class="pulse-table"><thead><tr><th>Signal value</th><th>Duty (%)</th><th></th></tr></thead><tbody>${pwmRows || `<tr><td class="empty-row" colspan="3">Add at least one PWM lookup row.</td></tr>`}</tbody></table></div><div class="lookup-actions"><button type="button" data-click="add-pwm-point" data-r="${rule}" data-c="${caseIndex}">Add lookup row</button></div></div>`
             : "";
         const collapsed = collapsedCases.has(entry),
-          actionName = ["OFF", "ON", "PULSE", "PWM"][Number(entry.action)] || "OFF",
+          actionName =
+            ["OFF", "ON", "PULSE", "PWM"][Number(entry.action)] || "OFF",
           caseSummary = `${entry.tests.length} test${entry.tests.length === 1 ? "" : "s"} · THEN ${actionName}`,
           body = collapsed
             ? ""
@@ -2213,7 +2298,9 @@
                 ? `${rule.cases.length} case${rule.cases.length === 1 ? "" : "s"} · ${actions}`
                 : "No cases · defaults OFF";
               const expanded = expandedRuleRows.has(r);
-              const usesPwm = rule.cases.some((entry) => Number(entry.action) === 3);
+              const usesPwm = rule.cases.some(
+                (entry) => Number(entry.action) === 3,
+              );
               const publishedAs = usesPwm
                 ? `Bit ${r + 1} + duty ${r + 1}`
                 : `Bit ${r + 1}`;
@@ -2238,8 +2325,10 @@
               : `Case ${Number(status.invalid_case) + 1}, test ${Number(status.invalid_test) + 1}`;
           if (status.invalid_condition_name) {
             let reason = "source unavailable";
-            if (Number(status.invalid_reason) === 1) reason = "source has not been received";
-            else if (Number(status.invalid_reason) === 2) reason = "source is awaiting confirmation";
+            if (Number(status.invalid_reason) === 1)
+              reason = "source has not been received";
+            else if (Number(status.invalid_reason) === 2)
+              reason = "source is awaiting confirmation";
             else if (Number(status.invalid_reason) === 3)
               reason = `source is stale (age ${formatRuleSeconds(status.invalid_condition_source_age_ms)})`;
             return `<strong>Invalid · OFF</strong><br>${html(location)}: Condition ${html(status.invalid_condition_name)} is invalid · ${html(reason)}`;
@@ -2281,8 +2370,7 @@
           return `<strong>ON</strong> · Continuous at current signal · ON duration continuous`;
         const elapsed = Math.max(0, Date.now() - Number(status.received_at_ms));
         let nextOn = Number(status.pulse_next_on_ms) - elapsed;
-        if (nextOn <= 0)
-          nextOn = period - ((-nextOn) % period);
+        if (nextOn <= 0) nextOn = period - (-nextOn % period);
         const phase = (period - nextOn) % period;
         state = phase < onTime ? "ON" : "OFF";
         return `<strong>${state}</strong> · Next ON in ${formatRuleSeconds(nextOn)} · ON duration ${formatRuleSeconds(onTime)}`;
@@ -2304,14 +2392,18 @@
         if (status.valid) {
           const value = status.value ? "TRUE" : "FALSE";
           if (status.source_current) return `<strong>${value}</strong> · live`;
-          const stale = ["Invalid", "False", "True", "Hold last"][Number(condition.stale_behavior)] || "Invalid";
+          const stale =
+            ["Invalid", "False", "True", "Hold last"][
+              Number(condition.stale_behavior)
+            ] || "Invalid";
           return `<strong>${value}</strong> · source stale → ${html(stale)}`;
         }
-        const reason = Number(status.source_reason) === 3
-          ? `source stale (${formatRuleSeconds(status.source_age_ms)})`
-          : Number(status.source_reason) === 2
-            ? "source awaiting confirmation"
-            : "source unavailable";
+        const reason =
+          Number(status.source_reason) === 3
+            ? `source stale (${formatRuleSeconds(status.source_age_ms)})`
+            : Number(status.source_reason) === 2
+              ? "source awaiting confirmation"
+              : "source unavailable";
         return `<strong>Invalid</strong> · ${html(reason)}`;
       }
       function renderConditionEditor() {
@@ -2325,9 +2417,10 @@
               localChannel = Number(source?.local_channel || 0),
               localValue = source?.type === 3,
               canOptions = canEditorOptions(source),
-              sourceControls = sourceMode === "can"
-                ? `<label class="condition-field"><select aria-label="Condition CAN message" data-condition-change="can-message" data-i="${index}">${canOptions.messageOptions || `<option value="">Select reference DBC first</option>`}</select><span class="condition-field-label">CAN message</span></label><label class="condition-field"><select aria-label="Condition CAN signal" data-condition-change="can-field" data-i="${index}">${canOptions.fieldOptions || `<option value="">Select a DBC message</option>`}</select><span class="condition-field-label">Signal</span></label>`
-                : `<label class="condition-field"><select aria-label="Condition sensor input" data-condition-change="sensor-channel" data-i="${index}">${Array.from({ length: 10 }, (_, channel) => `<option value="${channel}" ${localChannel === channel ? "selected" : ""}>Input ${channel + 1}${config?.channels?.[channel]?.name ? ` — ${html(config.channels[channel].name)}` : ""}</option>`).join("")}</select><span class="condition-field-label">Sensor input</span></label><label class="condition-field"><select aria-label="Condition sensor measurement" data-condition-change="sensor-measurement" data-i="${index}"><option value="voltage" ${!localValue ? "selected" : ""}>Voltage</option><option value="value" ${localValue ? "selected" : ""}>Value</option></select><span class="condition-field-label">Measurement</span></label>`;
+              sourceControls =
+                sourceMode === "can"
+                  ? `<label class="condition-field"><select aria-label="Condition CAN message" data-condition-change="can-message" data-i="${index}">${canOptions.messageOptions || `<option value="">Select reference DBC first</option>`}</select><span class="condition-field-label">CAN message</span></label><label class="condition-field"><select aria-label="Condition CAN signal" data-condition-change="can-field" data-i="${index}">${canOptions.fieldOptions || `<option value="">Select a DBC message</option>`}</select><span class="condition-field-label">Signal</span></label>`
+                  : `<label class="condition-field"><select aria-label="Condition sensor input" data-condition-change="sensor-channel" data-i="${index}">${Array.from({ length: 10 }, (_, channel) => `<option value="${channel}" ${localChannel === channel ? "selected" : ""}>Input ${channel + 1}${config?.channels?.[channel]?.name ? ` — ${html(config.channels[channel].name)}` : ""}</option>`).join("")}</select><span class="condition-field-label">Sensor input</span></label><label class="condition-field"><select aria-label="Condition sensor measurement" data-condition-change="sensor-measurement" data-i="${index}"><option value="voltage" ${!localValue ? "selected" : ""}>Voltage</option><option value="value" ${localValue ? "selected" : ""}>Value</option></select><span class="condition-field-label">Measurement</span></label>`;
             return `<div class="condition-row">
               <label class="condition-field"><input value="${html(condition.label)}" maxlength="31" aria-label="Condition name" data-condition-change="label" data-i="${index}"><span class="condition-field-label">Condition name</span></label>
               <label class="condition-field"><select aria-label="Condition source type" data-condition-change="source-mode" data-i="${index}"><option value="sensor" ${sourceMode === "sensor" ? "selected" : ""}>Sensor input</option><option value="can" ${sourceMode === "can" ? "selected" : ""}>CAN</option></select><span class="condition-field-label">Source type</span></label>
@@ -2341,19 +2434,26 @@
             </div>`;
           })
           .join("");
-        host.innerHTML = rows || '<div class="empty-row">No Conditions configured. Add one to reuse a named boolean across Outputs.</div>';
+        host.innerHTML =
+          rows ||
+          '<div class="empty-row">No Conditions configured. Add one to reuse a named boolean across Outputs.</div>';
       }
       function updateConditionStatusCells() {
         document.querySelectorAll("[data-condition-live]").forEach((cell) => {
-          cell.innerHTML = conditionLiveStatusText(Number(cell.dataset.conditionLive));
+          cell.innerHTML = conditionLiveStatusText(
+            Number(cell.dataset.conditionLive),
+          );
         });
       }
       function conditionIsReferenced(index) {
         return (relayRules?.rules || []).some((output) =>
           (output.cases || []).some((entry) =>
-            (entry.tests || []).some((test) =>
-              (Number(test.type) === 3 && Number(test.condition_index) === index) ||
-              (Number(test.type) === 2 && Number(test.trigger_condition_index) === index),
+            (entry.tests || []).some(
+              (test) =>
+                (Number(test.type) === 3 &&
+                  Number(test.condition_index) === index) ||
+                (Number(test.type) === 2 &&
+                  Number(test.trigger_condition_index) === index),
             ),
           ),
         );
@@ -2370,9 +2470,12 @@
         else if (kind === "source-mode") {
           if (el.value === "sensor") condition.source_index = 0;
           else {
-            let canIndex = relayRules.sources.findIndex((candidate) => candidate.type === 1);
+            let canIndex = relayRules.sources.findIndex(
+              (candidate) => candidate.type === 1,
+            );
             if (canIndex < 0) canIndex = ensureCanSource(0, 0);
-            if (canIndex !== null && canIndex >= 0) condition.source_index = canIndex;
+            if (canIndex !== null && canIndex >= 0)
+              condition.source_index = canIndex;
           }
         } else if (kind === "sensor-channel") {
           const measurement = source?.type === 3 ? 10 : 0;
@@ -2384,13 +2487,20 @@
           const canIndex = ensureCanSource(num(el.value), 0);
           if (canIndex !== null) condition.source_index = canIndex;
         } else if (kind === "can-field" && el.value !== "stored") {
-          const current = dbcSelectionForSource(relayRules.sources[condition.source_index]);
-          const canIndex = ensureCanSource(current?.messageIndex ?? 0, num(el.value));
+          const current = dbcSelectionForSource(
+            relayRules.sources[condition.source_index],
+          );
+          const canIndex = ensureCanSource(
+            current?.messageIndex ?? 0,
+            num(el.value),
+          );
           if (canIndex !== null) condition.source_index = canIndex;
         } else if (kind === "comparison") condition.comparison = num(el.value);
         else if (kind === "threshold") condition.threshold = num(el.value);
-        else if (kind === "hyst-enabled") condition.hysteresis_enabled = el.checked;
-        else if (kind === "hyst") condition.hysteresis = Math.max(0, num(el.value));
+        else if (kind === "hyst-enabled")
+          condition.hysteresis_enabled = el.checked;
+        else if (kind === "hyst")
+          condition.hysteresis = Math.max(0, num(el.value));
         else if (kind === "stale") condition.stale_behavior = num(el.value);
         renderConditionEditor();
         renderRuleEditor();
@@ -2402,7 +2512,9 @@
         const index = Number(el.dataset.i);
         if (kind === "remove") {
           if (conditionIsReferenced(index)) {
-            ruleStatus(`Condition "${relayRules.conditions[index]?.label || index + 1}" is still referenced by an Output. Remove those references first.`);
+            ruleStatus(
+              `Condition "${relayRules.conditions[index]?.label || index + 1}" is still referenced by an Output. Remove those references first.`,
+            );
             return;
           }
           relayRules.conditions[index] = {
@@ -2419,12 +2531,19 @@
           renderRuleEditor();
         }
       }
-      document.getElementById("condition-editor").addEventListener("change", changeConditionEditor);
-      document.getElementById("condition-editor").addEventListener("click", clickConditionEditor);
+      document
+        .getElementById("condition-editor")
+        .addEventListener("change", changeConditionEditor);
+      document
+        .getElementById("condition-editor")
+        .addEventListener("click", clickConditionEditor);
       document.getElementById("condition-add").onclick = () => {
         if (!relayRules) return;
-        const index = relayRules.conditions.findIndex((condition) => !condition?.label);
-        if (index < 0) return ruleStatus("All 16 Conditions are already in use.");
+        const index = relayRules.conditions.findIndex(
+          (condition) => !condition?.label,
+        );
+        if (index < 0)
+          return ruleStatus("All 16 Conditions are already in use.");
         relayRules.conditions[index] = {
           label: `Condition ${index + 1}`,
           source_index: 0,
@@ -2518,8 +2637,7 @@
           entry.pulse_source_index = num(el.value);
         else if (kind === "pulse-hysteresis")
           entry.pulse_hysteresis = Math.max(0, num(el.value));
-        else if (kind === "pwm-source")
-          entry.pwm_source_index = num(el.value);
+        else if (kind === "pwm-source") entry.pwm_source_index = num(el.value);
         else if (kind === "pwm-hysteresis")
           entry.pwm_hysteresis = Math.max(0, num(el.value));
         else if (kind === "test-mode") {
@@ -2530,7 +2648,9 @@
             test.trigger_condition_index = -1;
           } else if (el.value === "condition") {
             test.type = 3;
-            const currentConditionIndex = validConditionIndex(test.condition_index);
+            const currentConditionIndex = validConditionIndex(
+              test.condition_index,
+            );
             test.condition_index =
               currentConditionIndex >= 0
                 ? currentConditionIndex
@@ -2546,7 +2666,8 @@
             if (!Number.isInteger(Number(test.trigger_condition_index)))
               test.trigger_condition_index = -1;
             const currentSource = relayRules.sources[test.source_index];
-            if (!currentSource || currentSource.type === 0) test.source_index = 0;
+            if (!currentSource || currentSource.type === 0)
+              test.source_index = 0;
           } else {
             test.type = 0;
             test.condition_index = -1;
@@ -2557,7 +2678,8 @@
                 (candidate) => candidate.type === 1,
               );
               if (canIndex < 0) canIndex = ensureCanSource(0, 0);
-              if (canIndex !== null && canIndex >= 0) test.source_index = canIndex;
+              if (canIndex !== null && canIndex >= 0)
+                test.source_index = canIndex;
             }
           }
         } else if (kind === "trigger-source-mode") {
@@ -2578,7 +2700,8 @@
                 (candidate) => candidate.type === 1,
               );
               if (canIndex < 0) canIndex = ensureCanSource(0, 0);
-              if (canIndex !== null && canIndex >= 0) test.source_index = canIndex;
+              if (canIndex !== null && canIndex >= 0)
+                test.source_index = canIndex;
             }
           }
         } else if (kind === "condition-select") {
@@ -2651,7 +2774,8 @@
         else if (kind === "test-threshold") test.threshold = num(el.value);
         else if (kind === "test-hyst-enabled")
           test.hysteresis_enabled = checked;
-        else if (kind === "test-hyst") test.hysteresis = Math.max(0, num(el.value));
+        else if (kind === "test-hyst")
+          test.hysteresis = Math.max(0, num(el.value));
         else if (kind === "point-input")
           entry.pulse_points[p].input_value = num(el.value);
         else if (kind === "point-on")
@@ -2829,8 +2953,7 @@
             !output.enabled &&
             !output.cases.length,
         );
-        if (slot < 0)
-          return ruleStatus("All 8 Outputs are already in use.");
+        if (slot < 0) return ruleStatus("All 8 Outputs are already in use.");
         relayRules.rules[slot] = {
           label: `Output ${slot + 1}`,
           enabled: true,
@@ -2911,7 +3034,9 @@
           };
         });
         const conditionIndex = (name) =>
-          conditions.findIndex((condition) => condition.label && condition.label === name);
+          conditions.findIndex(
+            (condition) => condition.label && condition.label === name,
+          );
 
         const expanded = Array.from({ length: 8 }, (_, index) => ({
           label: `Output ${index + 1}`,
@@ -2958,8 +3083,11 @@
                       : 0,
                 };
                 if (Number(savedTest.type) === 3) {
-                  test.condition_index = conditionIndex(savedTest.condition_name);
-                  test.condition_expected = savedTest.condition_expected !== false;
+                  test.condition_index = conditionIndex(
+                    savedTest.condition_name,
+                  );
+                  test.condition_expected =
+                    savedTest.condition_expected !== false;
                 } else if (
                   Number(savedTest.type) === 2 &&
                   typeof savedTest.trigger_condition_name === "string"
@@ -3016,7 +3144,8 @@
             entry.tests.forEach((test) => {
               if (
                 Number(test.type) === 0 ||
-                (Number(test.type) === 2 && Number(test.trigger_condition_index) < 0)
+                (Number(test.type) === 2 &&
+                  Number(test.trigger_condition_index) < 0)
               ) {
                 if (relayRules.sources[test.source_index]?.type === 1)
                   usedCanSources.add(test.source_index);
@@ -3079,10 +3208,13 @@
                   return {
                     type: 2,
                     trigger_condition_name:
-                      relayRules.conditions[test.trigger_condition_index]?.label || "",
+                      relayRules.conditions[test.trigger_condition_index]
+                        ?.label || "",
                     trigger_condition_expected:
                       test.trigger_condition_expected === true,
-                    trigger_duration_ms: Math.round(num(test.trigger_duration_ms)),
+                    trigger_duration_ms: Math.round(
+                      num(test.trigger_duration_ms),
+                    ),
                   };
                 }
                 const result = {
@@ -3138,14 +3270,18 @@
           if (!condition?.label) continue;
           const name = String(condition.label).trim();
           if (!name) return `Condition ${i + 1} needs a name.`;
-          if (conditionNames.has(name)) return `Condition name "${name}" is duplicated.`;
+          if (conditionNames.has(name))
+            return `Condition name "${name}" is duplicated.`;
           conditionNames.add(name);
           const source = relayRules.sources[condition.source_index];
           if (!source || source.type === 0)
             return `Condition "${name}": select a source.`;
           if (!Number.isFinite(Number(condition.threshold)))
             return `Condition "${name}": threshold must be finite.`;
-          if (!Number.isFinite(Number(condition.hysteresis)) || Number(condition.hysteresis) < 0)
+          if (
+            !Number.isFinite(Number(condition.hysteresis)) ||
+            Number(condition.hysteresis) < 0
+          )
             return `Condition "${name}": hysteresis cannot be negative.`;
           if (![0, 1, 2, 3].includes(Number(condition.stale_behavior)))
             return `Condition "${name}": select a valid stale behavior.`;
@@ -3164,17 +3300,23 @@
               const test = entry.tests[t],
                 location = `Output ${r + 1}, case ${c + 1}, test ${t + 1}`;
               if (Number(test.type) === 3) {
-                const condition = relayRules.conditions[Number(test.condition_index)];
+                const condition =
+                  relayRules.conditions[Number(test.condition_index)];
                 if (!condition?.label)
                   return `${location}: select a Condition.`;
                 continue;
               }
               if (Number(test.type) === 2) {
                 const duration = Number(test.trigger_duration_ms);
-                if (!Number.isFinite(duration) || duration < 1 || duration > 86400000)
+                if (
+                  !Number.isFinite(duration) ||
+                  duration < 1 ||
+                  duration > 86400000
+                )
                   return `${location}: Triggered timer active time must be between 0.001 and 86400 seconds.`;
                 if (Number(test.trigger_condition_index) >= 0) {
-                  const condition = relayRules.conditions[Number(test.trigger_condition_index)];
+                  const condition =
+                    relayRules.conditions[Number(test.trigger_condition_index)];
                   if (!condition?.label)
                     return `${location}: select a trigger Condition.`;
                   continue;
@@ -3184,7 +3326,10 @@
                   return `${location}: select a trigger source.`;
                 if (!Number.isFinite(Number(test.threshold)))
                   return `${location}: trigger threshold must be finite.`;
-                if (!Number.isFinite(Number(test.hysteresis)) || Number(test.hysteresis) < 0)
+                if (
+                  !Number.isFinite(Number(test.hysteresis)) ||
+                  Number(test.hysteresis) < 0
+                )
                   return `${location}: trigger hysteresis cannot be negative.`;
                 continue;
               }
@@ -3195,13 +3340,18 @@
               }
               if (!Number.isFinite(Number(test.threshold)))
                 return `${location}: threshold must be finite.`;
-              if (!Number.isFinite(Number(test.hysteresis)) || Number(test.hysteresis) < 0)
+              if (
+                !Number.isFinite(Number(test.hysteresis)) ||
+                Number(test.hysteresis) < 0
+              )
                 return `${location}: hysteresis cannot be negative.`;
             }
             if (entry.action === 2) {
               if (num(entry.pulse_hysteresis, -1) < 0)
                 return `Output ${r + 1}, case ${c + 1}: PULSE source hysteresis cannot be negative.`;
-              const permanentOnAbove = optionalNum(entry.pulse_permanent_on_above);
+              const permanentOnAbove = optionalNum(
+                entry.pulse_permanent_on_above,
+              );
               if (!entry.pulse_points.length)
                 return `Output ${r + 1}, case ${c + 1} uses PULSE but has no timed lookup rows.`;
               if (permanentOnAbove !== null) {
@@ -3231,7 +3381,10 @@
                   point.input_value <= pulsePoints[p - 1].input_value
                 )
                   return `${location}: signal values must increase from one row to the next.`;
-                if (point.on_time_ms > 0 && point.on_time_ms < publishIntervalMs)
+                if (
+                  point.on_time_ms > 0 &&
+                  point.on_time_ms < publishIntervalMs
+                )
                   return `${location}: ON time must be at least ${publishIntervalMs / 1000}s at the configured publish rate.`;
                 const offTime = point.period_ms - point.on_time_ms;
                 if (offTime > 0 && offTime < publishIntervalMs)
@@ -3289,7 +3442,8 @@
             const name = clean(output.label, index);
             dbc += ` SG_ ${name}_duty : ${index * 7}|7@1+ (1,0) [0|100] "%" Vector__XXX\n`;
           });
-          dbc += ' SG_ OutputDutyCounter : 56|8@1+ (1,0) [0|255] "" Vector__XXX\n';
+          dbc +=
+            ' SG_ OutputDutyCounter : 56|8@1+ (1,0) [0|255] "" Vector__XXX\n';
           const link = document.createElement("a");
           link.href = URL.createObjectURL(
             new Blob([dbc], { type: "text/plain" }),
