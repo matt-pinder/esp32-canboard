@@ -7,6 +7,7 @@
 #include "inc/can.h"
 #include "inc/ble_scan.h"
 #include "inc/dragy_gps.h"
+#include "inc/gps_response_receiver.h"
 #include "inc/espnow_transport.h"
 #include "inc/mk60_emulator.h"
 #include "inc/http_server.h"
@@ -322,13 +323,60 @@ static bool read_gps_config(cJSON *root, board_config_t *cfg) {
         cfg->gps_update_rate_hz = (uint8_t)gps_rate->valueint;
     }
 
+    cJSON *gps_source = cJSON_GetObjectItem(root, "gps_source");
+    if (gps_source != NULL) {
+        if (!cJSON_IsString(gps_source) || gps_source->valuestring == NULL) return false;
+        if (strcmp(gps_source->valuestring, "dragy") == 0) {
+            cfg->gps_source = GPS_SOURCE_DRAGY;
+        } else if (strcmp(gps_source->valuestring, "espnow_response") == 0) {
+            cfg->gps_source = GPS_SOURCE_ESPNOW_RESPONSE;
+        } else {
+            return false;
+        }
+    }
+
+    cJSON *gps_peer = cJSON_GetObjectItem(root, "gps_espnow_peer_mac");
+    if (gps_peer != NULL) {
+        if (!cJSON_IsString(gps_peer) || gps_peer->valuestring == NULL) return false;
+        if (gps_peer->valuestring[0] == '\0') {
+            memset(cfg->gps_espnow_peer_mac, 0, ESP_NOW_ETH_ALEN);
+        } else if (!parse_mac(gps_peer->valuestring, cfg->gps_espnow_peer_mac)) {
+            return false;
+        }
+    }
+
+    cJSON *gps_timeout = cJSON_GetObjectItem(root, "gps_response_timeout_ms");
+    if (gps_timeout != NULL) {
+        if (!cJSON_IsNumber(gps_timeout) || gps_timeout->valuedouble < 100.0 ||
+            gps_timeout->valuedouble > 60000.0 ||
+            gps_timeout->valuedouble != (double)gps_timeout->valueint) {
+            return false;
+        }
+        cfg->gps_response_timeout_ms = (uint32_t)gps_timeout->valueint;
+    }
+
     if (cfg->gps_can_start_id > 0x7FA) {
         return false;
     }
 
     uint8_t zero_mac[ESP_NOW_ETH_ALEN] = {0};
-    if (cfg->gps_enabled && memcmp(cfg->gps_target_mac, zero_mac, ESP_NOW_ETH_ALEN) == 0) {
-        return false;
+    if (cfg->gps_enabled) {
+        if (cfg->gps_source == GPS_SOURCE_DRAGY) {
+            if (memcmp(cfg->gps_target_mac, zero_mac, ESP_NOW_ETH_ALEN) == 0) return false;
+        } else {
+            bool peer_found = false;
+            for (uint8_t i = 0; i < cfg->espnow_client_count; ++i) {
+                if (memcmp(cfg->espnow_clients[i].mac, cfg->gps_espnow_peer_mac,
+                           ESP_NOW_ETH_ALEN) == 0) {
+                    peer_found = true;
+                    break;
+                }
+            }
+            if (!cfg->espnow_enabled || !peer_found ||
+                memcmp(cfg->gps_espnow_peer_mac, zero_mac, ESP_NOW_ETH_ALEN) == 0) {
+                return false;
+            }
+        }
     }
 
     return true;
@@ -356,7 +404,10 @@ static bool apply_runtime_config(const board_config_t *cfg) {
     bool gps_changed = (previous_cfg.gps_enabled != cfg->gps_enabled) ||
                        (previous_cfg.gps_can_start_id != cfg->gps_can_start_id) ||
                        (previous_cfg.gps_update_rate_hz != cfg->gps_update_rate_hz) ||
-                       (memcmp(previous_cfg.gps_target_mac, cfg->gps_target_mac, ESP_NOW_ETH_ALEN) != 0);
+                       (previous_cfg.gps_source != cfg->gps_source) ||
+                       (previous_cfg.gps_response_timeout_ms != cfg->gps_response_timeout_ms) ||
+                       (memcmp(previous_cfg.gps_target_mac, cfg->gps_target_mac, ESP_NOW_ETH_ALEN) != 0) ||
+                       (memcmp(previous_cfg.gps_espnow_peer_mac, cfg->gps_espnow_peer_mac, ESP_NOW_ETH_ALEN) != 0);
     board_cfg = *cfg;
 
     if (mk60_changed) {
@@ -407,8 +458,10 @@ static bool apply_runtime_config(const board_config_t *cfg) {
 
     if (gps_changed) {
         dragy_gps_apply_config();
-        ESP_LOGI(TAG, "Runtime GPS settings updated: enabled=%d rate=%uHz start_id=0x%lX",
-                 board_cfg.gps_enabled, (unsigned)board_cfg.gps_update_rate_hz,
+        gps_response_receiver_apply_config();
+        ESP_LOGI(TAG, "Runtime GPS settings updated: enabled=%d source=%u rate=%uHz start_id=0x%lX",
+                 board_cfg.gps_enabled, (unsigned)board_cfg.gps_source,
+                 (unsigned)board_cfg.gps_update_rate_hz,
                  (unsigned long)board_cfg.gps_can_start_id);
     }
 
@@ -524,7 +577,7 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     board_config_t cfg = board_cfg;
     
     // Use larger buffer for JSON output
-    char *json = malloc(8192);
+    char *json = malloc(12288);
     if (!json) {
         ESP_LOGE(TAG, "Failed to allocate JSON buffer");
         httpd_resp_send_500(req);
@@ -532,10 +585,11 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     }
     
     size_t json_pos = 0;
-    const size_t json_max = 8192;
+    const size_t json_max = 12288;
     char espnow_clients[1024];
     char mk60_json[768];
     char gps_mac[18];
+    char gps_peer_mac[18];
     if (!format_espnow_clients_json(&cfg, espnow_clients, sizeof(espnow_clients))) {
         free(json);
         httpd_resp_send_500(req);
@@ -547,10 +601,11 @@ esp_err_t config_get_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
     format_mac(cfg.gps_target_mac, gps_mac, sizeof(gps_mac));
+    format_mac(cfg.gps_espnow_peer_mac, gps_peer_mac, sizeof(gps_peer_mac));
     
     // Start JSON object including persisted board and transport configuration.
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"gps_update_rate_hz\":%u,\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"gps_update_rate_hz\":%u,\"gps_source\":\"%s\",\"gps_espnow_peer_mac\":\"%s\",\"gps_response_timeout_ms\":%lu,\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg.can_enabled ? "true" : "false",
         (unsigned long)cfg.can_speed_kbps,
         (unsigned long)cfg.can_start_id,
@@ -561,6 +616,9 @@ esp_err_t config_get_handler(httpd_req_t *req) {
         (unsigned long)cfg.gps_can_start_id,
         gps_mac,
         (unsigned)cfg.gps_update_rate_hz,
+        cfg.gps_source == GPS_SOURCE_ESPNOW_RESPONSE ? "espnow_response" : "dragy",
+        gps_peer_mac,
+        (unsigned long)cfg.gps_response_timeout_ms,
         mk60_json,
         (unsigned)cfg.pullup_vref_divider_high_ohm);
     
@@ -636,6 +694,10 @@ esp_err_t config_post_handler(httpd_req_t *req) {
     // existing profile when that UI posts a configuration without the field.
     cfg.mk60_emulator = board_cfg.mk60_emulator;
     cfg.gps_update_rate_hz = board_cfg.gps_update_rate_hz;
+    cfg.gps_source = board_cfg.gps_source;
+    memcpy(cfg.gps_espnow_peer_mac, board_cfg.gps_espnow_peer_mac,
+           ESP_NOW_ETH_ALEN);
+    cfg.gps_response_timeout_ms = board_cfg.gps_response_timeout_ms;
     
     cJSON *channels = cJSON_GetObjectItem(root, "channels");
     if (!channels || !cJSON_IsArray(channels) || cJSON_GetArraySize(channels) != CONFIG_CHANNELS) {
@@ -815,10 +877,10 @@ esp_err_t config_post_handler(httpd_req_t *req) {
     if (outputs == NULL || !cJSON_IsObject(outputs_json) ||
         !relay_rule_config_json_parse(outputs_json, outputs) ||
         !relay_rule_engine_validate(outputs, cfg.can_tx_hz)) {
-        ESP_LOGW(TAG, "Invalid or missing aggregate Output configuration");
+        ESP_LOGW(TAG, "Invalid or missing aggregate Condition/Output configuration");
         free(outputs);
         cJSON_Delete(root);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Output configuration");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Condition/Output configuration");
         return ESP_FAIL;
     }
 
@@ -832,7 +894,7 @@ esp_err_t config_post_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
     
-    ESP_LOGI(TAG, "Board and Output configuration updated successfully");
+    ESP_LOGI(TAG, "Board, Condition and Output configuration updated successfully");
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
@@ -914,7 +976,7 @@ esp_err_t live_values_get_handler(httpd_req_t *req) {
         xSemaphoreGive(filtered_voltages_mutex);
     }
 
-    char *json = malloc(8192);
+    char *json = malloc(12288);
     if (!json) {
         ESP_LOGE(TAG, "Failed to allocate live values JSON buffer");
         httpd_resp_send_500(req);
@@ -922,7 +984,7 @@ esp_err_t live_values_get_handler(httpd_req_t *req) {
     }
 
     size_t json_pos = 0;
-    const size_t json_max = 8192;
+    const size_t json_max = 12288;
 
     int written = snprintf(json + json_pos, json_max - json_pos,
         "{\"derived_vref_mv\":%u,\"channels\":[",
@@ -1001,18 +1063,25 @@ esp_err_t live_values_get_handler(httpd_req_t *req) {
         json_pos += (size_t)written;
     }
 
+    cJSON *condition_status = relay_condition_status_json_create();
     cJSON *rule_status = relay_rule_status_json_create();
+    char *condition_status_text = condition_status ? cJSON_PrintUnformatted(condition_status) : NULL;
     char *rule_status_text = rule_status ? cJSON_PrintUnformatted(rule_status) : NULL;
+    cJSON_Delete(condition_status);
     cJSON_Delete(rule_status);
-    if (rule_status_text == NULL) {
-        ESP_LOGE(TAG, "Failed to build compact Output status JSON");
+    if (condition_status_text == NULL || rule_status_text == NULL) {
+        ESP_LOGE(TAG, "Failed to build compact Condition/Output status JSON");
+        free(condition_status_text);
+        free(rule_status_text);
         free(json);
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
 
     written = snprintf(json + json_pos, json_max - json_pos,
-                       "],\"outputs\":%s}\n", rule_status_text);
+                       "],\"conditions\":%s,\"outputs\":%s}\n",
+                       condition_status_text, rule_status_text);
+    free(condition_status_text);
     free(rule_status_text);
     if (written < 0 || (size_t)written >= (json_max - json_pos)) {
         ESP_LOGE(TAG, "Failed to finalize live values JSON");
@@ -1059,6 +1128,7 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
     char espnow_clients[1024];
     char mk60_json[768];
     char gps_mac[18];
+    char gps_peer_mac[18];
     if (!format_espnow_clients_json(cfg, espnow_clients, sizeof(espnow_clients))) {
         free(json);
         free(cfg);
@@ -1072,8 +1142,9 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
     format_mac(cfg->gps_target_mac, gps_mac, sizeof(gps_mac));
+    format_mac(cfg->gps_espnow_peer_mac, gps_peer_mac, sizeof(gps_peer_mac));
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"gps_update_rate_hz\":%u,\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"gps_update_rate_hz\":%u,\"gps_source\":\"%s\",\"gps_espnow_peer_mac\":\"%s\",\"gps_response_timeout_ms\":%lu,\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg->can_enabled ? "true" : "false",
         (unsigned long)cfg->can_speed_kbps,
         (unsigned long)cfg->can_start_id,
@@ -1084,6 +1155,9 @@ esp_err_t config_export_get_handler(httpd_req_t *req) {
         (unsigned long)cfg->gps_can_start_id,
         gps_mac,
         (unsigned)cfg->gps_update_rate_hz,
+        cfg->gps_source == GPS_SOURCE_ESPNOW_RESPONSE ? "espnow_response" : "dragy",
+        gps_peer_mac,
+        (unsigned long)cfg->gps_response_timeout_ms,
         mk60_json,
         (unsigned)cfg->pullup_vref_divider_high_ohm);
 
@@ -1340,10 +1414,10 @@ esp_err_t config_import_post_handler(httpd_req_t *req) {
                                    relay_rule_config_json_parse(outputs_json, outputs) &&
                                    relay_rule_engine_validate(outputs, cfg.can_tx_hz);
         if (!valid_outputs) {
-            ESP_LOGW(TAG, "Invalid Output configuration in import");
+            ESP_LOGW(TAG, "Invalid Condition/Output configuration in import");
             free(outputs);
             cJSON_Delete(root);
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Output configuration");
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Condition/Output configuration");
             return ESP_FAIL;
         }
     } else {

@@ -1238,7 +1238,8 @@ void dragy_gps_apply_config(void)
 
     if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
     {
-        runtime_config.enabled = board_cfg.gps_enabled;
+        runtime_config.enabled = board_cfg.gps_enabled &&
+                                 board_cfg.gps_source == GPS_SOURCE_DRAGY;
         runtime_config.can_start_id = board_cfg.gps_can_start_id;
         memcpy(runtime_config.target_mac, board_cfg.gps_target_mac, ESP_NOW_ETH_ALEN);
         runtime_config.update_rate_hz = board_cfg.gps_update_rate_hz;

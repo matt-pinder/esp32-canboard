@@ -14,6 +14,7 @@
 #include "inc/can_receive_dispatch.h"
 #include "inc/inputs.h"
 #include "inc/espnow_transport.h"
+#include "inc/gps_response_receiver.h"
 #include "inc/mk60_emulator.h"
 #include "inc/relay_command_protocol.h"
 #include "inc/relay_rule_engine.h"
@@ -517,6 +518,8 @@ void canTransmit(void *arg)
             memcpy(emub_msg.data, emub_bytes, sizeof(emub_bytes));
             can_transmit_frame(&emub_msg, "EMUB TX msg");
         }
+
+        gps_response_publish_cached();
 
         TickType_t target_period_ticks = pdMS_TO_TICKS((can_tx_hz_snapshot == 50) ? 20 : 40);
         TickType_t elapsed_ticks = xTaskGetTickCount() - loop_start;

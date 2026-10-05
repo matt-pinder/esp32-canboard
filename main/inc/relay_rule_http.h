@@ -9,5 +9,6 @@
 cJSON *relay_rule_config_json_create(void);
 bool relay_rule_config_json_parse(const cJSON *root, relay_rule_config_t *config);
 
-/* Create the sparse Output telemetry array nested inside /api/live_values. */
+/* Create sparse live telemetry arrays nested inside /api/live_values. */
+cJSON *relay_condition_status_json_create(void);
 cJSON *relay_rule_status_json_create(void);

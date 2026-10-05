@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_partition.h"
@@ -11,7 +12,7 @@
 #define TEST_RULE_COMPACT_MAGIC 0x52554C32U
 #define TEST_RULE_SLOT_MAGIC 0x52534C54U
 #define TEST_OLD_COMPACT_VERSION 2U
-#define TEST_NEW_COMPACT_VERSION 3U
+#define TEST_NEW_COMPACT_VERSION 4U
 #define TEST_SLOT_COUNT 2U
 
 typedef struct {
@@ -83,7 +84,7 @@ static void assert_legacy_record_rejected_and_replaced(void)
 
     relay_rule_config_t config;
     relay_rule_engine_snapshot(&config);
-    assert(config.version == 2U);
+    assert(config.version == 4U);
     assert(config.signal_timeout_ms == 1000U);
     for (unsigned i = 0; i < RELAY_RULE_MAX_RULES; ++i) {
         char expected[RELAY_RULE_NAME_LENGTH];
@@ -138,6 +139,81 @@ static relay_rule_test_t source_test(uint8_t source, relay_compare_t comparison,
         .threshold = threshold,
         .hysteresis = hysteresis,
     };
+}
+
+static relay_rule_test_t triggered_timer_test(uint8_t source, relay_compare_t comparison,
+                                                float threshold, float hysteresis,
+                                                uint32_t duration_ms)
+{
+    return (relay_rule_test_t){
+        .type = RELAY_TEST_TRIGGER_TIMER,
+        .source_index = source,
+        .comparison = comparison,
+        .hysteresis_enabled = hysteresis > 0.0f,
+        .threshold = threshold,
+        .hysteresis = hysteresis,
+        .trigger_duration_ms = duration_ms,
+    };
+}
+
+static relay_rule_test_t condition_test(uint8_t condition, bool expected)
+{
+    return (relay_rule_test_t){
+        .type = RELAY_TEST_CONDITION,
+        .source_index = condition,
+        .comparison = RELAY_COMPARE_EQ,
+        .threshold = expected ? 1.0f : 0.0f,
+    };
+}
+
+static relay_rule_test_t triggered_condition_timer_test(uint8_t condition, bool expected,
+                                                         uint32_t duration_ms)
+{
+    return (relay_rule_test_t){
+        .type = RELAY_TEST_TRIGGER_TIMER,
+        .source_index = (uint8_t)(RELAY_RULE_TRIGGER_CONDITION_FLAG | condition),
+        .comparison = RELAY_COMPARE_EQ,
+        .threshold = expected ? 1.0f : 0.0f,
+        .trigger_duration_ms = duration_ms,
+    };
+}
+
+static void configure_condition(relay_rule_config_t *config, uint8_t slot, const char *label,
+                                uint8_t source, relay_compare_t comparison, float threshold,
+                                float hysteresis, relay_condition_stale_behavior_t stale_behavior)
+{
+    relay_condition_config_t *condition = &config->conditions[slot];
+    memset(condition, 0, sizeof(*condition));
+    snprintf(condition->label, sizeof(condition->label), "%s", label);
+    condition->source_index = source;
+    condition->comparison = comparison;
+    condition->threshold = threshold;
+    condition->hysteresis_enabled = hysteresis > 0.0f;
+    condition->hysteresis = hysteresis;
+    condition->stale_behavior = stale_behavior;
+}
+
+static void configure_can_rpm(relay_rule_config_t *config, uint8_t slot)
+{
+    relay_source_config_t *source = &config->sources[slot];
+    strcpy(source->name, "DME1.RPM");
+    source->type = RELAY_SOURCE_CAN;
+    source->can_id = 0x316U;
+    source->start_bit = 0U;
+    source->bit_length = 16U;
+    source->little_endian = true;
+    source->factor = 1.0f;
+    source->zero_confirm_samples = 1U;
+}
+
+static void ingest_rpm(uint16_t rpm, uint32_t now_ms)
+{
+    twai_message_t message = {
+        .identifier = 0x316U,
+        .data_length_code = 2U,
+        .data = {(uint8_t)(rpm & 0xFFU), (uint8_t)(rpm >> 8)},
+    };
+    relay_rule_engine_ingest_can(&message, now_ms);
 }
 
 static relay_rule_config_t fresh_config(void)
@@ -343,6 +419,49 @@ static void test_pulse_lookup_interpolation(void)
     assert_output(&command, 0U, true, false, true, 0U);
     relay_rule_engine_make_command(400U, &command);
     assert_output(&command, 0U, true, true, true, 0U);
+}
+
+static void test_pulse_continuous_on_off_and_validation(void)
+{
+    relay_rule_config_t config = fresh_config();
+    config.rules[0].enabled = true;
+    config.rules[0].case_count = 1U;
+    relay_rule_case_t *entry = &config.rules[0].cases[0];
+    *entry = always_case(RELAY_ACTION_PULSE);
+    entry->pulse_source_index = 10U;
+    entry->pulse_point_count = 1U;
+    entry->pulse_points[0] = (relay_pulse_point_t){
+        .input_value = 1.0f,
+        .on_time_ms = 200U,
+        .period_ms = 200U,
+    };
+
+    /* ON time equal to period is the explicit continuous-ON representation. */
+    assert(relay_rule_engine_validate(&config, 25U));
+    install_config(&config);
+    output_command_t command;
+    relay_rule_engine_ingest_local(0U, true, 1.0f, 100U);
+    relay_rule_engine_make_command(100U, &command);
+    assert_output(&command, 0U, true, true, true, 0U);
+    relay_rule_engine_make_command(500U, &command);
+    assert_output(&command, 0U, true, true, true, 0U);
+
+    /* ON time zero is the explicit continuous-OFF representation. */
+    relay_rule_config_t off = config;
+    off.rules[0].cases[0].pulse_points[0].on_time_ms = 0U;
+    assert(relay_rule_engine_validate(&off, 25U));
+    install_config(&off);
+    relay_rule_engine_ingest_local(0U, true, 1.0f, 600U);
+    relay_rule_engine_make_command(600U, &command);
+    assert_output(&command, 0U, true, false, true, 0U);
+
+    relay_rule_config_t bad = config;
+    bad.rules[0].cases[0].pulse_points[0].period_ms = 0U;
+    assert(!relay_rule_engine_validate(&bad, 25U));
+
+    bad = config;
+    bad.rules[0].cases[0].pulse_points[0].on_time_ms = 201U;
+    assert(!relay_rule_engine_validate(&bad, 25U));
 }
 
 static relay_rule_config_t pwm_config(float hysteresis, uint32_t timeout_ms)
@@ -580,6 +699,343 @@ static void test_pwm_validation(void)
     assert(!relay_rule_engine_validate(&bad, 25U));
 }
 
+static relay_rule_config_t inline_trigger_timer_config(uint32_t duration_ms, float hysteresis)
+{
+    relay_rule_config_t config = fresh_config();
+    config.signal_timeout_ms = 1000U;
+    configure_can_rpm(&config, 20U);
+    relay_output_rule_t *output = &config.rules[0];
+    output->enabled = true;
+    output->case_count = 1U;
+    output->cases[0] = always_case(RELAY_ACTION_ON);
+    output->cases[0].test_count = 2U;
+    output->cases[0].tests[0] = source_test(10U, RELAY_COMPARE_GT, 100.0f, 0.0f);
+    output->cases[0].tests[1] = triggered_timer_test(
+        20U, RELAY_COMPARE_LT, 600.0f, hysteresis, duration_ms);
+    return config;
+}
+
+static void test_inline_triggered_timer_post_shutdown(void)
+{
+    relay_rule_config_t config = inline_trigger_timer_config(300000U, 0.0f);
+    install_config(&config);
+    output_command_t command;
+
+    /* Booting with RPM already below the threshold must not invent a shutdown. */
+    relay_rule_engine_ingest_local(0U, true, 105.0f, 100U);
+    ingest_rpm(500U, 100U);
+    relay_rule_engine_make_command(100U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+
+    /* Observing the trigger false arms it. */
+    relay_rule_engine_ingest_local(0U, true, 105.0f, 200U);
+    ingest_rpm(1000U, 200U);
+    relay_rule_engine_make_command(200U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+
+    /* The false -> true edge starts the 300 second latched timer. */
+    relay_rule_engine_ingest_local(0U, true, 105.0f, 300U);
+    ingest_rpm(500U, 300U);
+    relay_rule_engine_make_command(300U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+
+    /* Once active, stale CAN must not cancel the timer. */
+    relay_rule_engine_ingest_local(0U, true, 105.0f, 2000U);
+    relay_rule_engine_make_command(2000U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+
+    /* Other AND tests can stop the Output without stopping the timer. */
+    relay_rule_engine_ingest_local(0U, true, 95.0f, 2500U);
+    relay_rule_engine_make_command(2500U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+    relay_rule_engine_ingest_local(0U, true, 105.0f, 3000U);
+    relay_rule_engine_make_command(3000U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+
+    /* Expiry makes the timer test false, not invalid. */
+    relay_rule_engine_ingest_local(0U, true, 105.0f, 300300U);
+    relay_rule_engine_make_command(300300U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+
+    /* A new running -> stopped transition starts a fresh full period. */
+    relay_rule_engine_ingest_local(0U, true, 105.0f, 301000U);
+    ingest_rpm(1000U, 301000U);
+    relay_rule_engine_make_command(301000U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+    relay_rule_engine_ingest_local(0U, true, 105.0f, 301100U);
+    ingest_rpm(500U, 301100U);
+    relay_rule_engine_make_command(301100U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+}
+
+static void test_inline_triggered_timer_updates_behind_higher_priority_case(void)
+{
+    relay_rule_config_t config = fresh_config();
+    configure_can_rpm(&config, 20U);
+    relay_output_rule_t *output = &config.rules[0];
+    output->enabled = true;
+    output->case_count = 2U;
+    output->cases[0] = always_case(RELAY_ACTION_ON);
+    output->cases[0].tests[0] = source_test(10U, RELAY_COMPARE_GT, 110.0f, 0.0f);
+    output->cases[1] = always_case(RELAY_ACTION_ON);
+    output->cases[1].tests[0] = triggered_timer_test(
+        20U, RELAY_COMPARE_LT, 600.0f, 0.0f, 300000U);
+    install_config(&config);
+
+    output_command_t command;
+    relay_rule_engine_ingest_local(0U, true, 120.0f, 100U);
+    ingest_rpm(1000U, 100U);
+    relay_rule_engine_make_command(100U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+
+    /* Case 1 still wins here, but the case-2 trigger must latch in parallel. */
+    relay_rule_engine_ingest_local(0U, true, 120.0f, 200U);
+    ingest_rpm(500U, 200U);
+    relay_rule_engine_make_command(200U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+
+    /* When case 1 stops matching, case 2 sees the already-running timer. */
+    relay_rule_engine_ingest_local(0U, true, 100.0f, 300U);
+    relay_rule_engine_make_command(300U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+}
+
+static void test_inline_triggered_timer_hysteresis_and_reset(void)
+{
+    relay_rule_config_t config = fresh_config();
+    configure_can_rpm(&config, 20U);
+    config.rules[0].enabled = true;
+    config.rules[0].case_count = 1U;
+    config.rules[0].cases[0] = always_case(RELAY_ACTION_ON);
+    config.rules[0].cases[0].tests[0] = triggered_timer_test(
+        20U, RELAY_COMPARE_LT, 600.0f, 50.0f, 1000U);
+    install_config(&config);
+
+    output_command_t command;
+    ingest_rpm(700U, 100U);
+    relay_rule_engine_make_command(100U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+    ingest_rpm(590U, 200U);
+    relay_rule_engine_make_command(200U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+
+    /* Prior-true LT hysteresis holds through 620 RPM, so it does not re-arm. */
+    ingest_rpm(620U, 300U);
+    relay_rule_engine_make_command(300U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+    ingest_rpm(590U, 400U);
+    relay_rule_engine_make_command(400U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+
+    /* Above threshold+hysteresis re-arms; another drop restarts the full timer. */
+    ingest_rpm(651U, 500U);
+    relay_rule_engine_make_command(500U, &command);
+    ingest_rpm(590U, 600U);
+    relay_rule_engine_make_command(600U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+    relay_rule_engine_make_command(1500U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+    relay_rule_engine_make_command(1600U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+
+    /* Replacing configuration clears armed/active state. */
+    ingest_rpm(700U, 1700U);
+    relay_rule_engine_make_command(1700U, &command);
+    ingest_rpm(590U, 1800U);
+    relay_rule_engine_make_command(1800U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+    assert(relay_rule_engine_replace_and_save(&config));
+    relay_rule_engine_make_command(1810U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+}
+
+static void test_inline_triggered_timer_validation(void)
+{
+    relay_rule_config_t config = fresh_config();
+    configure_can_rpm(&config, 20U);
+    config.rules[0].enabled = true;
+    config.rules[0].case_count = 1U;
+    config.rules[0].cases[0] = always_case(RELAY_ACTION_ON);
+    config.rules[0].cases[0].tests[0] = triggered_timer_test(
+        20U, RELAY_COMPARE_LT, 600.0f, 0.0f, 300000U);
+    assert(relay_rule_engine_validate(&config, 25U));
+
+    relay_rule_config_t bad = config;
+    bad.rules[0].cases[0].tests[0].trigger_duration_ms = 0U;
+    assert(!relay_rule_engine_validate(&bad, 25U));
+    bad = config;
+    bad.rules[0].cases[0].tests[0].trigger_duration_ms = 86400001U;
+    assert(!relay_rule_engine_validate(&bad, 25U));
+    bad = config;
+    bad.rules[0].cases[0].tests[0].source_index = RELAY_RULE_MAX_SOURCES;
+    assert(!relay_rule_engine_validate(&bad, 25U));
+    bad = config;
+    bad.rules[0].cases[0].tests[0].hysteresis = -0.1f;
+    assert(!relay_rule_engine_validate(&bad, 25U));
+}
+
+static void test_conditions_reused_and_stale_false(void)
+{
+    relay_rule_config_t config = fresh_config();
+    config.signal_timeout_ms = 1000U;
+    configure_can_rpm(&config, 20U);
+    configure_condition(&config, 0U, "Engine running", 20U, RELAY_COMPARE_GE, 600.0f,
+                        0.0f, RELAY_CONDITION_STALE_FALSE);
+
+    for (unsigned output = 0U; output < 2U; ++output) {
+        config.rules[output].enabled = true;
+        config.rules[output].case_count = 1U;
+        config.rules[output].cases[0] = always_case(RELAY_ACTION_ON);
+        config.rules[output].cases[0].tests[0] = condition_test(0U, true);
+    }
+    install_config(&config);
+
+    output_command_t command;
+    relay_rule_engine_make_command(0U, &command);
+    assert_output(&command, 0U, false, false, false, 0U);
+    assert_output(&command, 1U, false, false, false, 0U);
+
+    relay_condition_status_t conditions[RELAY_RULE_MAX_CONDITIONS] = {0};
+    relay_rule_engine_get_condition_status(conditions, 0U);
+    assert(conditions[0].configured);
+    assert(!conditions[0].valid);
+    assert(!conditions[0].established);
+
+    ingest_rpm(1000U, 100U);
+    relay_rule_engine_make_command(100U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+    assert_output(&command, 1U, true, true, false, 0U);
+    relay_rule_engine_get_condition_status(conditions, 100U);
+    assert(conditions[0].valid);
+    assert(conditions[0].value);
+    assert(conditions[0].established);
+    assert(conditions[0].source_current);
+
+    /* Source disappearance deliberately maps to false only after a valid sample. */
+    relay_rule_engine_make_command(1100U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+    assert_output(&command, 1U, true, false, false, 0U);
+    relay_rule_engine_get_condition_status(conditions, 1100U);
+    assert(conditions[0].valid);
+    assert(!conditions[0].value);
+    assert(conditions[0].established);
+    assert(!conditions[0].source_current);
+    assert(conditions[0].invalid_reason == RELAY_RULE_INVALID_SOURCE_STALE);
+}
+
+static void test_condition_stale_behaviors(void)
+{
+    for (unsigned behavior = RELAY_CONDITION_STALE_INVALID;
+         behavior <= RELAY_CONDITION_STALE_HOLD_LAST; ++behavior) {
+        relay_rule_config_t config = fresh_config();
+        config.signal_timeout_ms = 1000U;
+        configure_can_rpm(&config, 20U);
+        configure_condition(&config, 0U, "Engine running", 20U, RELAY_COMPARE_GE, 600.0f,
+                            0.0f, (relay_condition_stale_behavior_t)behavior);
+        config.rules[0].enabled = true;
+        config.rules[0].case_count = 1U;
+        config.rules[0].cases[0] = always_case(RELAY_ACTION_ON);
+        config.rules[0].cases[0].tests[0] = condition_test(0U, true);
+        install_config(&config);
+
+        ingest_rpm(1000U, 10U);
+        output_command_t command;
+        relay_rule_engine_make_command(10U, &command);
+        assert_output(&command, 0U, true, true, false, 0U);
+        relay_rule_engine_make_command(1010U, &command);
+
+        if (behavior == RELAY_CONDITION_STALE_INVALID) {
+            assert_output(&command, 0U, false, false, false, 0U);
+        } else if (behavior == RELAY_CONDITION_STALE_FALSE) {
+            assert_output(&command, 0U, true, false, false, 0U);
+        } else {
+            assert_output(&command, 0U, true, true, false, 0U);
+        }
+    }
+}
+
+static void test_condition_trigger_timer_on_can_disappearance(void)
+{
+    relay_rule_config_t config = fresh_config();
+    config.signal_timeout_ms = 1000U;
+    configure_can_rpm(&config, 20U);
+    configure_condition(&config, 0U, "Engine running", 20U, RELAY_COMPARE_GE, 600.0f,
+                        0.0f, RELAY_CONDITION_STALE_FALSE);
+    config.rules[0].enabled = true;
+    config.rules[0].case_count = 1U;
+    config.rules[0].cases[0] = always_case(RELAY_ACTION_ON);
+    config.rules[0].cases[0].tests[0] =
+        triggered_condition_timer_test(0U, false, 300000U);
+    install_config(&config);
+
+    output_command_t command;
+
+    /* No valid RPM since boot: stale->false must not fabricate a shutdown. */
+    relay_rule_engine_make_command(5000U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+
+    /* Seeing Engine running=true makes the timer predicate false and arms it. */
+    ingest_rpm(1000U, 6000U);
+    relay_rule_engine_make_command(6000U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+
+    /* No 200/0 RPM frame is needed: source timeout makes the established
+     * Condition false, producing the false->true timer edge. */
+    relay_rule_engine_make_command(7000U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+    relay_rule_engine_make_command(306999U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+    relay_rule_engine_make_command(307000U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+
+    /* A first-ever valid sample that is already false also must not trigger. */
+    assert(relay_rule_engine_replace_and_save(&config));
+    ingest_rpm(0U, 400000U);
+    relay_rule_engine_make_command(400000U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+}
+
+static void test_condition_hysteresis_and_validation(void)
+{
+    relay_rule_config_t config = fresh_config();
+    configure_can_rpm(&config, 20U);
+    configure_condition(&config, 0U, "Engine running", 20U, RELAY_COMPARE_GT, 600.0f,
+                        50.0f, RELAY_CONDITION_STALE_INVALID);
+    config.rules[0].enabled = true;
+    config.rules[0].case_count = 1U;
+    config.rules[0].cases[0] = always_case(RELAY_ACTION_ON);
+    config.rules[0].cases[0].tests[0] = condition_test(0U, true);
+    assert(relay_rule_engine_validate(&config, 25U));
+    install_config(&config);
+
+    output_command_t command;
+    ingest_rpm(700U, 100U);
+    relay_rule_engine_make_command(100U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+    ingest_rpm(560U, 200U);
+    relay_rule_engine_make_command(200U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+    ingest_rpm(549U, 300U);
+    relay_rule_engine_make_command(300U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+
+    relay_rule_config_t bad = config;
+    bad.conditions[1] = bad.conditions[0];
+    assert(!relay_rule_engine_validate(&bad, 25U));
+    bad = config;
+    bad.conditions[0].source_index = RELAY_RULE_MAX_SOURCES;
+    assert(!relay_rule_engine_validate(&bad, 25U));
+    bad = config;
+    bad.conditions[0].stale_behavior = (relay_condition_stale_behavior_t)99;
+    assert(!relay_rule_engine_validate(&bad, 25U));
+    bad = config;
+    bad.rules[0].cases[0].tests[0] = condition_test(1U, true);
+    assert(!relay_rule_engine_validate(&bad, 25U));
+    bad = config;
+    bad.rules[0].cases[0].tests[0] = triggered_condition_timer_test(1U, false, 1000U);
+    assert(!relay_rule_engine_validate(&bad, 25U));
+}
+
 static void test_maximum_compact_config_fits_existing_partition(void)
 {
     relay_rule_config_t config = fresh_config();
@@ -594,6 +1050,13 @@ static void test_maximum_compact_config_fits_existing_partition(void)
         source->factor = 1.0f;
         source->zero_confirm_samples = 1U;
     }
+    for (unsigned i = 0U; i < RELAY_RULE_MAX_CONDITIONS; ++i) {
+        char label[RELAY_RULE_NAME_LENGTH];
+        snprintf(label, sizeof(label), "Condition %u", i + 1U);
+        configure_condition(&config, (uint8_t)i, label, (uint8_t)(20U + (i % 44U)),
+                            RELAY_COMPARE_GT, (float)i, 0.0f,
+                            RELAY_CONDITION_STALE_INVALID);
+    }
     for (unsigned i = 0U; i < RELAY_RULE_MAX_RULES; ++i) {
         config.rules[i].enabled = true;
         config.rules[i].case_count = 1U;
@@ -601,6 +1064,19 @@ static void test_maximum_compact_config_fits_existing_partition(void)
     }
     assert(relay_rule_engine_validate(&config, 25U));
     assert(relay_rule_engine_replace_and_save(&config));
+
+    const size_t slot_size = test_partition_size() / TEST_SLOT_COUNT;
+    const uint8_t *storage = test_partition_data();
+    const test_slot_header_t *slot0 = (const test_slot_header_t *)storage;
+    const test_slot_header_t *slot1 = (const test_slot_header_t *)(storage + slot_size);
+    const unsigned newest = (int32_t)(slot1->generation - slot0->generation) > 0 ? 1U : 0U;
+    const uint8_t *slot_base = storage + newest * slot_size;
+    const test_compact_header_t *payload =
+        (const test_compact_header_t *)(slot_base + sizeof(test_slot_header_t));
+    assert(payload->version == TEST_NEW_COMPACT_VERSION);
+    assert(payload->source_count == 44U);
+    assert(payload->rule_count == RELAY_RULE_MAX_RULES);
+    assert(payload->reserved == RELAY_RULE_MAX_CONDITIONS);
 }
 
 static void test_counter_wrap(void)
@@ -626,6 +1102,7 @@ int main(void)
     test_all_comparisons_and_and_logic();
     test_pulse_regression();
     test_pulse_lookup_interpolation();
+    test_pulse_continuous_on_off_and_validation();
     test_pwm_interpolation_clamp_hysteresis_and_state();
     test_pwm_from_imported_can_source();
     test_pwm_rounding();
@@ -634,6 +1111,14 @@ int main(void)
     test_pwm_case_change_recalculates_immediately();
     test_live_config_replacement_resets_pwm_runtime();
     test_pwm_validation();
+    test_inline_triggered_timer_post_shutdown();
+    test_inline_triggered_timer_updates_behind_higher_priority_case();
+    test_inline_triggered_timer_hysteresis_and_reset();
+    test_inline_triggered_timer_validation();
+    test_conditions_reused_and_stale_false();
+    test_condition_stale_behaviors();
+    test_condition_trigger_timer_on_can_disappearance();
+    test_condition_hysteresis_and_validation();
     test_maximum_compact_config_fits_existing_partition();
     test_counter_wrap();
     puts("output_engine_test: PASS");

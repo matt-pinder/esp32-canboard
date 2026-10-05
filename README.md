@@ -29,7 +29,8 @@ The web UI allows you to:
 - View and edit per-channel settings (name, sensor type, pull-up, **filter level** dropdown, pressure calibration).
 - Configure required CAN parameters - Base ID and bus speed.
 - Configure CAN and ESP-NOW output, including optional CAN bus relay over ESP-NOW.
-- Configure up to 8 Outputs using local sensor values, DBC-imported CAN signals, timers, PULSE lookup tables, and PWM duty lookup tables.
+- Define reusable global Conditions from local sensor values or DBC-imported CAN signals, then reference those booleans from multiple Outputs and Triggered timers.
+- Configure up to 8 Outputs using local sensor values, DBC-imported CAN signals, Conditions, startup timers, inline edge-triggered timers, PULSE lookup tables, and PWM duty lookup tables.
 - Adjust pullup vref calculation voltage to allow for LDO regulator output/load.
 - View current input voltages and calculated values in real time.
 - Backup the entire configuration to a JSON file.
@@ -40,12 +41,12 @@ The web UI allows you to:
 | Function | Description |
 |:----|:----|
 | Save Config | Save current UI settings to the dedicated `config` NVS partition. Changes are validated, persisted and applied immediately. |
-| Backup | Download one JSON snapshot containing the board configuration and Outputs. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
-| Restore | Select a previously exported JSON file. The backend validates and applies the board configuration and Outputs together while retaining their separate flash records. Legacy `rules` data is never imported. |
+| Backup | Download one JSON snapshot containing the board configuration, reusable Conditions and Outputs. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
+| Restore | Select a previously exported JSON file. The backend validates and applies the board configuration, Conditions and Outputs together while retaining their separate flash records. Legacy `rules` data is never imported. |
 | Reboot Device | Reboots the device. |
 
 **Notes:**
-- Board configuration is persisted as one current record in the dedicated `config` NVS partition. Outputs use the existing CRC-checked raw `rules` partition with atomic A/B writes; the partition location is unchanged even though the user-facing feature is now named Outputs.
+- Board configuration is persisted as one current record in the dedicated `config` NVS partition. Conditions and Outputs are persisted together in the existing CRC-checked raw `rules` partition with atomic A/B writes; the partition location is unchanged even though the user-facing feature is now named Outputs.
 - On boot, firmware automatically imports a valid legacy `/spiffs/config.bin` into NVS when one is still present and verifies the committed record. The legacy file is left untouched.
 - Normal `idf.py flash` updates the application and SPIFFS web assets, but does not write the dedicated `config` partition. Before the first upgrade from a SPIFFS-stored configuration, export a JSON backup (or flash/boot the migration firmware without its SPIFFS target once); a normal project flash replaces the old shared SPIFFS image before firmware can import its config file.
 - `erase-flash`, whole-chip images, or explicitly flashing address `0x200000` will still erase configuration; ordinary application/partition-table flashing will not.
@@ -83,9 +84,25 @@ Example DBCs for signal names and scaling are [dbc/esp32-canboard.dbc](dbc/esp32
 
 There are eight configurable Outputs. Ordered cases retain the existing first-match `IF` / `ELSE IF` behavior; tests within one case are ANDed, while additional cases provide OR-through-ELSE-IF behavior. The tests only select which case runs: a matching PULSE case still derives its ON/OFF phase from the pulse lookup, and a matching PWM case still derives duty from the PWM lookup (with binary `state=1` only at exactly 100% duty). Existing OFF, ON, and PULSE actions retain their binary behavior. PWM is a fourth action and has its own numeric duty value; it does not replace or reinterpret the binary state, valid, or pulse signals.
 
+For each timed PULSE lookup row, the cycle period must be greater than zero and the ON time must be between zero and the cycle period inclusive. `ON time = 0` means continuously OFF for that lookup point. The web editor exposes a dedicated `Permanently ON at/above` threshold instead of requiring a magic-looking final `ON time = cycle period` row. When configured, the UI stores that threshold as the final 1 s ON / 1 s period point in the existing PULSE lookup format, so no protocol or configuration-version change is required. Values at and above that threshold remain continuously ON.
+
 Each PWM case selects one lookup source, a source hysteresis, and one through eight `{input_value, duty_percent}` rows. Input values must be finite and strictly increasing, and duties must be integer percentages from 0 through 100. Values below or above the lookup range clamp to the nearest endpoint. Values between rows are linearly interpolated and rounded to the nearest percentage. Duty is calculated immediately when a PWM case is entered, then held until the source differs from the accepted lookup input by **more than** the configured hysteresis. Entering another case, replacing configuration, startup, or source invalidation resets that PWM runtime state.
 
 Source freshness and zero-confirmation rules apply equally to tests, PULSE lookup sources, and PWM lookup sources. A missing, stale, or not-yet-confirmed PWM source publishes `valid=0`, `state=0`, `pulse=0`, and duty `0`.
+
+### Conditions
+
+Up to 16 reusable named **Conditions** can be defined once and referenced by any Output case or Triggered timer. A Condition has one local-sensor or DBC-imported CAN source, a comparison and threshold, optional hysteresis, and a boolean result. Runtime state keeps `value` and `valid` separate: a Condition can therefore be `true`, `false`, or invalid. This avoids repeating CAN message/signal/comparison settings across multiple Outputs and reduces the chance of small configuration differences between rules.
+
+Each Condition also defines what to do when its source later becomes unavailable or stale: `Invalid`, `False`, `True`, or `Hold last`. The stale policy is deliberately ignored until the Condition has first been established from at least one valid source sample. For example, `Engine running = DME1.RPM >= 600` with `When source stale = False` behaves as follows:
+
+```text
+Boot with no RPM ever received  -> Engine running is invalid
+RPM received at 1000            -> Engine running = true
+RPM CAN then disappears         -> Engine running = false
+```
+
+That distinction means ECU silence after a known-running engine can be used as a shutdown event without treating a board boot where the ECU was never present as an engine shutdown. A normal Output Condition test chooses whether the named Condition must be `True` or `False`; an invalid Condition retains the existing ordered-case unknown/invalid behavior rather than silently becoming false.
 
 #### `Base ID + 5`: binary Output frame
 
@@ -154,13 +171,39 @@ OFF, ON, and PULSE actions always publish duty `0`. Only the selected PWM action
 
 A PWM consumer must treat `Base + 5` and `Base + 6` as one paired command. Accept duty only when both frames are correctly formed, both are fresh according to the consumer's timeout policy, and both counters match. A malformed frame, protocol-version error, duty outside 0..100, counter mismatch, or stale/missing partner must force applied duty to zero. Counter wrap from `255` to `0` is normal.
 
+### Output timers
+
+`Startup timer` is the original milliseconds-since-boot test. `Triggered timer` is an inline Output test and can be driven either directly from a local/CAN source or from a reusable Condition.
+
+For a raw local/CAN trigger, the timer uses the configured comparison, threshold and optional hysteresis. It first has to observe that trigger false, which arms it; the next false-to-true transition starts the configured active period. Once active, the timer remains true until the period expires even if the raw trigger CAN source subsequently becomes stale or disappears.
+
+For a Condition trigger, the editor selects a named Condition and whether the timer should trigger when it becomes `True` or `False`. The timer again arms only after first observing the opposite valid state. This combines with the Condition stale policy to handle ECUs that stop broadcasting before sending a low shutdown RPM. For example:
+
+```text
+Condition: Engine running
+  DME1.RPM >= 600
+  When source stale: False
+
+Triggered timer:
+  Engine running becomes False
+  Active for 300 seconds
+```
+
+If the engine was observed running and its RPM broadcast then disappears, `Engine running` becomes false and the 300-second timer starts. If the board has never received a valid RPM sample, the Condition remains invalid and the timer does not arm or trigger.
+
+Other AND tests remain live while a timer is active, so `OilTemp > 100 AND [Engine running becomes false, active for 300 s] -> ON` turns off early if oil temperature falls below the threshold, while the 300-second timer itself continues counting. Triggered timers are updated for every enabled Output before ordered case selection, so a timer in a lower-priority ELSE-IF case can still start while an earlier case is currently winning.
+
 ### Output configuration compatibility
 
-The aggregate JSON property is `outputs`, containing Output configuration version `2`, `signal_timeout_ms`, the used CAN `sources`, and a sparse `outputs` array numbered 1 through 8. PWM cases serialize `pwm_source_name`, `pwm_hysteresis`, and `pwm_points`. Live status is exposed as `/api/live_values.outputs`, including `duty_percent` for the selected valid PWM case.
+The aggregate JSON property remains `outputs` at configuration version `4`. The current version-4 schema contains `signal_timeout_ms`, used CAN `sources`, a sparse `conditions` array numbered 1 through 16, and a sparse `outputs` array numbered 1 through 8. Conditions serialize `label`, `source_name`, comparison/hysteresis fields, and `stale_behavior`. Output Condition tests reference the Condition by name; Condition-driven Triggered timers serialize `trigger_condition_name`, the expected boolean state, and `trigger_duration_ms`. Raw-source Triggered timers retain their direct `source_name`, comparison/hysteresis and duration fields. PWM cases continue to serialize `pwm_source_name`, `pwm_hysteresis`, and `pwm_points`.
 
-The compact raw-partition record format is also versioned independently. Existing pre-Output records are deliberately incompatible: no old record decoder or migration path is used. On first boot with an old rule record, firmware rejects it, initializes eight empty Outputs, and immediately commits the new empty record into both slots of the existing CRC-checked A/B storage so no legacy payload remains as a fallback. The physical raw partition remains named `rules` and remains at the same partition-table location.
+This change deliberately **does not introduce a configuration version 5**. Version 4 was amended to include Conditions, and there is no migration layer for older JSON Output configurations that predate the `conditions` array. New configuration GET/backup data always includes `conditions`, even when it is empty. The compact raw-partition format also remains version `4`; its previously reserved count field now records the number of persisted Conditions, which are stored in the same CRC-checked A/B record as Outputs and CAN sources. No partition-table change is required.
 
-Old aggregate backups may still restore unrelated board settings. A legacy top-level `rules` property is always ignored. If a backup has no valid versioned `outputs` property, Outputs are reset to eight empty entries and the restore response/log contains a warning; legacy rules are never translated, preserved, or imported. The one previously valid edge-case base ID `0x7FA` is clamped to `0x7F9` during backup import so those unrelated settings can still be restored under the new two-frame ID reservation.
+Pre-Output rule records remain deliberately incompatible and are not translated: on first boot with one of those old records, firmware initializes eight empty Outputs and no Conditions and commits the empty current record into both CRC-checked A/B slots. The physical raw partition remains named `rules` and remains at the same partition-table location.
+
+Old aggregate backups may still restore unrelated board settings when they do not contain an `outputs` property. A legacy top-level `rules` property is always ignored. A present but malformed/current-incompatible `outputs` object is rejected rather than guessed or translated. The one previously valid edge-case base ID `0x7FA` is clamped to `0x7F9` during backup import so unrelated board settings can still be restored under the two-frame ID reservation.
+
+Live status is exposed as `/api/live_values.conditions` for configured Conditions and `/api/live_values.outputs` for configured Outputs. Condition status includes boolean value, validity, whether a valid source has ever established the Condition, source freshness and source-invalid reason. Output live status still includes `duty_percent` for the selected valid PWM case.
 
 ### E46 M3 MK60 cluster emulator (capture-first)
 
@@ -320,6 +363,54 @@ The observed stream rate is approximately 14.5 Hz. The CSV's acceleration conver
 When GPS is enabled in the ESP32 configuration, the firmware subscribes to `FD05` alongside `FD02` and publishes every queued IMU record on CAN IDs `GPS Base ID + 4` and `GPS Base ID + 5`. The full counter, marker, and six raw channels are retained so a CAN log can be aligned with a second Dragy's app output for calibration.
 
 The example DBC includes all six Dragy messages at `0x650` through `0x655`, corresponding to the default GPS base ID of `0x650`. GPS fields are converted to metres, m/s, degrees, and seconds by the DBC, while IMU fields remain raw counts. Update those message IDs if a different GPS base ID is configured.
+
+### ESP-NOW GPS response source
+
+The GPS source can instead be set to **ESP-NOW response**. Select one of the
+configured ESP-NOW clients and a freshness timeout from 100 to 60000 ms. The
+GPS enable switch and GPS base CAN ID are shared with Dragy; the Dragy BLE MAC,
+scan control, and update rate are retained in configuration but only used when
+Dragy is selected. Version-14 configuration is migrated to version 15 with
+Dragy selected, so existing GPS and BLE settings are preserved.
+
+The selected output replies with one fixed 42-byte, little-endian version-1 snapshot:
+
+| Bytes | Value |
+|:---|:---|
+| 0..1 | ASCII magic `GP` |
+| 2 | Protocol version `1` |
+| 3 | Flags: fix valid, time valid, course valid |
+| 4..5 | Sample sequence |
+| 6..9 | Output uptime in milliseconds |
+| 10..13 | Sample age in milliseconds at transmission |
+| 14..17 | GPS iTOW in milliseconds |
+| 18..21, 22..25 | Latitude and longitude in `1e-7` degrees |
+| 26..29 | Speed in millimetres per second |
+| 30..33 | Heading in `1e-5` degrees |
+| 34..37 | Mean-sea-level altitude in millimetres |
+| 38 | Satellites used |
+| 39 | NMEA GGA fix quality |
+| 40..41 | HDOP multiplied by 100 |
+
+Packets must have the exact length and known flags, pass all field range checks,
+and come from the selected client. Sequence comparison handles uint16 wrap;
+lower sender uptime identifies a sender restart. Snapshots are RAM-only.
+
+A fresh valid snapshot is replayed at the normal 25 or 50 Hz CAN transmit
+cadence on the configured base ID through `can_transmit_frame()`, so the same
+frames reach enabled TWAI and every configured ESP-NOW client. Frames `base+0`
+through `base+3` contain status, speed/heading, position, and altitude/iTOW.
+Fix type is 2 for a valid matched RMC/GGA epoch. Satellites and altitude come
+from GGA, while UBX-only flags, battery, and horizontal accuracy remain zero;
+HDOP is not misrepresented as horizontal accuracy. A fresh invalid fix, missing response, or expired sample
+publishes only the repeated fix-invalid status frame until a fresh valid fix
+arrives. Dragy navigation and IMU publishing are unchanged when Dragy is the
+selected source.
+
+The host codec tests exercise exact-length, flag, range, sequence, restart, and
+malformed-packet handling. A successful firmware build verifies compilation and
+linkage only; UART traffic, radio retry behaviour, TWAI output, timing, and GPS
+electrical operation still require hardware acceptance testing.
 
 ## Schematic
 [View PDF](docs/esp32-canboard-schematic.pdf)

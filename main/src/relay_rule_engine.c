@@ -13,11 +13,11 @@
 #include "freertos/semphr.h"
 
 #define TAG "OUTPUTS"
-#define RULE_CONFIG_VERSION 2U
+#define RULE_CONFIG_VERSION 4U
 #define RULE_CONFIG_PARTITION "rules"
 #define ZERO_CONFIRM_DEFAULT 11U
 #define RULE_COMPACT_MAGIC 0x52554C32U
-#define RULE_COMPACT_VERSION 3U
+#define RULE_COMPACT_VERSION 4U
 #define RULE_SLOT_MAGIC 0x52534C54U
 #define RULE_SLOT_COUNT 2U
 
@@ -53,6 +53,12 @@ typedef struct {
 } compact_rule_t;
 
 typedef struct {
+    uint8_t slot;
+    uint8_t reserved[3];
+    relay_condition_config_t condition;
+} compact_condition_t;
+
+typedef struct {
     bool present;
     bool accepted_valid;
     float accepted_value;
@@ -61,11 +67,27 @@ typedef struct {
 } source_runtime_t;
 
 typedef struct {
+    bool valid;
+    bool value;
+    bool established;
+    bool comparison_latch;
+    relay_rule_invalid_reason_t invalid_reason;
+} condition_runtime_t;
+
+typedef struct {
+    bool armed;
+    bool condition_latch;
+    bool active;
+    uint32_t started_ms;
+} trigger_test_runtime_t;
+
+typedef struct {
     bool state;
     bool valid;
     bool pulse_active;
     int8_t selected_case;
     bool hysteresis[RELAY_RULE_MAX_CASES][RELAY_RULE_MAX_TESTS];
+    trigger_test_runtime_t trigger_timers[RELAY_RULE_MAX_CASES][RELAY_RULE_MAX_TESTS];
     uint32_t pulse_started_ms;
     uint32_t pulse_on_time_ms;
     uint32_t pulse_period_ms;
@@ -78,6 +100,7 @@ typedef struct {
     int8_t invalid_case;
     int8_t invalid_test;
     int8_t invalid_source;
+    int8_t invalid_condition;
     bool invalid_pulse_source;
     bool invalid_pwm_source;
     relay_rule_invalid_reason_t invalid_reason;
@@ -85,6 +108,7 @@ typedef struct {
 
 static relay_rule_config_t *active_config;
 static source_runtime_t *source_runtime;
+static condition_runtime_t *condition_runtime;
 static rule_runtime_t *rule_runtime;
 static SemaphoreHandle_t rule_mutex;
 static uint8_t command_counter;
@@ -100,6 +124,33 @@ static const char *action_name(relay_action_t action)
 {
     static const char *const names[] = {"OFF", "ON", "PULSE", "PWM"};
     return action <= RELAY_ACTION_PWM ? names[action] : "?";
+}
+
+static const char *stale_behavior_name(relay_condition_stale_behavior_t behavior)
+{
+    static const char *const names[] = {"invalid", "false", "true", "hold-last"};
+    return behavior <= RELAY_CONDITION_STALE_HOLD_LAST ? names[behavior] : "?";
+}
+
+static bool condition_configured(const relay_condition_config_t *condition)
+{
+    return condition != NULL && condition->label[0] != '\0';
+}
+
+static bool trigger_uses_condition(const relay_rule_test_t *test)
+{
+    return test != NULL && test->type == RELAY_TEST_TRIGGER_TIMER &&
+           (test->source_index & RELAY_RULE_TRIGGER_CONDITION_FLAG) != 0U;
+}
+
+static unsigned trigger_condition_index(const relay_rule_test_t *test)
+{
+    return (unsigned)(test->source_index & RELAY_RULE_TRIGGER_INDEX_MASK);
+}
+
+static bool condition_test_expected(const relay_rule_test_t *test)
+{
+    return test->threshold >= 0.5f;
 }
 
 static void log_source(unsigned index, const relay_source_config_t *source, const char *indent)
@@ -125,16 +176,32 @@ static void log_source(unsigned index, const relay_source_config_t *source, cons
 static void log_rule_config(const relay_rule_config_t *config)
 {
     unsigned configured_outputs = 0U;
+    unsigned configured_conditions = 0U;
     unsigned can_sources = 0U;
     for (unsigned i = 0; i < RELAY_RULE_MAX_RULES; ++i)
         configured_outputs += config->rules[i].enabled || config->rules[i].case_count > 0U;
+    for (unsigned i = 0; i < RELAY_RULE_MAX_CONDITIONS; ++i)
+        configured_conditions += condition_configured(&config->conditions[i]);
     for (unsigned i = 0; i < RELAY_RULE_MAX_SOURCES; ++i)
         can_sources += config->sources[i].type == RELAY_SOURCE_CAN;
 
-    ESP_LOGI(TAG, "Loaded Output configuration:");
-    ESP_LOGI(TAG, "  version=%lu signal_timeout_ms=%lu configured_outputs=%u can_sources=%u publish_rate_hz=%u",
+    ESP_LOGI(TAG, "Loaded Output/Condition configuration:");
+    ESP_LOGI(TAG,
+             "  version=%lu signal_timeout_ms=%lu configured_outputs=%u conditions=%u can_sources=%u publish_rate_hz=%u",
              (unsigned long)config->version, (unsigned long)config->signal_timeout_ms,
-             configured_outputs, can_sources, (unsigned)publish_rate_hz);
+             configured_outputs, configured_conditions, can_sources, (unsigned)publish_rate_hz);
+
+    for (unsigned i = 0; i < RELAY_RULE_MAX_CONDITIONS; ++i) {
+        const relay_condition_config_t *condition = &config->conditions[i];
+        if (!condition_configured(condition)) continue;
+        ESP_LOGI(TAG,
+                 "  condition[%u]: label=\"%s\" source[%u] %s %.6g hysteresis=%s %.6g stale=%s",
+                 i, condition->label, (unsigned)condition->source_index,
+                 comparison_name(condition->comparison), (double)condition->threshold,
+                 condition->hysteresis_enabled ? "on" : "off", (double)condition->hysteresis,
+                 stale_behavior_name(condition->stale_behavior));
+        log_source(condition->source_index, &config->sources[condition->source_index], "    ");
+    }
 
     for (unsigned r = 0; r < RELAY_RULE_MAX_RULES; ++r) {
         const relay_output_rule_t *rule = &config->rules[r];
@@ -153,6 +220,28 @@ static void log_rule_config(const relay_rule_config_t *config)
                              t, comparison_name(test->comparison), (double)test->threshold,
                              test->hysteresis_enabled ? "on" : "off",
                              (double)test->hysteresis);
+                } else if (test->type == RELAY_TEST_CONDITION) {
+                    const relay_condition_config_t *condition = &config->conditions[test->source_index];
+                    ESP_LOGI(TAG, "      test[%u]: Condition \"%s\" == %s", t,
+                             condition->label, condition_test_expected(test) ? "true" : "false");
+                } else if (test->type == RELAY_TEST_TRIGGER_TIMER) {
+                    if (trigger_uses_condition(test)) {
+                        const unsigned index = trigger_condition_index(test);
+                        ESP_LOGI(TAG,
+                                 "      test[%u]: triggered timer Condition \"%s\" == %s duration_ms=%lu",
+                                 t, config->conditions[index].label,
+                                 condition_test_expected(test) ? "true" : "false",
+                                 (unsigned long)test->trigger_duration_ms);
+                    } else {
+                        ESP_LOGI(TAG,
+                                 "      test[%u]: triggered timer source[%u] %s %.6g hysteresis=%s %.6g duration_ms=%lu",
+                                 t, (unsigned)test->source_index,
+                                 comparison_name(test->comparison), (double)test->threshold,
+                                 test->hysteresis_enabled ? "on" : "off",
+                                 (double)test->hysteresis,
+                                 (unsigned long)test->trigger_duration_ms);
+                        log_source(test->source_index, &config->sources[test->source_index], "        ");
+                    }
                 } else {
                     ESP_LOGI(TAG,
                              "      test[%u]: source[%u] %s %.6g hysteresis=%s %.6g",
@@ -207,6 +296,7 @@ static uint32_t crc32(const void *data, size_t length)
 static void reset_runtime(void)
 {
     memset(source_runtime, 0, sizeof(*source_runtime) * RELAY_RULE_MAX_SOURCES);
+    memset(condition_runtime, 0, sizeof(*condition_runtime) * RELAY_RULE_MAX_CONDITIONS);
     memset(rule_runtime, 0, sizeof(*rule_runtime) * RELAY_RULE_MAX_RULES);
 }
 
@@ -266,6 +356,22 @@ bool relay_rule_engine_validate(const relay_rule_config_t *config, uint8_t can_t
                 strcmp(config->sources[previous].name, config->sources[source].name) == 0)
                 return false;
     }
+
+    for (unsigned index = 0; index < RELAY_RULE_MAX_CONDITIONS; ++index) {
+        const relay_condition_config_t *condition = &config->conditions[index];
+        if (!condition_configured(condition)) continue;
+        if (strnlen(condition->label, sizeof(condition->label)) >= sizeof(condition->label) ||
+            condition->source_index >= RELAY_RULE_MAX_SOURCES ||
+            config->sources[condition->source_index].type == RELAY_SOURCE_UNUSED ||
+            condition->comparison > RELAY_COMPARE_NE ||
+            !finite_float(condition->threshold) || !finite_float(condition->hysteresis) ||
+            condition->hysteresis < 0.0f ||
+            condition->stale_behavior > RELAY_CONDITION_STALE_HOLD_LAST) return false;
+        for (unsigned previous = 0; previous < index; ++previous)
+            if (condition_configured(&config->conditions[previous]) &&
+                strcmp(config->conditions[previous].label, condition->label) == 0) return false;
+    }
+
     for (unsigned rule = 0; rule < RELAY_RULE_MAX_RULES; ++rule) {
         const relay_output_rule_t *output = &config->rules[rule];
         if (strnlen(output->label, sizeof(output->label)) >= sizeof(output->label) ||
@@ -278,12 +384,35 @@ bool relay_rule_engine_validate(const relay_rule_config_t *config, uint8_t can_t
                 entry->action > RELAY_ACTION_PWM) return false;
             for (unsigned test = 0; test < entry->test_count; ++test) {
                 const relay_rule_test_t *predicate = &entry->tests[test];
-                if (predicate->type > RELAY_TEST_UPTIME || predicate->comparison > RELAY_COMPARE_NE ||
+                if (predicate->type > RELAY_TEST_CONDITION ||
+                    predicate->comparison > RELAY_COMPARE_NE ||
                     !finite_float(predicate->threshold) || !finite_float(predicate->hysteresis) ||
                     predicate->hysteresis < 0.0f) return false;
                 if (predicate->type == RELAY_TEST_SOURCE &&
                     (predicate->source_index >= RELAY_RULE_MAX_SOURCES ||
                      config->sources[predicate->source_index].type == RELAY_SOURCE_UNUSED)) return false;
+                if (predicate->type == RELAY_TEST_CONDITION) {
+                    if (predicate->source_index >= RELAY_RULE_MAX_CONDITIONS ||
+                        !condition_configured(&config->conditions[predicate->source_index]) ||
+                        predicate->comparison != RELAY_COMPARE_EQ ||
+                        (predicate->threshold != 0.0f && predicate->threshold != 1.0f) ||
+                        predicate->hysteresis_enabled || predicate->hysteresis != 0.0f) return false;
+                }
+                if (predicate->type == RELAY_TEST_TRIGGER_TIMER) {
+                    if (predicate->trigger_duration_ms == 0U ||
+                        predicate->trigger_duration_ms > 86400000U) return false;
+                    if (trigger_uses_condition(predicate)) {
+                        const unsigned condition_index = trigger_condition_index(predicate);
+                        if (condition_index >= RELAY_RULE_MAX_CONDITIONS ||
+                            !condition_configured(&config->conditions[condition_index]) ||
+                            predicate->comparison != RELAY_COMPARE_EQ ||
+                            (predicate->threshold != 0.0f && predicate->threshold != 1.0f) ||
+                            predicate->hysteresis_enabled || predicate->hysteresis != 0.0f) return false;
+                    } else if (predicate->source_index >= RELAY_RULE_MAX_SOURCES ||
+                               config->sources[predicate->source_index].type == RELAY_SOURCE_UNUSED) {
+                        return false;
+                    }
+                }
             }
             if (entry->action == RELAY_ACTION_PULSE) {
                 if (entry->pulse_source_index >= RELAY_RULE_MAX_SOURCES ||
@@ -320,23 +449,29 @@ static bool decode_config(uint8_t *blob, size_t length, relay_rule_config_t *con
 {
     if (blob == NULL || length < sizeof(compact_header_t)) return false;
     compact_header_t *header = (compact_header_t *)blob;
-    const size_t expected = sizeof(*header) + header->source_count * sizeof(compact_source_t) +
-                            header->rule_count * sizeof(compact_rule_t);
+    if (header->version != RULE_COMPACT_VERSION ||
+        header->reserved > RELAY_RULE_MAX_CONDITIONS) return false;
+
+    const size_t expected = sizeof(*header) +
+        header->source_count * sizeof(compact_source_t) +
+        header->rule_count * sizeof(compact_rule_t) +
+        header->reserved * sizeof(compact_condition_t);
     const uint32_t saved_crc = header->crc32;
     header->crc32 = 0U;
     if (header->magic != RULE_COMPACT_MAGIC ||
-        header->version != RULE_COMPACT_VERSION ||
         header->source_count > RELAY_RULE_MAX_SOURCES ||
         header->rule_count > RELAY_RULE_MAX_RULES ||
         header->total_size != length || expected != length ||
         saved_crc != crc32(blob, length)) {
         return false;
     }
+
     relay_rule_engine_set_defaults(config);
     config->signal_timeout_ms = header->signal_timeout_ms;
     size_t offset = sizeof(*header);
     bool used_sources[RELAY_RULE_MAX_SOURCES] = {0};
     bool used_rules[RELAY_RULE_MAX_RULES] = {0};
+    bool used_conditions[RELAY_RULE_MAX_CONDITIONS] = {0};
     for (unsigned i = 0; i < header->source_count; ++i) {
         compact_source_t entry;
         memcpy(&entry, blob + offset, sizeof(entry));
@@ -352,6 +487,14 @@ static bool decode_config(uint8_t *blob, size_t length, relay_rule_config_t *con
         if (entry.slot >= RELAY_RULE_MAX_RULES || used_rules[entry.slot]) return false;
         used_rules[entry.slot] = true;
         config->rules[entry.slot] = entry.rule;
+    }
+    for (unsigned i = 0; i < header->reserved; ++i) {
+        compact_condition_t entry;
+        memcpy(&entry, blob + offset, sizeof(entry));
+        offset += sizeof(entry);
+        if (entry.slot >= RELAY_RULE_MAX_CONDITIONS || used_conditions[entry.slot]) return false;
+        used_conditions[entry.slot] = true;
+        config->conditions[entry.slot] = entry.condition;
     }
     return relay_rule_engine_validate(config, publish_rate_hz);
 }
@@ -406,10 +549,12 @@ static bool load_config(relay_rule_config_t *config, bool *record_present)
 
     if (record_present != NULL) *record_present = valid[0] || valid[1];
     const int newest = newest_slot(valid, headers);
-    bool loaded = newest >= 0 && decode_config(payloads[newest], headers[newest].payload_size, config);
+    bool loaded = newest >= 0 &&
+        decode_config(payloads[newest], headers[newest].payload_size, config);
     if (!loaded && newest >= 0) {
         const unsigned other = (unsigned)newest ^ 1U;
-        loaded = valid[other] && decode_config(payloads[other], headers[other].payload_size, config);
+        loaded = valid[other] &&
+            decode_config(payloads[other], headers[other].payload_size, config);
     }
     for (unsigned slot = 0; slot < RULE_SLOT_COUNT; ++slot) free(payloads[slot]);
     return loaded;
@@ -417,19 +562,22 @@ static bool load_config(relay_rule_config_t *config, bool *record_present)
 
 static bool save_config(const relay_rule_config_t *config)
 {
-    uint16_t source_count = 0U, rule_count = 0U;
+    uint16_t source_count = 0U, rule_count = 0U, condition_count = 0U;
     for (unsigned i = 0; i < RELAY_RULE_MAX_SOURCES; ++i)
         if (config->sources[i].type == RELAY_SOURCE_CAN) ++source_count;
     for (unsigned i = 0; i < RELAY_RULE_MAX_RULES; ++i)
         if (config->rules[i].enabled || config->rules[i].case_count > 0U) ++rule_count;
+    for (unsigned i = 0; i < RELAY_RULE_MAX_CONDITIONS; ++i)
+        if (condition_configured(&config->conditions[i])) ++condition_count;
     const size_t stored_length = sizeof(compact_header_t) + source_count * sizeof(compact_source_t) +
-                                 rule_count * sizeof(compact_rule_t);
+                                 rule_count * sizeof(compact_rule_t) +
+                                 condition_count * sizeof(compact_condition_t);
     uint8_t *stored = calloc(1U, stored_length);
     if (stored == NULL) return false;
     compact_header_t *header = (compact_header_t *)stored;
     *header = (compact_header_t){.magic = RULE_COMPACT_MAGIC, .version = RULE_COMPACT_VERSION,
-        .source_count = source_count, .rule_count = rule_count, .total_size = stored_length,
-        .signal_timeout_ms = config->signal_timeout_ms, .crc32 = 0U};
+        .source_count = source_count, .rule_count = rule_count, .reserved = condition_count,
+        .total_size = stored_length, .signal_timeout_ms = config->signal_timeout_ms, .crc32 = 0U};
     size_t offset = sizeof(*header);
     for (unsigned i = 0; i < RELAY_RULE_MAX_SOURCES; ++i) {
         if (config->sources[i].type != RELAY_SOURCE_CAN) continue;
@@ -439,6 +587,11 @@ static bool save_config(const relay_rule_config_t *config)
     for (unsigned i = 0; i < RELAY_RULE_MAX_RULES; ++i) {
         if (!config->rules[i].enabled && config->rules[i].case_count == 0U) continue;
         compact_rule_t entry = {.slot = i, .rule = config->rules[i]};
+        memcpy(stored + offset, &entry, sizeof(entry)); offset += sizeof(entry);
+    }
+    for (unsigned i = 0; i < RELAY_RULE_MAX_CONDITIONS; ++i) {
+        if (!condition_configured(&config->conditions[i])) continue;
+        compact_condition_t entry = {.slot = i, .condition = config->conditions[i]};
         memcpy(stored + offset, &entry, sizeof(entry)); offset += sizeof(entry);
     }
     header->crc32 = crc32(stored, stored_length);
@@ -489,8 +642,9 @@ static bool save_config(const relay_rule_config_t *config)
     free(verified_payload);
     if (!verified) result = ESP_FAIL;
     if (result == ESP_OK) {
-        ESP_LOGI(TAG, "Saved Outputs: %u configured Outputs, %u CAN sources, %u bytes",
-                 (unsigned)rule_count, (unsigned)source_count, (unsigned)stored_length);
+        ESP_LOGI(TAG, "Saved Outputs: %u configured Outputs, %u Conditions, %u CAN sources, %u bytes",
+                 (unsigned)rule_count, (unsigned)condition_count, (unsigned)source_count,
+                 (unsigned)stored_length);
     }
     free(stored);
     return result == ESP_OK;
@@ -502,9 +656,12 @@ void relay_rule_engine_init(void)
                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     source_runtime = heap_caps_calloc(RELAY_RULE_MAX_SOURCES, sizeof(*source_runtime),
                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    condition_runtime = heap_caps_calloc(RELAY_RULE_MAX_CONDITIONS, sizeof(*condition_runtime),
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     rule_runtime = heap_caps_calloc(RELAY_RULE_MAX_RULES, sizeof(*rule_runtime),
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (active_config == NULL || source_runtime == NULL || rule_runtime == NULL) {
+    if (active_config == NULL || source_runtime == NULL || condition_runtime == NULL ||
+        rule_runtime == NULL) {
         ESP_LOGE(TAG, "Could not allocate Output engine state in PSRAM");
         abort();
     }
@@ -512,19 +669,18 @@ void relay_rule_engine_init(void)
     if (rule_mutex == NULL) abort();
     bool existing_record = false;
     if (load_config(active_config, &existing_record)) {
-        ESP_LOGI(TAG, "Output configuration loaded from dedicated storage");
+        ESP_LOGI(TAG, "Output/Condition configuration loaded from dedicated storage");
     } else {
         if (existing_record) {
-            ESP_LOGW(TAG, "Legacy pre-Output record rejected by configuration version %u; initializing eight empty Outputs",
-                     RULE_CONFIG_VERSION);
+            ESP_LOGW(TAG, "Incompatible Output/Condition record rejected; initializing empty Conditions and eight empty Outputs");
         } else {
-            ESP_LOGW(TAG, "No valid Output configuration found; initializing eight empty Outputs");
+            ESP_LOGW(TAG, "No valid Output/Condition configuration found; initializing empty Conditions and eight empty Outputs");
         }
         relay_rule_engine_set_defaults(active_config);
         if (!save_config(active_config)) {
-            ESP_LOGW(TAG, "Could not persist empty Output configuration");
+            ESP_LOGW(TAG, "Could not persist empty Output/Condition configuration");
         } else if (existing_record && !save_config(active_config)) {
-            ESP_LOGW(TAG, "Could not replace the legacy backup slot with empty Outputs");
+            ESP_LOGW(TAG, "Could not replace the incompatible backup slot with empty Output/Condition configuration");
         }
     }
     log_rule_config(active_config);
@@ -642,15 +798,135 @@ static bool compare(float value, relay_compare_t op, float threshold, float hyst
 
 typedef enum { TEST_FALSE, TEST_TRUE, TEST_UNKNOWN } test_result_t;
 
-static test_result_t evaluate_test(const relay_rule_test_t *test, bool *latch, uint32_t now_ms)
+static bool source_is_current(const source_runtime_t *source, uint32_t now_ms)
 {
+    return source->accepted_valid &&
+           now_ms - source->last_seen_ms < active_config->signal_timeout_ms;
+}
+
+static relay_rule_invalid_reason_t invalid_source_reason(const source_runtime_t *source,
+                                                         uint32_t now_ms);
+
+static void update_conditions(uint32_t now_ms)
+{
+    for (unsigned index = 0; index < RELAY_RULE_MAX_CONDITIONS; ++index) {
+        const relay_condition_config_t *condition = &active_config->conditions[index];
+        condition_runtime_t *runtime = &condition_runtime[index];
+        if (!condition_configured(condition)) {
+            memset(runtime, 0, sizeof(*runtime));
+            continue;
+        }
+
+        const source_runtime_t *source = &source_runtime[condition->source_index];
+        if (source_is_current(source, now_ms)) {
+            runtime->comparison_latch = compare(
+                source->accepted_value, condition->comparison, condition->threshold,
+                condition->hysteresis_enabled ? condition->hysteresis : 0.0f,
+                runtime->comparison_latch);
+            runtime->value = runtime->comparison_latch;
+            runtime->valid = true;
+            runtime->established = true;
+            runtime->invalid_reason = RELAY_RULE_INVALID_NONE;
+            continue;
+        }
+
+        runtime->invalid_reason = invalid_source_reason(source, now_ms);
+        if (!runtime->established) {
+            /* Stale overrides never fabricate a value before the Condition has
+             * been established from at least one valid source sample. */
+            runtime->valid = false;
+            continue;
+        }
+
+        switch (condition->stale_behavior) {
+            case RELAY_CONDITION_STALE_FALSE:
+                runtime->value = false;
+                runtime->valid = true;
+                break;
+            case RELAY_CONDITION_STALE_TRUE:
+                runtime->value = true;
+                runtime->valid = true;
+                break;
+            case RELAY_CONDITION_STALE_HOLD_LAST:
+                runtime->valid = true;
+                break;
+            case RELAY_CONDITION_STALE_INVALID:
+            default:
+                runtime->valid = false;
+                break;
+        }
+    }
+}
+
+static void update_trigger_timer_test(const relay_rule_test_t *test,
+                                      trigger_test_runtime_t *runtime,
+                                      uint32_t now_ms)
+{
+    if (runtime->active && now_ms - runtime->started_ms >= test->trigger_duration_ms)
+        runtime->active = false;
+
+    bool condition;
+    if (trigger_uses_condition(test)) {
+        const unsigned index = trigger_condition_index(test);
+        const condition_runtime_t *global = &condition_runtime[index];
+        if (!global->valid) return;
+        condition = global->value == condition_test_expected(test);
+    } else {
+        const source_runtime_t *source = &source_runtime[test->source_index];
+        if (!source_is_current(source, now_ms)) return;
+        condition = compare(source->accepted_value, test->comparison, test->threshold,
+                            test->hysteresis_enabled ? test->hysteresis : 0.0f,
+                            runtime->condition_latch);
+    }
+
+    const bool previous_condition = runtime->condition_latch;
+    runtime->condition_latch = condition;
+    if (!condition) {
+        /* A timer becomes armed only after the trigger has been observed false.
+         * This prevents booting with (for example) RPM already at zero, or an
+         * Engine-running Condition already false, from fabricating a shutdown. */
+        runtime->armed = true;
+    } else if (!previous_condition && runtime->armed) {
+        runtime->active = true;
+        runtime->started_ms = now_ms;
+        runtime->armed = false;
+    }
+}
+
+static void update_all_trigger_timer_tests(uint32_t now_ms)
+{
+    for (unsigned r = 0; r < RELAY_RULE_MAX_RULES; ++r) {
+        const relay_output_rule_t *output = &active_config->rules[r];
+        if (!output->enabled) continue;
+        for (unsigned c = 0; c < output->case_count; ++c) {
+            const relay_rule_case_t *entry = &output->cases[c];
+            for (unsigned t = 0; t < entry->test_count; ++t) {
+                if (entry->tests[t].type != RELAY_TEST_TRIGGER_TIMER) continue;
+                update_trigger_timer_test(&entry->tests[t],
+                                          &rule_runtime[r].trigger_timers[c][t], now_ms);
+            }
+        }
+    }
+}
+
+static test_result_t evaluate_test(const relay_rule_test_t *test, bool *latch,
+                                   const trigger_test_runtime_t *trigger_runtime,
+                                   uint32_t now_ms)
+{
+    if (test->type == RELAY_TEST_TRIGGER_TIMER)
+        return trigger_runtime != NULL && trigger_runtime->active ? TEST_TRUE : TEST_FALSE;
     if (test->type == RELAY_TEST_UPTIME) {
         *latch = compare((float)now_ms, test->comparison, test->threshold,
                          test->hysteresis_enabled ? test->hysteresis : 0.0f, *latch);
         return *latch ? TEST_TRUE : TEST_FALSE;
     }
+    if (test->type == RELAY_TEST_CONDITION) {
+        const condition_runtime_t *condition = &condition_runtime[test->source_index];
+        if (!condition->valid) return TEST_UNKNOWN;
+        return condition->value == condition_test_expected(test) ? TEST_TRUE : TEST_FALSE;
+    }
     const source_runtime_t *source = &source_runtime[test->source_index];
-    if (!source->accepted_valid || now_ms - source->last_seen_ms >= active_config->signal_timeout_ms) return TEST_UNKNOWN;
+    if (!source_is_current(source, now_ms)) return TEST_UNKNOWN;
     *latch = compare(source->accepted_value, test->comparison, test->threshold,
                      test->hysteresis_enabled ? test->hysteresis : 0.0f, *latch);
     return *latch ? TEST_TRUE : TEST_FALSE;
@@ -759,6 +1035,8 @@ void relay_rule_engine_make_command(uint32_t now_ms, output_command_t *command)
     memset(command, 0, sizeof(*command));
     xSemaphoreTake(rule_mutex, portMAX_DELAY);
     command->counter = command_counter++;
+    update_conditions(now_ms);
+    update_all_trigger_timer_tests(now_ms);
     for (unsigned r = 0; r < RELAY_RULE_MAX_RULES; ++r) {
         const relay_output_rule_t *output = &active_config->rules[r];
         rule_runtime_t *runtime = &rule_runtime[r];
@@ -769,7 +1047,7 @@ void relay_rule_engine_make_command(uint32_t now_ms, output_command_t *command)
         runtime->state = false; runtime->valid = false; runtime->pulse_active = false;
         runtime->pwm_active = false; runtime->selected_case = -1;
         runtime->invalid_case = -1; runtime->invalid_test = -1; runtime->invalid_source = -1;
-        runtime->invalid_pulse_source = false; runtime->invalid_pwm_source = false;
+        runtime->invalid_condition = -1; runtime->invalid_pulse_source = false; runtime->invalid_pwm_source = false;
         runtime->invalid_reason = RELAY_RULE_INVALID_NONE;
         if (!output->enabled) continue;
         bool invalid = false;
@@ -778,7 +1056,9 @@ void relay_rule_engine_make_command(uint32_t now_ms, output_command_t *command)
             bool false_seen = false, unknown_seen = false;
             int first_unknown_test = -1;
             for (unsigned t = 0; t < entry->test_count; ++t) {
-                const test_result_t result = evaluate_test(&entry->tests[t], &runtime->hysteresis[c][t], now_ms);
+                const test_result_t result = evaluate_test(&entry->tests[t],
+                                                           &runtime->hysteresis[c][t],
+                                                           &runtime->trigger_timers[c][t], now_ms);
                 false_seen |= result == TEST_FALSE;
                 unknown_seen |= result == TEST_UNKNOWN;
                 if (result == TEST_UNKNOWN && first_unknown_test < 0) first_unknown_test = (int)t;
@@ -788,8 +1068,14 @@ void relay_rule_engine_make_command(uint32_t now_ms, output_command_t *command)
                 const relay_rule_test_t *test = &entry->tests[first_unknown_test];
                 runtime->invalid_case = (int8_t)c;
                 runtime->invalid_test = (int8_t)first_unknown_test;
-                runtime->invalid_source = (int8_t)test->source_index;
-                runtime->invalid_reason = invalid_source_reason(&source_runtime[test->source_index], now_ms);
+                if (test->type == RELAY_TEST_CONDITION) {
+                    runtime->invalid_condition = (int8_t)test->source_index;
+                    runtime->invalid_reason = condition_runtime[test->source_index].invalid_reason;
+                } else {
+                    runtime->invalid_source = (int8_t)test->source_index;
+                    runtime->invalid_reason = invalid_source_reason(
+                        &source_runtime[test->source_index], now_ms);
+                }
                 invalid = true;
                 break;
             }
@@ -881,6 +1167,7 @@ void relay_rule_engine_get_status(relay_rule_status_t rules[RELAY_RULE_MAX_RULES
             .invalid_case = runtime->invalid_case,
             .invalid_test = runtime->invalid_test,
             .invalid_source = runtime->invalid_source,
+            .invalid_condition = runtime->invalid_condition,
             .invalid_pulse_source = runtime->invalid_pulse_source,
             .invalid_pwm_source = runtime->invalid_pwm_source,
             .invalid_reason = runtime->invalid_reason,
@@ -889,6 +1176,36 @@ void relay_rule_engine_get_status(relay_rule_status_t rules[RELAY_RULE_MAX_RULES
     for (unsigned i = 0; i < RELAY_RULE_MAX_SOURCES; ++i) {
         sources[i] = (relay_rule_source_status_t){.present = source_runtime[i].present, .accepted_valid = source_runtime[i].accepted_valid, .value = source_runtime[i].accepted_value, .age_ms = source_runtime[i].present ? now_ms - source_runtime[i].last_seen_ms : UINT32_MAX, .zero_streak = source_runtime[i].zero_streak, .zero_confirm_samples = active_config->sources[i].zero_confirm_samples};
         strlcpy(sources[i].name, active_config->sources[i].name, sizeof(sources[i].name));
+    }
+    xSemaphoreGive(rule_mutex);
+}
+
+void relay_rule_engine_get_condition_status(
+    relay_condition_status_t conditions[RELAY_RULE_MAX_CONDITIONS], uint32_t now_ms)
+{
+    if (conditions == NULL || rule_mutex == NULL) return;
+    xSemaphoreTake(rule_mutex, portMAX_DELAY);
+    for (unsigned i = 0; i < RELAY_RULE_MAX_CONDITIONS; ++i) {
+        const relay_condition_config_t *config = &active_config->conditions[i];
+        const condition_runtime_t *runtime = &condition_runtime[i];
+        const bool configured = condition_configured(config);
+        uint32_t age_ms = UINT32_MAX;
+        bool current = false;
+        if (configured) {
+            const source_runtime_t *source = &source_runtime[config->source_index];
+            age_ms = source->present ? now_ms - source->last_seen_ms : UINT32_MAX;
+            current = source_is_current(source, now_ms);
+        }
+        conditions[i] = (relay_condition_status_t){
+            .configured = configured,
+            .valid = configured && runtime->valid,
+            .value = runtime->value,
+            .established = runtime->established,
+            .source_current = current,
+            .invalid_reason = configured ? runtime->invalid_reason : RELAY_RULE_INVALID_NONE,
+            .source_age_ms = age_ms,
+        };
+        if (configured) strlcpy(conditions[i].label, config->label, sizeof(conditions[i].label));
     }
     xSemaphoreGive(rule_mutex);
 }

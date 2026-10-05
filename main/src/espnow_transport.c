@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "inc/config.h"
 #include "inc/espnow_can_protocol.h"
+#include "inc/gps_response_receiver.h"
 
 extern board_config_t board_cfg;
 
@@ -312,6 +313,8 @@ esp_err_t espnow_transport_start(void) {
         }
     }
     ESP_RETURN_ON_ERROR(ensure_transport_resources(), TAG, "Could not allocate transport resources");
+    ESP_RETURN_ON_ERROR(gps_response_receiver_start(), TAG,
+                        "Could not allocate GPS response receiver");
     ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "Could not disable WiFi power save");
 
     uint8_t primary_channel              = 0U;
@@ -324,6 +327,12 @@ esp_err_t espnow_transport_start(void) {
     ESP_RETURN_ON_ERROR(esp_now_init(), TAG, "Could not initialize ESP-NOW");
     esp_err_t err = esp_now_register_send_cb(espnow_send_callback);
     if (err != ESP_OK) {
+        esp_now_deinit();
+        return err;
+    }
+    err = esp_now_register_recv_cb(gps_response_receive_callback);
+    if (err != ESP_OK) {
+        esp_now_unregister_send_cb();
         esp_now_deinit();
         return err;
     }
@@ -352,6 +361,7 @@ esp_err_t espnow_transport_start(void) {
                 esp_now_del_peer(active_clients[added].mac);
             }
             esp_now_unregister_send_cb();
+            esp_now_unregister_recv_cb();
             esp_now_deinit();
             active_client_count = 0U;
             return err;
@@ -363,6 +373,7 @@ esp_err_t espnow_transport_start(void) {
                 esp_now_del_peer(active_clients[added].mac);
             }
             esp_now_unregister_send_cb();
+            esp_now_unregister_recv_cb();
             esp_now_deinit();
             active_client_count = 0U;
             return err;
@@ -410,6 +421,7 @@ esp_err_t espnow_transport_stop(void) {
     memset(active_clients, 0, sizeof(active_clients));
     active_client_count = 0U;
     esp_now_unregister_send_cb();
+    esp_now_unregister_recv_cb();
     const esp_err_t err = esp_now_deinit();
     if (transport_mutex != NULL) {
         xSemaphoreGive(transport_mutex);
@@ -421,6 +433,7 @@ esp_err_t espnow_transport_stop(void) {
 }
 
 esp_err_t espnow_transport_apply_config(void) {
+    gps_response_receiver_apply_config();
     if (espnow_started && board_cfg.espnow_enabled && active_client_count == board_cfg.espnow_client_count) {
         bool same_peers = true;
         for (uint8_t i = 0; i < active_client_count; ++i) {

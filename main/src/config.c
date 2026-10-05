@@ -112,9 +112,33 @@ typedef struct {
     mk60_emulator_config_t mk60_emulator;
     uint8_t gps_update_rate_hz;
     uint32_t crc32;
+} board_config_persist_v14_t;
+
+typedef struct {
+    uint32_t version;
+    uint32_t can_start_id;
+    uint32_t can_speed_kbps;
+    uint8_t can_tx_hz;
+    bool can_enabled;
+    bool espnow_enabled;
+    uint16_t pullup_vref_divider_high_ohm;
+    channel_config_t channels[CONFIG_CHANNELS];
+    bool gps_enabled;
+    uint32_t gps_can_start_id;
+    uint8_t gps_target_mac[ESP_NOW_ETH_ALEN];
+    uint8_t espnow_client_count;
+    espnow_client_config_t espnow_clients[ESPNOW_MAX_CLIENTS];
+    mk60_emulator_config_t mk60_emulator;
+    uint8_t gps_update_rate_hz;
+    gps_source_t gps_source;
+    uint8_t gps_espnow_peer_mac[ESP_NOW_ETH_ALEN];
+    uint32_t gps_response_timeout_ms;
+    uint32_t crc32;
 } board_config_persist_t;
 
-_Static_assert(sizeof(board_config_persist_t) != sizeof(board_config_persist_v13_t),
+_Static_assert(sizeof(board_config_persist_t) != sizeof(board_config_persist_v14_t),
+               "v15 persisted config must remain distinguishable from v14 by payload size");
+_Static_assert(sizeof(board_config_persist_v14_t) != sizeof(board_config_persist_v13_t),
                "v14 persisted config must remain distinguishable from v13 by payload size");
 _Static_assert(sizeof(board_config_persist_v13_t) != sizeof(board_config_persist_v12_t),
                "v13 persisted config must remain distinguishable from v12 by payload size");
@@ -162,6 +186,12 @@ static void log_board_config(const board_config_t *cfg) {
              (unsigned long)cfg->gps_can_start_id,
              cfg->gps_target_mac[0], cfg->gps_target_mac[1], cfg->gps_target_mac[2],
              cfg->gps_target_mac[3], cfg->gps_target_mac[4], cfg->gps_target_mac[5]);
+    ESP_LOGI(TAG, "  gps_source=%u response_peer=%02X:%02X:%02X:%02X:%02X:%02X response_timeout_ms=%lu",
+             (unsigned)cfg->gps_source,
+             cfg->gps_espnow_peer_mac[0], cfg->gps_espnow_peer_mac[1],
+             cfg->gps_espnow_peer_mac[2], cfg->gps_espnow_peer_mac[3],
+             cfg->gps_espnow_peer_mac[4], cfg->gps_espnow_peer_mac[5],
+             (unsigned long)cfg->gps_response_timeout_ms);
     ESP_LOGI(TAG, "  mk60_emulator_enabled=%d trigger=0x%lX dlc=%u responses=%u",
              cfg->mk60_emulator.enabled,
              (unsigned long)cfg->mk60_emulator.trigger_id,
@@ -240,10 +270,40 @@ static void persist_from_runtime(const board_config_t *cfg, board_config_persist
     memcpy(persisted->espnow_clients, cfg->espnow_clients, sizeof(persisted->espnow_clients));
     persisted->mk60_emulator = cfg->mk60_emulator;
     persisted->gps_update_rate_hz = cfg->gps_update_rate_hz;
+    persisted->gps_source = cfg->gps_source;
+    memcpy(persisted->gps_espnow_peer_mac, cfg->gps_espnow_peer_mac,
+           sizeof(persisted->gps_espnow_peer_mac));
+    persisted->gps_response_timeout_ms = cfg->gps_response_timeout_ms;
     persisted->crc32 = crc32(persisted, offsetof(board_config_persist_t, crc32));
 }
 
 static void runtime_from_persist(const board_config_persist_t *persisted, board_config_t *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->version = persisted->version;
+    cfg->can_start_id = persisted->can_start_id;
+    cfg->can_speed_kbps = persisted->can_speed_kbps;
+    cfg->can_tx_hz = persisted->can_tx_hz;
+    cfg->can_enabled = persisted->can_enabled;
+    cfg->espnow_enabled = persisted->espnow_enabled;
+    cfg->pullup_vref_divider_high_ohm = persisted->pullup_vref_divider_high_ohm;
+    memcpy(cfg->channels, persisted->channels, sizeof(cfg->channels));
+    cfg->gps_enabled = persisted->gps_enabled;
+    cfg->gps_can_start_id = persisted->gps_can_start_id;
+    memcpy(cfg->gps_target_mac, persisted->gps_target_mac, sizeof(cfg->gps_target_mac));
+    cfg->espnow_client_count = persisted->espnow_client_count;
+    memcpy(cfg->espnow_clients, persisted->espnow_clients, sizeof(cfg->espnow_clients));
+    cfg->mk60_emulator = persisted->mk60_emulator;
+    cfg->gps_update_rate_hz = persisted->gps_update_rate_hz;
+    cfg->gps_source = persisted->gps_source;
+    memcpy(cfg->gps_espnow_peer_mac, persisted->gps_espnow_peer_mac,
+           sizeof(cfg->gps_espnow_peer_mac));
+    cfg->gps_response_timeout_ms = persisted->gps_response_timeout_ms;
+    cfg->pullup_vref_mv = 5025;
+    cfg->crc32 = persisted->crc32;
+}
+
+static void runtime_from_v14(const board_config_persist_v14_t *persisted,
+                             board_config_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
     cfg->version = persisted->version;
     cfg->can_start_id = persisted->can_start_id;
@@ -378,6 +438,8 @@ static bool config_semantically_valid(const board_config_t *cfg) {
         (cfg->can_tx_hz != 25 && cfg->can_tx_hz != 50) ||
         (cfg->gps_update_rate_hz != 10 && cfg->gps_update_rate_hz != 20 &&
          cfg->gps_update_rate_hz != 25) ||
+        cfg->gps_source > GPS_SOURCE_ESPNOW_RESPONSE ||
+        cfg->gps_response_timeout_ms < 100U || cfg->gps_response_timeout_ms > 60000U ||
         cfg->espnow_client_count > ESPNOW_MAX_CLIENTS ||
         (cfg->espnow_enabled && cfg->espnow_client_count == 0) ||
         (cfg->mk60_emulator.enabled && cfg->can_speed_kbps != 500) ||
@@ -386,6 +448,7 @@ static bool config_semantically_valid(const board_config_t *cfg) {
     }
 
     const uint8_t zero_mac[ESP_NOW_ETH_ALEN] = {0};
+    bool gps_peer_configured = false;
     for (uint8_t i = 0; i < cfg->espnow_client_count; ++i) {
         if (memcmp(cfg->espnow_clients[i].mac, zero_mac, sizeof(zero_mac)) == 0 ||
             memchr(cfg->espnow_clients[i].label, '\0', ESPNOW_CLIENT_LABEL_LEN) == NULL) {
@@ -396,6 +459,16 @@ static bool config_semantically_valid(const board_config_t *cfg) {
                 return false;
             }
         }
+        if (memcmp(cfg->espnow_clients[i].mac, cfg->gps_espnow_peer_mac,
+                   ESP_NOW_ETH_ALEN) == 0) {
+            gps_peer_configured = true;
+        }
+    }
+    if (cfg->gps_enabled && cfg->gps_source == GPS_SOURCE_ESPNOW_RESPONSE &&
+        (!cfg->espnow_enabled ||
+         memcmp(cfg->gps_espnow_peer_mac, zero_mac, sizeof(zero_mac)) == 0 ||
+         !gps_peer_configured)) {
+        return false;
     }
 
     bool emub_seen[EMUB_TX_CAN_ANALOG_16 + 1] = {false};
@@ -462,11 +535,20 @@ static bool normalize_config(board_config_t *cfg) {
                 cfg->espnow_clients[i].label[0] = '\0';
             }
         }
+        if (old_version < 15) {
+            cfg->gps_source = GPS_SOURCE_DRAGY;
+            memset(cfg->gps_espnow_peer_mac, 0, sizeof(cfg->gps_espnow_peer_mac));
+            cfg->gps_response_timeout_ms = 1000U;
+        }
         cfg->version = CONFIG_VERSION;
         changed = true;
     }
     if (cfg->can_tx_hz != 25 && cfg->can_tx_hz != 50) {
         cfg->can_tx_hz = 25;
+        changed = true;
+    }
+    if (cfg->gps_response_timeout_ms < 100U || cfg->gps_response_timeout_ms > 60000U) {
+        cfg->gps_response_timeout_ms = 1000U;
         changed = true;
     }
     if (!output_command_base_can_id_valid(cfg->can_start_id)) {
@@ -547,6 +629,7 @@ static bool decode_record(const uint8_t *record, size_t record_size, board_confi
     if (record_read_u32(record + 12) != crc32(payload, payload_size)) return false;
 
     if (payload_size != sizeof(board_config_persist_t) &&
+        payload_size != sizeof(board_config_persist_v14_t) &&
         payload_size != sizeof(board_config_persist_v13_t) &&
         payload_size != sizeof(board_config_persist_v12_t) &&
         payload_size != sizeof(board_config_persist_v11_t) &&
@@ -561,6 +644,10 @@ static bool decode_record(const uint8_t *record, size_t record_size, board_confi
         board_config_persist_t *current = persisted;
         valid = current->crc32 == crc32(current, offsetof(board_config_persist_t, crc32));
         if (valid) runtime_from_persist(current, cfg);
+    } else if (payload_size == sizeof(board_config_persist_v14_t)) {
+        board_config_persist_v14_t *v14 = persisted;
+        valid = v14->crc32 == crc32(v14, offsetof(board_config_persist_v14_t, crc32));
+        if (valid) runtime_from_v14(v14, cfg);
     } else if (payload_size == sizeof(board_config_persist_v13_t)) {
         board_config_persist_v13_t *v13 = persisted;
         valid = v13->crc32 == crc32(v13, offsetof(board_config_persist_v13_t, crc32));
@@ -801,6 +888,9 @@ void config_set_defaults(board_config_t *cfg) {
     cfg->gps_can_start_id = 0x650;
     memset(cfg->gps_target_mac, 0, sizeof(cfg->gps_target_mac));
     cfg->gps_update_rate_hz = 10;
+    cfg->gps_source = GPS_SOURCE_DRAGY;
+    memset(cfg->gps_espnow_peer_mac, 0, sizeof(cfg->gps_espnow_peer_mac));
+    cfg->gps_response_timeout_ms = 1000U;
     cfg->mk60_emulator.enabled = false;
     cfg->mk60_emulator.trigger_id = MK60_TRIGGER_ID;
     cfg->mk60_emulator.trigger_dlc = 8U;
