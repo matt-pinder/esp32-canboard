@@ -5,6 +5,8 @@
 /// Serves index.min.html.gz from SPIFFS and provides REST API for:
 /// - GET /api/config: Retrieve aggregate board and Output configuration
 /// - POST /api/config: Validate, persist, and apply the whole configuration
+/// - GET /api/status: Check device reachability and active app partition
+/// - POST /api/ota: Stream, validate, select, and boot a firmware update
 /// - POST /api/reboot: Reboot the device
 /// - GET /api/ntc_tables: List available NTC lookup tables
 void start_http_server(void);

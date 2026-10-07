@@ -1,6 +1,8 @@
 #include "esp_http_server.h"
 #include "esp_spiffs.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "inc/config.h"
@@ -23,6 +25,8 @@
 #include <stdio.h>
 
 #define AGGREGATE_CONFIG_REQUEST_LIMIT (160U * 1024U)
+#define OTA_BUFFER_SIZE 4096U
+#define OTA_RECEIVE_TIMEOUT_LIMIT 5U
 
 /**
  * @brief Log tag for HTTP server module
@@ -528,6 +532,121 @@ static void delayed_restart_task(void *arg) {
     vTaskDelete(NULL);
 }
 
+static esp_err_t status_get_handler(httpd_req_t *req) {
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    char response[96];
+    snprintf(response, sizeof(response),
+             "{\"status\":\"ok\",\"running_partition\":\"%s\"}\n",
+             running != NULL ? running->label : "unknown");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, response);
+}
+
+static void ota_restart_task(void *arg) {
+    (void)arg;
+    /* Leave enough time for the HTTP response to reach the uploader before
+     * the network disappears during restart. */
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+}
+
+static esp_err_t ota_post_handler(httpd_req_t *req) {
+    if (req->content_len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Firmware image is empty");
+        return ESP_FAIL;
+    }
+
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (update_partition == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "No OTA update partition available");
+        return ESP_FAIL;
+    }
+    if ((size_t)req->content_len > update_partition->size) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "Firmware image exceeds OTA partition");
+        return ESP_FAIL;
+    }
+
+    uint8_t *buffer = malloc(OTA_BUFFER_SIZE);
+    if (buffer == NULL) {
+        httpd_resp_send_500(req);
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_ota_handle_t update_handle = 0;
+    bool update_started = false;
+    esp_err_t result = esp_ota_begin(update_partition, (size_t)req->content_len,
+                                     &update_handle);
+    if (result != ESP_OK) {
+        free(buffer);
+        ESP_LOGE(TAG, "Could not begin OTA update: %s", esp_err_to_name(result));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Could not begin OTA update");
+        return ESP_FAIL;
+    }
+    update_started = true;
+
+    size_t remaining = (size_t)req->content_len;
+    size_t written = 0;
+    unsigned receive_timeouts = 0;
+    while (remaining > 0) {
+        const size_t requested = remaining < OTA_BUFFER_SIZE ? remaining : OTA_BUFFER_SIZE;
+        const int received = httpd_req_recv(req, (char *)buffer, requested);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT &&
+            receive_timeouts++ < OTA_RECEIVE_TIMEOUT_LIMIT) {
+            continue;
+        }
+        if (received <= 0) {
+            result = ESP_ERR_INVALID_RESPONSE;
+            break;
+        }
+        receive_timeouts = 0;
+        result = esp_ota_write(update_handle, buffer, (size_t)received);
+        if (result != ESP_OK) {
+            break;
+        }
+        remaining -= (size_t)received;
+        written += (size_t)received;
+    }
+    free(buffer);
+
+    if (result == ESP_OK && remaining == 0) {
+        result = esp_ota_end(update_handle);
+        update_started = false;
+    }
+    if (result == ESP_OK) {
+        result = esp_ota_set_boot_partition(update_partition);
+    }
+    if (result != ESP_OK || remaining != 0) {
+        if (update_started) {
+            esp_ota_abort(update_handle);
+        }
+        ESP_LOGE(TAG, "OTA update failed after %u/%u bytes: %s",
+                 (unsigned)written, (unsigned)req->content_len,
+                 esp_err_to_name(result));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            result == ESP_ERR_OTA_VALIDATE_FAILED
+                                ? "Firmware image validation failed"
+                                : "Firmware upload failed");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "OTA image written to %s: %u bytes; rebooting",
+             update_partition->label, (unsigned)written);
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    const esp_err_t response_result = httpd_resp_sendstr(
+        req, "Firmware accepted; ESP32 is rebooting.\n");
+    if (xTaskCreate(ota_restart_task, "ota_restart", 2048, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGW(TAG, "Could not create OTA restart task; restarting from HTTP handler");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+    }
+    return response_result;
+}
+
 /**
  * @brief HTTP GET handler for the pre-compressed web UI
  * Streams the gzipped HTML asset from SPIFFS for standard and wildcard routes.
@@ -590,6 +709,8 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     char mk60_json[768];
     char gps_mac[18];
     char gps_peer_mac[18];
+    char espnow_sta_mac[18] = "";
+    uint8_t sta_mac[ESP_NOW_ETH_ALEN] = {0};
     if (!format_espnow_clients_json(&cfg, espnow_clients, sizeof(espnow_clients))) {
         free(json);
         httpd_resp_send_500(req);
@@ -602,15 +723,22 @@ esp_err_t config_get_handler(httpd_req_t *req) {
     }
     format_mac(cfg.gps_target_mac, gps_mac, sizeof(gps_mac));
     format_mac(cfg.gps_espnow_peer_mac, gps_peer_mac, sizeof(gps_peer_mac));
+    esp_err_t mac_err = esp_wifi_get_mac(WIFI_IF_STA, sta_mac);
+    if (mac_err == ESP_OK) {
+        format_mac(sta_mac, espnow_sta_mac, sizeof(espnow_sta_mac));
+    } else {
+        ESP_LOGW(TAG, "Could not read WiFi STA MAC: %s", esp_err_to_name(mac_err));
+    }
     
     // Start JSON object including persisted board and transport configuration.
     json_pos += snprintf(json + json_pos, json_max - json_pos,
-        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"gps_update_rate_hz\":%u,\"gps_source\":\"%s\",\"gps_espnow_peer_mac\":\"%s\",\"gps_response_timeout_ms\":%lu,\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
+        "{\"can_enabled\":%s,\"can_speed_kbps\":%lu,\"can_start_id\":%lu,\"can_tx_hz\":%u,\"espnow_enabled\":%s,\"espnow_sta_mac\":\"%s\",\"espnow_clients\":%s,\"gps_enabled\":%s,\"gps_can_start_id\":%lu,\"gps_target_mac\":\"%s\",\"gps_update_rate_hz\":%u,\"gps_source\":\"%s\",\"gps_espnow_peer_mac\":\"%s\",\"gps_response_timeout_ms\":%lu,\"mk60_emulator\":%s,\"pullup_vref_divider_high_ohm\":%u,\"channels\":[",
         cfg.can_enabled ? "true" : "false",
         (unsigned long)cfg.can_speed_kbps,
         (unsigned long)cfg.can_start_id,
         (unsigned)cfg.can_tx_hz,
         cfg.espnow_enabled ? "true" : "false",
+        espnow_sta_mac,
         espnow_clients,
         cfg.gps_enabled ? "true" : "false",
         (unsigned long)cfg.gps_can_start_id,
@@ -1534,6 +1662,22 @@ void start_http_server(void) {
         .user_ctx = NULL 
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &index_uri));
+
+    httpd_uri_t status_uri = {
+        .uri = "/api/status",
+        .method = HTTP_GET,
+        .handler = status_get_handler,
+        .user_ctx = NULL
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &status_uri));
+
+    httpd_uri_t ota_uri = {
+        .uri = "/api/ota",
+        .method = HTTP_POST,
+        .handler = ota_post_handler,
+        .user_ctx = NULL
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &ota_uri));
     
     httpd_uri_t config_get_uri = { 
         .uri = "/api/config", 

@@ -55,6 +55,27 @@ The web UI allows you to:
 - After restoring a new configuration via the web UI the changes are applied immediately.
 - The current checked-in recovery export is `config/esp32-canboard-config-051026-090441.json` (SHA-256 `25cc3a9ffa824093bf31c163345749b8048a588224715e386e33c09e3a9b6c78`). It contains all ten channels, two ESP-NOW clients, current GPS-source fields, Output schema version 4, one Condition, and three configured Outputs.
 
+## Wi-Fi OTA
+
+The VS Code custom task runs `scripts/build_and_ota.sh`. The script first checks
+`/api/status`, rebuilds only when the existing `build/esp32-logger.bin` is
+missing or stale, regenerates the embedded web asset as part of that build, and
+then uploads the application to `/api/ota`. Connect to the `ESP32-CanBoard`
+access point before using the default URL.
+
+Set `ESP32_CANBOARD_OTA_URL` to override the target, for example:
+
+```sh
+ESP32_CANBOARD_OTA_URL=http://192.168.4.1/api/ota scripts/build_and_ota.sh
+```
+
+OTA requires the dual-slot partition table. After this change, perform one
+normal UART `idf.py flash` to install the updated partition table and OTA-aware
+firmware. Subsequent application updates can use the custom task. The existing
+SPIFFS, `config`, and `rules` partition offsets are unchanged, so that initial
+normal flash preserves stored configuration and Outputs; erasing the flash or
+writing those data offsets explicitly does not.
+
 
 ## CAN Output
 

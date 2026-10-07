@@ -19,7 +19,8 @@ idf_component_register(SRCS "main.c"
                     INCLUDE_DIRS "."
                     "./src"
                     "./inc"
-                    REQUIRES bt
+                    REQUIRES app_update
+                             bt
                              driver
                              esp_adc
                              esp_driver_tsens

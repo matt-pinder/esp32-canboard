@@ -27,7 +27,7 @@ static SemaphoreHandle_t can_driver_mutex = NULL;
 twai_timing_config_t t_can_config = TWAI_TIMING_CONFIG_500KBITS();
 /// Default filter rejects incoming messages unless CAN-to-ESP-NOW relay is enabled.
 twai_filter_config_t f_config = { .acceptance_code = 0xFFFFFFFF, .acceptance_mask = 0x00000000, .single_filter = true };
-twai_general_config_t can_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM, TWAI_MODE_NORMAL);
+twai_general_config_t can_config          = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM, TWAI_MODE_LISTEN_ONLY);
 
 /**
  * @brief Initialize and start TWAI/CAN driver with dynamic speed configuration

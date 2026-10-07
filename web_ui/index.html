@@ -965,6 +965,24 @@
                 />
                 <span>ESP-NOW</span>
               </label>
+              <span class="espnow-setting">
+                <label for="espnow-sta-mac">This board's STA MAC:</label>
+                <input
+                  id="espnow-sta-mac"
+                  class="mac-input"
+                  type="text"
+                  readonly
+                  aria-label="This board's ESP-NOW STA MAC address"
+                  placeholder="Unavailable"
+                />
+                <button
+                  id="copy-espnow-sta-mac"
+                  class="action-btn"
+                  type="button"
+                >
+                  Copy
+                </button>
+              </span>
               <button
                 id="add-espnow-client"
                 class="action-btn espnow-setting"
@@ -1597,6 +1615,9 @@
           config.can_enabled !== false;
         document.getElementById("espnow-enabled").checked =
           config.espnow_enabled === true;
+        document.getElementById("espnow-sta-mac").value = normalizeMacAddress(
+          config.espnow_sta_mac || "",
+        );
         const espnowClients = Array.isArray(config.espnow_clients)
           ? config.espnow_clients
           : config.espnow_target_mac
@@ -1910,6 +1931,29 @@
       document.getElementById("can-enabled").onchange = updateTransportControls;
       document.getElementById("espnow-enabled").onchange =
         updateTransportControls;
+      document.getElementById("copy-espnow-sta-mac").onclick = async function () {
+        const input = document.getElementById("espnow-sta-mac");
+        if (!isValidMacAddress(input.value)) {
+          setStatus("STA MAC is unavailable.", true);
+          return;
+        }
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(input.value);
+          } else {
+            input.select();
+            input.setSelectionRange(0, input.value.length);
+            if (!document.execCommand("copy")) {
+              throw new Error("Copy command failed");
+            }
+          }
+          setStatus("STA MAC copied.", false, true);
+        } catch (e) {
+          input.select();
+          input.setSelectionRange(0, input.value.length);
+          setStatus("STA MAC selected; copy it manually.", true);
+        }
+      };
       document.getElementById("gps-enabled").onchange = updateTransportControls;
       document.getElementById("gps-source").onchange = updateTransportControls;
       document.getElementById("add-espnow-client").onclick = function () {
