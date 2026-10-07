@@ -255,7 +255,7 @@ While ESP-NOW is enabled, this firmware deliberately keeps the station radio on 
 |:---|:---|:---|
 | `esp32-r8` | R8 dashboard/logger | Add its reported station MAC as a client; it defaults to permitting canboard STA MAC `DC:DA:0C:3B:B2:0C`. It decodes classic standard, non-RTR data frames only. |
 | `esp32-e36` | E36 dashboard/logger | Add its reported station MAC as a client; it defaults to permitting canboard STA MAC `DC:DA:0C:3C:E8:08`. It decodes classic standard, non-RTR data frames only. |
-| `esp32-output` | Output/PWM receiver and optional GPS responder | Add its displayed station MAC as a client. Output command frames use `Base + 5` and `Base + 6`; GPS response uses the separate 42-byte `GP` version-1 snapshot. |
+| `esp32-output` | Output/PWM receiver and optional GPS responder | Add its displayed station MAC as a client. Output command frames use `Base + 5` and `Base + 6`; GPS response uses the separate 44-byte `GP` version-1 snapshot. |
 
 The raw-CAN batch format is version 1 in all four repositories. Dashboard DBCs, telemetry schemas, RTCs, UI projects, hardware pins, NVS namespaces, and default sender MACs are vehicle profiles and are intentionally not interchangeable.
 
@@ -263,7 +263,7 @@ The raw-CAN batch format is version 1 in all four repositories. Dashboard DBCs, 
 
 When GPS is enabled, the board scans for the configured Dragy BLE MAC, connects to service `FD00`, performs the `FD03` challenge response, and decodes checksum-valid UBX NAV-PVT packets from `FD02`. Valid fixes are published at the GPS update rate; a connected no-fix stream publishes only the status frame, limited to 1 Hz. BLE discovery, decoding, and publishing run independently from ADC sampling and the existing sensor transmit task.
 
-Dragy output uses six standard 11-bit CAN frames starting at the configured GPS base ID. All multi-byte values are little-endian. GPS fields retain their native UBX scaling and IMU fields contain unscaled signed raw counts.
+Dragy output uses six standard 11-bit CAN frames starting at the configured GPS base ID. All multi-byte values are little-endian. Position and motion fields retain their native UBX scaling, altitude/UTC are compactly repacked, and IMU fields contain unscaled signed raw counts.
 
 | CAN ID | Bytes | Type | Value |
 |:---|:---|:---|:---|
@@ -276,8 +276,9 @@ Dragy output uses six standard 11-bit CAN frames starting at the configured GPS 
 | GPS Base ID + 1 | 4..7 | int32 | Heading of motion in degrees x 100,000 |
 | GPS Base ID + 2 | 0..3 | int32 | Latitude in degrees x 10,000,000 |
 | GPS Base ID + 2 | 4..7 | int32 | Longitude in degrees x 10,000,000 |
-| GPS Base ID + 3 | 0..3 | int32 | Mean-sea-level altitude in mm |
-| GPS Base ID + 3 | 4..7 | uint32 | GPS time of week in ms |
+| GPS Base ID + 3 | bits 0..21 | int22 | Mean-sea-level altitude in cm |
+| GPS Base ID + 3 | bits 22..31 | uint10 | UTC millisecond component (`0..999`) |
+| GPS Base ID + 3 | bits 32..63 | uint32 | Unix UTC seconds |
 | GPS Base ID + 4 | 0..2 | uint24 | FD05 sample counter |
 | GPS Base ID + 4 | 3 | uint8 | FD05 record marker (`0xE1`) |
 | GPS Base ID + 4 | 4..5 | int16 | Raw accelerometer X |
@@ -388,7 +389,7 @@ scan control, and update rate are retained in configuration but only used when
 Dragy is selected. Version-14 configuration is migrated to version 15 with
 Dragy selected, so existing GPS and BLE settings are preserved.
 
-The selected output replies with one fixed 42-byte, little-endian version-1 snapshot:
+The selected output replies with one fixed 44-byte, little-endian version-1 snapshot:
 
 | Bytes | Value |
 |:---|:---|
@@ -398,7 +399,7 @@ The selected output replies with one fixed 42-byte, little-endian version-1 snap
 | 4..5 | Sample sequence |
 | 6..9 | Output uptime in milliseconds |
 | 10..13 | Sample age in milliseconds at transmission |
-| 14..17 | GPS iTOW in milliseconds |
+| 14..17 | Unix UTC seconds |
 | 18..21, 22..25 | Latitude and longitude in `1e-7` degrees |
 | 26..29 | Speed in millimetres per second |
 | 30..33 | Heading in `1e-5` degrees |
@@ -406,6 +407,7 @@ The selected output replies with one fixed 42-byte, little-endian version-1 snap
 | 38 | Satellites used |
 | 39 | NMEA GGA fix quality |
 | 40..41 | HDOP multiplied by 100 |
+| 42..43 | UTC millisecond component (`0..999`) |
 
 Packets must have the exact length and known flags, pass all field range checks,
 and come from the selected client. Sequence comparison handles uint16 wrap;
@@ -414,7 +416,7 @@ lower sender uptime identifies a sender restart. Snapshots are RAM-only.
 A fresh valid snapshot is replayed at the normal 25 or 50 Hz CAN transmit
 cadence on the configured base ID through `can_transmit_frame()`, so the same
 frames reach enabled TWAI and every configured ESP-NOW client. Frames `base+0`
-through `base+3` contain status, speed/heading, position, and altitude/iTOW.
+through `base+3` contain status, speed/heading, position, and altitude/UTC.
 Fix type is 2 for a valid matched RMC/GGA epoch. Satellites and altitude come
 from GGA, while UBX-only flags, battery, and horizontal accuracy remain zero;
 HDOP is not misrepresented as horizontal accuracy. A fresh invalid fix, missing response, or expired sample

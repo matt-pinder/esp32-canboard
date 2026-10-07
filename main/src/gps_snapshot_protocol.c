@@ -29,7 +29,9 @@ static bool snapshot_valid(const gps_snapshot_t *snapshot)
 {
     return snapshot != NULL &&
            (snapshot->flags & ~GPS_SNAPSHOT_FLAG_MASK) == 0U &&
-           snapshot->i_tow_ms < GPS_WEEK_MILLISECONDS &&
+           snapshot->utc_millisecond <= 999U &&
+           (((snapshot->flags & GPS_SNAPSHOT_FLAG_TIME_VALID) == 0U) ||
+            snapshot->utc_unix_s > 0U) &&
            snapshot->latitude_1e7_deg >= -900000000 &&
            snapshot->latitude_1e7_deg <= 900000000 &&
            snapshot->longitude_1e7_deg >= -1800000000 &&
@@ -56,7 +58,7 @@ size_t gps_snapshot_encode(uint8_t *output, size_t output_size,
     write_u16_le(output + 4, snapshot->sequence);
     write_u32_le(output + 6, snapshot->sender_uptime_ms);
     write_u32_le(output + 10, snapshot->sample_age_ms);
-    write_u32_le(output + 14, snapshot->i_tow_ms);
+    write_u32_le(output + 14, snapshot->utc_unix_s);
     write_u32_le(output + 18, (uint32_t)snapshot->latitude_1e7_deg);
     write_u32_le(output + 22, (uint32_t)snapshot->longitude_1e7_deg);
     write_u32_le(output + 26, snapshot->ground_speed_mm_s);
@@ -65,6 +67,7 @@ size_t gps_snapshot_encode(uint8_t *output, size_t output_size,
     output[38] = snapshot->satellites;
     output[39] = snapshot->fix_quality;
     write_u16_le(output + 40, snapshot->hdop_x100);
+    write_u16_le(output + 42, snapshot->utc_millisecond);
     return GPS_SNAPSHOT_PACKET_SIZE;
 }
 
@@ -83,7 +86,7 @@ bool gps_snapshot_decode(const uint8_t *packet, size_t packet_size,
         .sequence = read_u16_le(packet + 4),
         .sender_uptime_ms = read_u32_le(packet + 6),
         .sample_age_ms = read_u32_le(packet + 10),
-        .i_tow_ms = read_u32_le(packet + 14),
+        .utc_unix_s = read_u32_le(packet + 14),
         .latitude_1e7_deg = (int32_t)read_u32_le(packet + 18),
         .longitude_1e7_deg = (int32_t)read_u32_le(packet + 22),
         .ground_speed_mm_s = read_u32_le(packet + 26),
@@ -92,6 +95,7 @@ bool gps_snapshot_decode(const uint8_t *packet, size_t packet_size,
         .satellites = packet[38],
         .fix_quality = packet[39],
         .hdop_x100 = read_u16_le(packet + 40),
+        .utc_millisecond = read_u16_le(packet + 42),
     };
     if (!snapshot_valid(&decoded)) {
         return false;

@@ -12,6 +12,7 @@
 #include "inc/can.h"
 #include "inc/config.h"
 #include "inc/gps_snapshot_protocol.h"
+#include "inc/gps_time_codec.h"
 
 #define GPS_RESPONSE_QUEUE_DEPTH 8U
 #define GPS_RESPONSE_TASK_STACK 4096U
@@ -192,8 +193,9 @@ void gps_response_publish_cached(void)
     can_transmit_frame(&position, "ESP-NOW GPS position");
 
     twai_message_t altitude_time = gps_frame(board_cfg.gps_can_start_id + 3U);
-    write_u32_le(&altitude_time.data[0],
-                 (uint32_t)snapshot.altitude_mm);
-    write_u32_le(&altitude_time.data[4], snapshot.i_tow_ms);
+    (void)gps_can_pack_altitude_utc(altitude_time.data,
+                                    snapshot.altitude_mm,
+                                    snapshot.utc_unix_s,
+                                    snapshot.utc_millisecond);
     can_transmit_frame(&altitude_time, "ESP-NOW GPS altitude/time");
 }

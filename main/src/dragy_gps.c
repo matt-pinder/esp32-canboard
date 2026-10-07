@@ -15,6 +15,7 @@
 #include "inc/ble_scan.h"
 #include "inc/can.h"
 #include "inc/config.h"
+#include "inc/gps_time_codec.h"
 
 #if CONFIG_BT_ENABLED && CONFIG_BT_NIMBLE_ENABLED && CONFIG_BT_NIMBLE_ROLE_CENTRAL
 #include "host/ble_att.h"
@@ -56,7 +57,8 @@ typedef struct
 
 typedef struct
 {
-    uint32_t i_tow_ms;
+    uint32_t utc_unix_s;
+    uint16_t utc_millisecond;
     int32_t longitude_1e7_deg;
     int32_t latitude_1e7_deg;
     int32_t altitude_msl_mm;
@@ -262,7 +264,14 @@ static bool parse_nav_pvt(const uint8_t frame[UBX_NAV_PVT_FRAME_LEN], dragy_samp
 
     const uint8_t *payload = frame + 6;
     int32_t signed_speed = read_i32_le(payload + 60);
-    sample->i_tow_ms = read_u32_le(payload);
+    const uint8_t utc_valid = payload[11];
+    if ((utc_valid & 0x07U) == 0x07U) {
+        (void)gps_utc_from_calendar(read_u16_le(payload + 4), payload[6],
+                                    payload[7], payload[8], payload[9],
+                                    payload[10], read_i32_le(payload + 16),
+                                    &sample->utc_unix_s,
+                                    &sample->utc_millisecond);
+    }
     sample->longitude_1e7_deg = read_i32_le(payload + 24);
     sample->latitude_1e7_deg = read_i32_le(payload + 28);
     sample->altitude_msl_mm = read_i32_le(payload + 36);
@@ -345,8 +354,9 @@ static void consume_ubx_bytes(const uint8_t *data, size_t length)
                             now - last_nav_queue_warn >= pdMS_TO_TICKS(1000))
                         {
                             ESP_LOGW(TAG,
-                                     "NAV-PVT publish queue full; dropped iTOW=%" PRIu32 " ms",
-                                     discarded.i_tow_ms);
+                                     "NAV-PVT publish queue full; dropped UTC=%" PRIu32 ".%03u",
+                                     discarded.utc_unix_s,
+                                     (unsigned)discarded.utc_millisecond);
                             last_nav_queue_warn = now;
                         }
                     }
@@ -1023,8 +1033,10 @@ static void publish_sample(const dragy_sample_t *sample, uint32_t base_id)
     can_transmit_frame(&position, "Dragy GPS position");
 
     twai_message_t altitude_time = init_twai_message(base_id + 3);
-    write_u32_le(&altitude_time.data[0], (uint32_t)sample->altitude_msl_mm);
-    write_u32_le(&altitude_time.data[4], sample->i_tow_ms);
+    (void)gps_can_pack_altitude_utc(altitude_time.data,
+                                    sample->altitude_msl_mm,
+                                    sample->utc_unix_s,
+                                    sample->utc_millisecond);
     can_transmit_frame(&altitude_time, "Dragy GPS altitude/time");
 }
 
