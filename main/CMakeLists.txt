@@ -32,8 +32,7 @@ idf_component_register(SRCS "main.c"
                              esp_partition
                              esp_timer
                              nvs_flash
-                             spiffs
-                             espressif__cjson)
+                             spiffs )
 
 # Web assets remain part of the normal project flash. Persistent board settings
 # live in `config` NVS and Outputs in the raw `rules` partition; neither
