@@ -823,6 +823,9 @@
             <button id="backup-btn" class="action-btn backup" type="button">
               Backup
             </button>
+            <button id="can-capture-btn" class="action-btn" type="button">
+              Capture CAN (10s)
+            </button>
             <input
               id="restore-file"
               type="file"
@@ -1161,6 +1164,7 @@
       const ESPNOW_MAX_CLIENTS = 4;
       const ESPNOW_CLIENT_LABEL_MAX_BYTES = 31;
       let config = null;
+      let canCaptureInProgress = false;
       const loadingOverlay = document.getElementById("loading-overlay");
       const overlayText = document.getElementById("overlay-text");
       const statusToast = document.getElementById("status-toast");
@@ -1659,6 +1663,7 @@
       }
 
       async function refreshLiveValues() {
+        if (canCaptureInProgress) return;
         try {
           const res = await fetch("/api/live_values", { cache: "no-store" });
           if (!res.ok) {
@@ -1855,6 +1860,43 @@
           showOverlay("Rebooting device... Refreshing now");
           window.location.reload();
         }, 1000);
+      };
+
+      // Stream the raw capture to the browser; conversion stays off-device.
+      document.getElementById("can-capture-btn").onclick = async function () {
+        const button = this;
+        canCaptureInProgress = true;
+        button.disabled = true;
+        button.textContent = "Capturing CAN...";
+        setStatus("Capturing all physical CAN traffic for 10 seconds.", false, true);
+        try {
+          const resp = await fetch("/api/can/capture.canlog", {
+            cache: "no-store",
+          });
+          if (!resp.ok) {
+            setStatus((await resp.text()) || "CAN capture failed.", true);
+            return;
+          }
+          const blob = await resp.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          const now = new Date();
+          const pad = (n) => n.toString().padStart(2, "0");
+          const datetime = `${pad(now.getDate())}${pad(now.getMonth() + 1)}${pad(now.getFullYear() % 100)}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+          a.download = `esp32-canboard-can-${datetime}.canlog`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          setStatus("CAN capture downloaded.", false, true);
+        } catch (e) {
+          setStatus("CAN capture failed or the connection was interrupted.", true);
+        } finally {
+          canCaptureInProgress = false;
+          button.disabled = false;
+          button.textContent = "Capture CAN (10s)";
+        }
       };
 
       // Backup (download JSON) — filename uses client time ddmmyy-hhmmss

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "driver/gpio.h"
 #include "driver/twai_types_legacy.h"
 #include "esp_err.h"
@@ -19,6 +22,12 @@ extern twai_timing_config_t t_can_config;
 extern twai_filter_config_t f_config;
 /// TWAI general configuration for CAN bus initialization
 extern twai_general_config_t can_config;
+
+typedef struct {
+    uint32_t rx_missed_count;
+    uint32_t rx_overrun_count;
+    uint32_t bus_error_count;
+} can_bus_status_snapshot_t;
 
 /// @brief Helper function to initialize a TWAI message with a given ID
 /// @param id CAN message identifier
@@ -42,6 +51,10 @@ esp_err_t can_init(void);
 /// @brief Stop and uninstall the TWAI/CAN driver if it is active
 /// @return ESP_OK on success, otherwise the first driver error encountered
 esp_err_t can_deinit(void);
+
+esp_err_t can_prepare_capture(bool *reconfigured);
+esp_err_t can_restore_after_capture(bool reconfigured);
+bool can_get_bus_status(can_bus_status_snapshot_t *status);
 
 /// @brief Transmit one TWAI frame through every enabled output transport.
 /// @param message Frame to send over physical CAN and/or ESP-NOW

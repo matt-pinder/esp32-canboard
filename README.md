@@ -43,11 +43,18 @@ The web UI allows you to:
 | Function | Description |
 |:----|:----|
 | Save Config | Save current UI settings to the dedicated `config` NVS partition. Changes are validated, persisted and applied immediately. |
+| Capture CAN (10s) | Stream every physical CAN data/RTR frame to the browser as a compact `.canlog` download. The board uses a bounded RAM queue and does not write the capture to flash. |
 | Backup | Download one JSON snapshot containing the board configuration, reusable Conditions and Outputs. The filename is prefixed with `esp32-canboard-config-` and suffixed with the client timestamp in `ddmmyy-hhmmss` format. |
 | Restore | Select a previously exported JSON file. The backend validates and applies the board configuration, Conditions and Outputs together while retaining their separate flash records. Legacy `rules` data is never imported. |
 | Reboot Device | Reboots the device. |
 
 **Notes:**
+- CAN captures use a versioned little-endian binary format with a fixed header,
+  20-byte frame records and a final loss/error trailer. Convert a downloaded
+  capture to candump-style text with
+  `python3 tools/decode_can_capture.py capture.canlog`, or add
+  `--format csv -o capture.csv` for CSV. A missing `CANEND1` trailer means the
+  browser connection ended before the capture completed.
 - Board configuration is persisted as one current record in the dedicated `config` NVS partition. Conditions and Outputs are persisted together in the existing CRC-checked raw `rules` partition with atomic A/B writes; the partition location is unchanged even though the user-facing feature is now named Outputs.
 - Only the current version-15 NVS board record is accepted. Pre-v15 NVS records and `/spiffs/config.bin` are deliberately unsupported after the verified 2026-10-05 aggregate backup.
 - Normal `idf.py flash` updates the application and SPIFFS web assets, but does not write the dedicated `config` partition.

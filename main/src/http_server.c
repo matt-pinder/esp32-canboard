@@ -7,6 +7,7 @@
 #include "freertos/task.h"
 #include "inc/config.h"
 #include "inc/can.h"
+#include "inc/can_capture.h"
 #include "inc/ble_scan.h"
 #include "inc/dragy_gps.h"
 #include "inc/gps_response_receiver.h"
@@ -18,6 +19,7 @@
 #include "inc/relay_command_protocol.h"
 #include "inc/relay_rule_http.h"
 #include "esp_wifi.h"
+#include "esp_timer.h"
 #include "cJSON.h"
 #include <sys/param.h>
 #include <string.h>
@@ -27,6 +29,10 @@
 #define AGGREGATE_CONFIG_REQUEST_LIMIT (160U * 1024U)
 #define OTA_BUFFER_SIZE 4096U
 #define OTA_RECEIVE_TIMEOUT_LIMIT 5U
+#define CAN_CAPTURE_FILE_HEADER_SIZE 32U
+#define CAN_CAPTURE_FILE_RECORD_SIZE 20U
+#define CAN_CAPTURE_FILE_TRAILER_SIZE 32U
+#define CAN_CAPTURE_CHUNK_RECORDS 32U
 
 /**
  * @brief Log tag for HTTP server module
@@ -37,6 +43,20 @@ static const char *TAG = "HTTPD";
  */
 static httpd_handle_t server = NULL;
 extern board_config_t board_cfg;
+
+static void write_le16(uint8_t *output, uint16_t value)
+{
+    output[0] = (uint8_t)value;
+    output[1] = (uint8_t)(value >> 8U);
+}
+
+static void write_le32(uint8_t *output, uint32_t value)
+{
+    output[0] = (uint8_t)value;
+    output[1] = (uint8_t)(value >> 8U);
+    output[2] = (uint8_t)(value >> 16U);
+    output[3] = (uint8_t)(value >> 24U);
+}
 
 static char *receive_request_body(httpd_req_t *req)
 {
@@ -541,6 +561,166 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_sendstr(req, response);
+}
+
+static void encode_capture_record(uint8_t output[CAN_CAPTURE_FILE_RECORD_SIZE],
+                                  const can_capture_record_t *record)
+{
+    memset(output, 0, CAN_CAPTURE_FILE_RECORD_SIZE);
+    write_le32(output, record->timestamp_us);
+    uint32_t identifier_flags = record->identifier & 0x1FFFFFFFU;
+    if (record->extended) identifier_flags |= 1UL << 29U;
+    if (record->rtr) identifier_flags |= 1UL << 30U;
+    write_le32(output + 4U, identifier_flags);
+    output[8] = record->dlc;
+    memcpy(output + 9U, record->data, sizeof(record->data));
+}
+
+static esp_err_t send_capture_records(httpd_req_t *req,
+                                      const can_capture_record_t *records,
+                                      size_t count)
+{
+    uint8_t chunk[CAN_CAPTURE_FILE_RECORD_SIZE * CAN_CAPTURE_CHUNK_RECORDS];
+    for (size_t i = 0; i < count; ++i) {
+        encode_capture_record(chunk + i * CAN_CAPTURE_FILE_RECORD_SIZE, &records[i]);
+    }
+    return httpd_resp_send_chunk(req, (const char *)chunk,
+                                 count * CAN_CAPTURE_FILE_RECORD_SIZE);
+}
+
+static uint32_t counter_delta(uint32_t before, uint32_t after)
+{
+    return after - before;
+}
+
+static esp_err_t can_capture_get_handler(httpd_req_t *req)
+{
+    notify_client_connected();
+    if (can_capture_init() != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Could not allocate CAN capture queue");
+        return ESP_ERR_NO_MEM;
+    }
+    if (!can_capture_begin()) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "A CAN capture is already active.\n");
+    }
+
+    bool driver_reconfigured = false;
+    esp_err_t result = can_prepare_capture(&driver_reconfigured);
+    if (result != ESP_OK) {
+        can_capture_finish(NULL);
+        (void)can_restore_after_capture(driver_reconfigured);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Could not enable CAN reception");
+        return result;
+    }
+
+    can_bus_status_snapshot_t status_before = {0};
+    can_bus_status_snapshot_t status_after = {0};
+    (void)can_get_bus_status(&status_before);
+
+    uint8_t header[CAN_CAPTURE_FILE_HEADER_SIZE] = {0};
+    memcpy(header, "CANCAP1", 7U);
+    write_le16(header + 8U, 1U);
+    write_le16(header + 10U, CAN_CAPTURE_FILE_HEADER_SIZE);
+    write_le16(header + 12U, CAN_CAPTURE_FILE_RECORD_SIZE);
+    write_le32(header + 16U, board_cfg.can_speed_kbps);
+    write_le32(header + 20U, CAN_CAPTURE_DURATION_MS);
+
+    can_capture_stats_t capture_stats = {0};
+    can_capture_finish(&capture_stats);
+    /* Restart immediately so the header contains the precise capture epoch,
+     * after any temporary TWAI reconfiguration has completed. */
+    if (!can_capture_begin()) {
+        (void)can_restore_after_capture(driver_reconfigured);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    can_capture_get_stats(&capture_stats);
+    write_le32(header + 24U, capture_stats.start_uptime_ms);
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       "attachment; filename=esp32-canboard-10s.canlog");
+    if (httpd_resp_send_chunk(req, (const char *)header, sizeof(header)) != ESP_OK) {
+        can_capture_finish(NULL);
+        (void)can_restore_after_capture(driver_reconfigured);
+        return ESP_FAIL;
+    }
+
+    const int64_t deadline_us = esp_timer_get_time() +
+                                (int64_t)CAN_CAPTURE_DURATION_MS * 1000LL;
+    uint32_t frames_streamed = 0U;
+    while (esp_timer_get_time() < deadline_us) {
+        can_capture_record_t records[CAN_CAPTURE_CHUNK_RECORDS];
+        size_t count = 0U;
+        const int64_t remaining_us = deadline_us - esp_timer_get_time();
+        const uint32_t wait_ms = remaining_us > 10000LL ? 10U :
+                                 (remaining_us > 0 ? (uint32_t)((remaining_us + 999LL) / 1000LL) : 0U);
+        if (can_capture_receive(&records[count], wait_ms)) {
+            count++;
+            while (count < CAN_CAPTURE_CHUNK_RECORDS &&
+                   can_capture_receive(&records[count], 0U)) count++;
+        }
+        if (count > 0U) {
+            if (send_capture_records(req, records, count) != ESP_OK) {
+                can_capture_finish(NULL);
+                (void)can_restore_after_capture(driver_reconfigured);
+                return ESP_FAIL;
+            }
+            frames_streamed += (uint32_t)count;
+        }
+    }
+
+    can_capture_finish(&capture_stats);
+    vTaskDelay(1);
+    can_capture_record_t records[CAN_CAPTURE_CHUNK_RECORDS];
+    size_t count;
+    do {
+        count = 0U;
+        while (count < CAN_CAPTURE_CHUNK_RECORDS &&
+               can_capture_receive(&records[count], 0U)) count++;
+        if (count > 0U) {
+            if (send_capture_records(req, records, count) != ESP_OK) {
+                (void)can_restore_after_capture(driver_reconfigured);
+                return ESP_FAIL;
+            }
+            frames_streamed += (uint32_t)count;
+        }
+    } while (count > 0U);
+    can_capture_finish(&capture_stats);
+    (void)can_get_bus_status(&status_after);
+
+    uint8_t trailer[CAN_CAPTURE_FILE_TRAILER_SIZE] = {0};
+    memcpy(trailer, "CANEND1", 7U);
+    write_le32(trailer + 8U, capture_stats.frames_seen);
+    write_le32(trailer + 12U, frames_streamed);
+    write_le32(trailer + 16U, capture_stats.queue_drops);
+    write_le32(trailer + 20U,
+               counter_delta(status_before.rx_missed_count, status_after.rx_missed_count));
+    write_le32(trailer + 24U,
+               counter_delta(status_before.rx_overrun_count, status_after.rx_overrun_count));
+    write_le32(trailer + 28U,
+               counter_delta(status_before.bus_error_count, status_after.bus_error_count));
+
+    result = httpd_resp_send_chunk(req, (const char *)trailer, sizeof(trailer));
+    if (result == ESP_OK) result = httpd_resp_send_chunk(req, NULL, 0);
+    const esp_err_t restore_result = can_restore_after_capture(driver_reconfigured);
+    if (restore_result != ESP_OK) {
+        ESP_LOGE(TAG, "Could not restore CAN configuration after capture: %s",
+                 esp_err_to_name(restore_result));
+    }
+    ESP_LOGI(TAG,
+             "CAN capture complete: seen=%lu streamed=%lu queue_drops=%lu rx_missed=%lu rx_overrun=%lu bus_errors=%lu",
+             (unsigned long)capture_stats.frames_seen,
+             (unsigned long)frames_streamed,
+             (unsigned long)capture_stats.queue_drops,
+             (unsigned long)counter_delta(status_before.rx_missed_count, status_after.rx_missed_count),
+             (unsigned long)counter_delta(status_before.rx_overrun_count, status_after.rx_overrun_count),
+             (unsigned long)counter_delta(status_before.bus_error_count, status_after.bus_error_count));
+    return result;
 }
 
 static void ota_restart_task(void *arg) {
@@ -1670,6 +1850,14 @@ void start_http_server(void) {
         .user_ctx = NULL
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &status_uri));
+
+    httpd_uri_t can_capture_uri = {
+        .uri = "/api/can/capture.canlog",
+        .method = HTTP_GET,
+        .handler = can_capture_get_handler,
+        .user_ctx = NULL
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &can_capture_uri));
 
     httpd_uri_t ota_uri = {
         .uri = "/api/ota",

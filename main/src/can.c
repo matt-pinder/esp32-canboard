@@ -1,33 +1,34 @@
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <string.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/semphr.h"
-#include "esp_log.h"
-#include "driver/twai.h"
-#include "inc/config.h"
 #include "inc/can.h"
+#include "driver/twai.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "inc/can_capture.h"
 #include "inc/can_receive_dispatch.h"
-#include "inc/inputs.h"
+#include "inc/config.h"
 #include "inc/espnow_transport.h"
 #include "inc/gps_response_receiver.h"
+#include "inc/inputs.h"
 #include "inc/mk60_emulator.h"
 #include "inc/relay_command_protocol.h"
 #include "inc/relay_rule_engine.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 extern board_config_t board_cfg;
 
-twai_handle_t twai_can = NULL;
-static bool can_driver_active = false;
+twai_handle_t twai_can                    = NULL;
+static bool can_driver_active             = false;
 static SemaphoreHandle_t can_driver_mutex = NULL;
-twai_timing_config_t t_can_config = TWAI_TIMING_CONFIG_500KBITS();
-/// Default filter rejects incoming messages unless CAN-to-ESP-NOW relay is enabled.
-twai_filter_config_t f_config = { .acceptance_code = 0xFFFFFFFF, .acceptance_mask = 0x00000000, .single_filter = true };
-twai_general_config_t can_config          = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM, TWAI_MODE_LISTEN_ONLY);
+twai_timing_config_t t_can_config         = TWAI_TIMING_CONFIG_500KBITS();
+/// Default filter rejects incoming messages until a receive consumer is active.
+twai_filter_config_t f_config             = {.acceptance_code = 0xFFFFFFFF, .acceptance_mask = 0x00000000, .single_filter = true};
+twai_general_config_t can_config          = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM, TWAI_MODE_NORMAL);
 
 /**
  * @brief Initialize and start TWAI/CAN driver with dynamic speed configuration
@@ -36,9 +37,8 @@ twai_general_config_t can_config          = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_G
  * @return ESP_OK on success, ESP_FAIL on driver initialization error
  */
 esp_err_t can_init(void) {
-    if (!board_cfg.can_enabled && !config_has_espnow_relay_client(&board_cfg) &&
-        !relay_rule_engine_has_external_sources() &&
-        !board_cfg.mk60_emulator.enabled) {
+    if (!board_cfg.can_enabled && !config_has_espnow_relay_client(&board_cfg) && !relay_rule_engine_has_external_sources()
+        && !board_cfg.mk60_emulator.enabled && !can_capture_is_active()) {
         ESP_LOGI(can_log, "CAN transmission, relay, and MK60 emulator disabled; TWAI driver not started");
         return ESP_OK;
     }
@@ -83,18 +83,14 @@ esp_err_t can_init(void) {
         memcpy(&t_can_config, &temp_config, sizeof(twai_timing_config_t));
     }
 
-    if (config_has_espnow_relay_client(&board_cfg) || board_cfg.mk60_emulator.enabled ||
-        relay_rule_engine_has_external_sources()) {
+    if (config_has_espnow_relay_client(&board_cfg) || board_cfg.mk60_emulator.enabled || relay_rule_engine_has_external_sources()
+        || can_capture_is_active()) {
         static const twai_filter_config_t accept_all = TWAI_FILTER_CONFIG_ACCEPT_ALL();
         memcpy(&f_config, &accept_all, sizeof(f_config));
         can_config.rx_queue_len = 128;
         ESP_LOGI(can_log, "CAN receive filter enabled for dispatcher");
     } else {
-        static const twai_filter_config_t reject_all = {
-            .acceptance_code = 0xFFFFFFFF,
-            .acceptance_mask = 0x00000000,
-            .single_filter = true
-        };
+        static const twai_filter_config_t reject_all = {.acceptance_code = 0xFFFFFFFF, .acceptance_mask = 0x00000000, .single_filter = true};
         memcpy(&f_config, &reject_all, sizeof(f_config));
         can_config.rx_queue_len = 5;
     }
@@ -128,13 +124,17 @@ esp_err_t can_init(void) {
 }
 
 esp_err_t can_transmit_service_frame(const twai_message_t *message) {
-    if (message == NULL || can_driver_mutex == NULL) return ESP_ERR_INVALID_ARG;
-    if (xSemaphoreTake(can_driver_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    if (message == NULL || can_driver_mutex == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (xSemaphoreTake(can_driver_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
 
     esp_err_t err = ESP_ERR_INVALID_STATE;
     if (can_driver_active && twai_can != NULL) {
         twai_status_info_t status = {0};
-        err = twai_get_status_info_v2(twai_can, &status);
+        err                       = twai_get_status_info_v2(twai_can, &status);
         if (err == ESP_OK && status.state == TWAI_STATE_RUNNING) {
             err = twai_transmit_v2(twai_can, message, pdMS_TO_TICKS(20));
         } else if (err == ESP_OK) {
@@ -148,7 +148,7 @@ esp_err_t can_transmit_service_frame(const twai_message_t *message) {
 esp_err_t can_deinit(void) {
     if (can_driver_mutex == NULL) {
         can_driver_active = false;
-        twai_can = NULL;
+        twai_can          = NULL;
         return ESP_OK;
     }
 
@@ -158,13 +158,13 @@ esp_err_t can_deinit(void) {
 
     if (!can_driver_active || twai_can == NULL) {
         can_driver_active = false;
-        twai_can = NULL;
+        twai_can          = NULL;
         xSemaphoreGive(can_driver_mutex);
         return ESP_OK;
     }
 
     esp_err_t first_err = ESP_OK;
-    esp_err_t err = twai_stop_v2(twai_can);
+    esp_err_t err       = twai_stop_v2(twai_can);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(can_log, "Failed to stop TWAI driver: %s", esp_err_to_name(err));
         first_err = err;
@@ -178,7 +178,7 @@ esp_err_t can_deinit(void) {
         }
     } else {
         can_driver_active = false;
-        twai_can = NULL;
+        twai_can          = NULL;
         ESP_LOGI(can_log, "TWAI driver stopped");
     }
 
@@ -186,17 +186,63 @@ esp_err_t can_deinit(void) {
     return first_err;
 }
 
+static bool can_receive_required_without_capture(void) {
+    return config_has_espnow_relay_client(&board_cfg) || board_cfg.mk60_emulator.enabled || relay_rule_engine_has_external_sources();
+}
+
+esp_err_t can_prepare_capture(bool *reconfigured) {
+    if (reconfigured == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    bool receive_path_ready = false;
+    if (can_driver_mutex != NULL && xSemaphoreTake(can_driver_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        receive_path_ready = can_driver_active && twai_can != NULL && can_config.rx_queue_len == 128U;
+        xSemaphoreGive(can_driver_mutex);
+    }
+    *reconfigured = !can_receive_required_without_capture() || !receive_path_ready;
+    if (!*reconfigured) {
+        return ESP_OK;
+    }
+
+    esp_err_t err = can_deinit();
+    return err == ESP_OK ? can_init() : err;
+}
+
+esp_err_t can_restore_after_capture(bool reconfigured) {
+    if (!reconfigured) {
+        return ESP_OK;
+    }
+    esp_err_t err = can_deinit();
+    return err == ESP_OK ? can_init() : err;
+}
+
+bool can_get_bus_status(can_bus_status_snapshot_t *status) {
+    if (status == NULL || can_driver_mutex == NULL) {
+        return false;
+    }
+    if (xSemaphoreTake(can_driver_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return false;
+    }
+
+    twai_status_info_t twai_status = {0};
+    const bool available           = can_driver_active && twai_can != NULL && twai_get_status_info_v2(twai_can, &twai_status) == ESP_OK;
+    if (available) {
+        status->rx_missed_count  = twai_status.rx_missed_count;
+        status->rx_overrun_count = twai_status.rx_overrun_count;
+        status->bus_error_count  = twai_status.bus_error_count;
+    }
+    xSemaphoreGive(can_driver_mutex);
+    return available;
+}
+
 void can_transmit_frame(const twai_message_t *message, const char *label) {
     static TickType_t last_espnow_warn = 0;
 
-    if (!message->extd &&
-        !output_command_can_id_reserved(board_cfg.can_start_id, message->identifier)) {
-        relay_rule_engine_ingest_can(message,
-                                     (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
+    if (!message->extd && !output_command_can_id_reserved(board_cfg.can_start_id, message->identifier)) {
+        relay_rule_engine_ingest_can(message, (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
     }
 
-    if (board_cfg.can_enabled && can_driver_mutex != NULL &&
-        xSemaphoreTake(can_driver_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    if (board_cfg.can_enabled && can_driver_mutex != NULL && xSemaphoreTake(can_driver_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
         if (can_driver_active && twai_can != NULL) {
             esp_err_t err = twai_transmit_v2(twai_can, message, pdMS_TO_TICKS(1000));
             if (err != ESP_OK) {
@@ -218,39 +264,37 @@ void can_transmit_frame(const twai_message_t *message, const char *label) {
     }
 }
 
-static bool dispatch_to_espnow(const void *frame, void *context)
-{
+static bool dispatch_to_espnow(const void *frame, void *context) {
     (void)context;
     return espnow_transport_enqueue_relay_twai(frame) == ESP_OK;
 }
 
-static bool dispatch_to_mk60(const void *frame, void *context)
-{
+static bool dispatch_to_mk60(const void *frame, void *context) {
     (void)context;
     return mk60_emulator_dispatch_frame(frame);
 }
 
-void canReceiveDispatch(void *arg)
-{
+void canReceiveDispatch(void *arg) {
     (void)arg;
     ESP_LOGI(can_log, "CAN receive dispatcher task started");
-    ESP_LOGI(can_log, "CAN receive configuration: can_tx=%d espnow=%d relay=%d mk60=%d driver=%d",
+    ESP_LOGI(can_log,
+             "CAN receive configuration: can_tx=%d espnow=%d relay=%d mk60=%d driver=%d",
              board_cfg.can_enabled,
              board_cfg.espnow_enabled,
              config_has_espnow_relay_client(&board_cfg),
              board_cfg.mk60_emulator.enabled,
              can_driver_active);
 
-    bool first_frame_logged = false;
-    uint32_t received_count = 0;
-    uint32_t enqueue_error_count = 0;
+    bool first_frame_logged       = false;
+    uint32_t received_count       = 0;
+    uint32_t enqueue_error_count  = 0;
     uint32_t emulator_error_count = 0;
-    TickType_t last_status_log = xTaskGetTickCount();
+    TickType_t last_status_log    = xTaskGetTickCount();
 
     while (true) {
-        if ((!config_has_espnow_relay_client(&board_cfg) && !board_cfg.mk60_emulator.enabled &&
-             !relay_rule_engine_has_external_sources()) ||
-            can_driver_mutex == NULL) {
+        if ((!config_has_espnow_relay_client(&board_cfg) && !board_cfg.mk60_emulator.enabled && !relay_rule_engine_has_external_sources()
+             && !can_capture_is_active())
+            || can_driver_mutex == NULL) {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
@@ -258,7 +302,7 @@ void canReceiveDispatch(void *arg)
         uint32_t drained = 0U;
         while (drained < 32U) {
             twai_message_t message = {0};
-            esp_err_t receive_err = ESP_ERR_TIMEOUT;
+            esp_err_t receive_err  = ESP_ERR_TIMEOUT;
             if (xSemaphoreTake(can_driver_mutex, 0) != pdTRUE) {
                 break;
             }
@@ -271,25 +315,32 @@ void canReceiveDispatch(void *arg)
             }
             drained++;
             received_count++;
-            if (!message.extd &&
-                output_command_can_id_reserved(board_cfg.can_start_id, message.identifier)) {
+            can_capture_offer(&message);
+            if (!message.extd && output_command_can_id_reserved(board_cfg.can_start_id, message.identifier)) {
                 continue;
             }
-            relay_rule_engine_ingest_can(&message,
-                                         (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
+            relay_rule_engine_ingest_can(&message, (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
             if (!first_frame_logged) {
-                ESP_LOGI(can_log, "CAN relay received first frame: id=0x%lX dlc=%u%s",
+                ESP_LOGI(can_log,
+                         "CAN relay received first frame: id=0x%lX dlc=%u%s",
                          (unsigned long)message.identifier,
                          (unsigned)message.data_length_code,
                          message.extd ? " extended" : "");
                 first_frame_logged = true;
             }
-            can_receive_dispatch_result_t dispatch = can_receive_dispatch_fanout(
-                &message,
-                config_has_espnow_relay_client(&board_cfg), dispatch_to_espnow, NULL,
-                board_cfg.mk60_emulator.enabled, dispatch_to_mk60, NULL);
-            if (dispatch.relay_called && !dispatch.relay_ok) ++enqueue_error_count;
-            if (dispatch.emulator_called && !dispatch.emulator_ok) ++emulator_error_count;
+            can_receive_dispatch_result_t dispatch = can_receive_dispatch_fanout(&message,
+                                                                                 config_has_espnow_relay_client(&board_cfg),
+                                                                                 dispatch_to_espnow,
+                                                                                 NULL,
+                                                                                 board_cfg.mk60_emulator.enabled,
+                                                                                 dispatch_to_mk60,
+                                                                                 NULL);
+            if (dispatch.relay_called && !dispatch.relay_ok) {
+                ++enqueue_error_count;
+            }
+            if (dispatch.emulator_called && !dispatch.emulator_ok) {
+                ++emulator_error_count;
+            }
         }
         if (drained == 0U || drained == 32U) {
             vTaskDelay(1);
@@ -298,10 +349,9 @@ void canReceiveDispatch(void *arg)
         TickType_t now = xTaskGetTickCount();
         if ((now - last_status_log) >= pdMS_TO_TICKS(5000)) {
             twai_status_info_t status = {0};
-            bool have_status = false;
+            bool have_status          = false;
             if (xSemaphoreTake(can_driver_mutex, 0) == pdTRUE) {
-                if (can_driver_active && twai_can != NULL &&
-                    twai_get_status_info_v2(twai_can, &status) == ESP_OK) {
+                if (can_driver_active && twai_can != NULL && twai_get_status_info_v2(twai_can, &status) == ESP_OK) {
                     have_status = true;
                 }
                 xSemaphoreGive(can_driver_mutex);
@@ -357,16 +407,15 @@ void canReceiveDispatch(void *arg)
  *       Message timing: ~1-2ms spacing between messages in a cycle.
  *       Overall loop cadence is configurable via board_cfg.can_tx_hz (25 or 50 Hz).
  */
-void canTransmit(void *arg)
-{
+void canTransmit(void *arg) {
     ESP_LOGI(can_log, "Transmit Task Started");
-    
-    while(1) {
-        TickType_t loop_start = xTaskGetTickCount();
+
+    while (1) {
+        TickType_t loop_start      = xTaskGetTickCount();
         uint8_t can_tx_hz_snapshot = board_cfg.can_tx_hz;
         relay_rule_engine_set_publish_rate(can_tx_hz_snapshot);
         uint16_t voltages_copy[NUM_ADC_CHANNELS];
-        
+
         // Safely copy voltage data
         if (xSemaphoreTake(filtered_voltages_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
             memcpy(voltages_copy, filtered_voltages, sizeof(voltages_copy));
@@ -375,41 +424,41 @@ void canTransmit(void *arg)
             vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }
-        
+
         // Message 1: inputs 0..3 (each uint16 LE)
         twai_message_t msg1 = init_twai_message(board_cfg.can_start_id);
-        msg1.data[0] = voltages_copy[0] & 0xFF;  // input 0 LSB
-        msg1.data[1] = (voltages_copy[0] >> 8) & 0xFF; // input 0 MSB
-        msg1.data[2] = voltages_copy[1] & 0xFF;  // input 1 LSB
-        msg1.data[3] = (voltages_copy[1] >> 8) & 0xFF; // input 1 MSB
-        msg1.data[4] = voltages_copy[2] & 0xFF;  // input 2 LSB
-        msg1.data[5] = (voltages_copy[2] >> 8) & 0xFF; // input 2 MSB
-        msg1.data[6] = voltages_copy[3] & 0xFF;  // input 3 LSB
-        msg1.data[7] = (voltages_copy[3] >> 8) & 0xFF; // input 3 MSB
-        
+        msg1.data[0]        = voltages_copy[0] & 0xFF;        // input 0 LSB
+        msg1.data[1]        = (voltages_copy[0] >> 8) & 0xFF; // input 0 MSB
+        msg1.data[2]        = voltages_copy[1] & 0xFF;        // input 1 LSB
+        msg1.data[3]        = (voltages_copy[1] >> 8) & 0xFF; // input 1 MSB
+        msg1.data[4]        = voltages_copy[2] & 0xFF;        // input 2 LSB
+        msg1.data[5]        = (voltages_copy[2] >> 8) & 0xFF; // input 2 MSB
+        msg1.data[6]        = voltages_copy[3] & 0xFF;        // input 3 LSB
+        msg1.data[7]        = (voltages_copy[3] >> 8) & 0xFF; // input 3 MSB
+
         can_transmit_frame(&msg1, "analogVoltage_1");
         vTaskDelay(pdMS_TO_TICKS(1));
-        
+
         // Message 2: inputs 4..7 (each uint16 LE)
         twai_message_t msg2 = init_twai_message(board_cfg.can_start_id + 1);
-        msg2.data[0] = voltages_copy[4] & 0xFF; // input 4 LSB
-        msg2.data[1] = (voltages_copy[4] >> 8) & 0xFF; // input 4 MSB
-        msg2.data[2] = voltages_copy[5] & 0xFF; // input 5 LSB
-        msg2.data[3] = (voltages_copy[5] >> 8) & 0xFF; // input 5 MSB
-        msg2.data[4] = voltages_copy[6] & 0xFF; // input 6 LSB
-        msg2.data[5] = (voltages_copy[6] >> 8) & 0xFF; // input 6 MSB
-        msg2.data[6] = voltages_copy[7] & 0xFF; // input 7 LSB
-        msg2.data[7] = (voltages_copy[7] >> 8) & 0xFF; // input 7 MSB
-        
+        msg2.data[0]        = voltages_copy[4] & 0xFF;        // input 4 LSB
+        msg2.data[1]        = (voltages_copy[4] >> 8) & 0xFF; // input 4 MSB
+        msg2.data[2]        = voltages_copy[5] & 0xFF;        // input 5 LSB
+        msg2.data[3]        = (voltages_copy[5] >> 8) & 0xFF; // input 5 MSB
+        msg2.data[4]        = voltages_copy[6] & 0xFF;        // input 6 LSB
+        msg2.data[5]        = (voltages_copy[6] >> 8) & 0xFF; // input 6 MSB
+        msg2.data[6]        = voltages_copy[7] & 0xFF;        // input 7 LSB
+        msg2.data[7]        = (voltages_copy[7] >> 8) & 0xFF; // input 7 MSB
+
         can_transmit_frame(&msg2, "analogVoltage_2");
         vTaskDelay(pdMS_TO_TICKS(1));
-        
+
         // Message 3: inputs 8..9 (each uint16 LE) and first two dynamic signals
         twai_message_t msg3 = init_twai_message(board_cfg.can_start_id + 2);
-        msg3.data[0] = voltages_copy[8] & 0xFF; // input 8 LSB
-        msg3.data[1] = (voltages_copy[8] >> 8) & 0xFF; // input 8 MSB
-        msg3.data[2] = voltages_copy[9] & 0xFF; // input 9 LSB
-        msg3.data[3] = (voltages_copy[9] >> 8) & 0xFF; // input 9 MSB
+        msg3.data[0]        = voltages_copy[8] & 0xFF;        // input 8 LSB
+        msg3.data[1]        = (voltages_copy[8] >> 8) & 0xFF; // input 8 MSB
+        msg3.data[2]        = voltages_copy[9] & 0xFF;        // input 9 LSB
+        msg3.data[3]        = (voltages_copy[9] >> 8) & 0xFF; // input 9 MSB
 
         // Prepare dynamic signals (10 signals, one per channel), encoded per config
         uint16_t dyn[10];
@@ -423,14 +472,19 @@ void canTransmit(void *arg)
                                                board_cfg.channels[i].params.pressure.max_mv,
                                                board_cfg.channels[i].params.pressure.min_kpa,
                                                board_cfg.channels[i].params.pressure.max_kpa);
-                dyn[i] = p;
+                dyn[i]     = p;
             } else if (board_cfg.channels[i].type == SENSOR_NTC) {
                 const ntc_table_def_t *t = ntc_get_table(board_cfg.channels[i].params.ntc.table_id);
-                int8_t temp = getSensorTemperature(voltages_copy[i], board_cfg.channels[i].pullup_ohms, board_cfg.pullup_vref_mv,
-                                                   t ? t->points : NULL, t ? t->points_count : 0);
-                if (temp == (int8_t)-128) temp = 0;
+                int8_t temp              = getSensorTemperature(voltages_copy[i],
+                                                                board_cfg.channels[i].pullup_ohms,
+                                                                board_cfg.pullup_vref_mv,
+                                                                t ? t->points : NULL,
+                                                                t ? t->points_count : 0);
+                if (temp == (int8_t)-128) {
+                    temp = 0;
+                }
                 int16_t t16 = (int16_t)temp;
-                dyn[i] = (uint16_t)((uint16_t)t16 & 0xFFFF);
+                dyn[i]      = (uint16_t)((uint16_t)t16 & 0xFFFF);
             } else {
                 dyn[i] = 0;
             }
@@ -438,12 +492,13 @@ void canTransmit(void *arg)
 
         const uint32_t rules_now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         for (int i = 0; i < 10; ++i) {
-            relay_rule_engine_ingest_local((uint8_t)i, false,
-                                           (float)voltages_copy[i] / 1000.0f,
-                                           rules_now_ms);
+            relay_rule_engine_ingest_local((uint8_t)i, false, (float)voltages_copy[i] / 1000.0f, rules_now_ms);
             float converted = (float)voltages_copy[i] / 1000.0f;
-            if (board_cfg.channels[i].type == SENSOR_PRESSURE) converted = (float)dyn[i] / 100.0f;
-            else if (board_cfg.channels[i].type == SENSOR_NTC) converted = (float)(int16_t)dyn[i];
+            if (board_cfg.channels[i].type == SENSOR_PRESSURE) {
+                converted = (float)dyn[i] / 100.0f;
+            } else if (board_cfg.channels[i].type == SENSOR_NTC) {
+                converted = (float)(int16_t)dyn[i];
+            }
             relay_rule_engine_ingest_local((uint8_t)i, true, converted, rules_now_ms);
         }
 
@@ -458,58 +513,58 @@ void canTransmit(void *arg)
 
         // Message 4: dynamic signals 2..5 (four uint16)
         twai_message_t msg4 = init_twai_message(board_cfg.can_start_id + 3);
-        msg4.data[0] = dyn[2] & 0xFF;
-        msg4.data[1] = (dyn[2] >> 8) & 0xFF;
-        msg4.data[2] = dyn[3] & 0xFF;
-        msg4.data[3] = (dyn[3] >> 8) & 0xFF;
-        msg4.data[4] = dyn[4] & 0xFF;
-        msg4.data[5] = (dyn[4] >> 8) & 0xFF;
-        msg4.data[6] = dyn[5] & 0xFF;
-        msg4.data[7] = (dyn[5] >> 8) & 0xFF;
+        msg4.data[0]        = dyn[2] & 0xFF;
+        msg4.data[1]        = (dyn[2] >> 8) & 0xFF;
+        msg4.data[2]        = dyn[3] & 0xFF;
+        msg4.data[3]        = (dyn[3] >> 8) & 0xFF;
+        msg4.data[4]        = dyn[4] & 0xFF;
+        msg4.data[5]        = (dyn[4] >> 8) & 0xFF;
+        msg4.data[6]        = dyn[5] & 0xFF;
+        msg4.data[7]        = (dyn[5] >> 8) & 0xFF;
 
         can_transmit_frame(&msg4, "dynamic msg4");
         vTaskDelay(pdMS_TO_TICKS(1));
 
         // Message 5: dynamic signals 6..9 (four uint16)
         twai_message_t msg5 = init_twai_message(board_cfg.can_start_id + 4);
-        msg5.data[0] = dyn[6] & 0xFF;
-        msg5.data[1] = (dyn[6] >> 8) & 0xFF;
-        msg5.data[2] = dyn[7] & 0xFF;
-        msg5.data[3] = (dyn[7] >> 8) & 0xFF;
-        msg5.data[4] = dyn[8] & 0xFF;
-        msg5.data[5] = (dyn[8] >> 8) & 0xFF;
-        msg5.data[6] = dyn[9] & 0xFF;
-        msg5.data[7] = (dyn[9] >> 8) & 0xFF;
+        msg5.data[0]        = dyn[6] & 0xFF;
+        msg5.data[1]        = (dyn[6] >> 8) & 0xFF;
+        msg5.data[2]        = dyn[7] & 0xFF;
+        msg5.data[3]        = (dyn[7] >> 8) & 0xFF;
+        msg5.data[4]        = dyn[8] & 0xFF;
+        msg5.data[5]        = (dyn[8] >> 8) & 0xFF;
+        msg5.data[6]        = dyn[9] & 0xFF;
+        msg5.data[7]        = (dyn[9] >> 8) & 0xFF;
 
         can_transmit_frame(&msg5, "dynamic msg5");
 
         output_command_t output_command;
         relay_rule_engine_make_command(rules_now_ms, &output_command);
 
-        twai_message_t output_binary_message = init_twai_message(
-            output_binary_can_id(board_cfg.can_start_id));
+        twai_message_t output_binary_message = init_twai_message(output_binary_can_id(board_cfg.can_start_id));
         if (output_binary_encode(output_binary_message.data, &output_command)) {
             can_transmit_frame(&output_binary_message, "Output binary commands");
         } else {
             ESP_LOGE(can_log, "Failed to encode Output binary command frame");
         }
 
-        twai_message_t output_duty_message = init_twai_message(
-            output_duty_can_id(board_cfg.can_start_id));
+        twai_message_t output_duty_message = init_twai_message(output_duty_can_id(board_cfg.can_start_id));
         if (output_duty_encode(output_duty_message.data, &output_command)) {
             can_transmit_frame(&output_duty_message, "Output duty commands");
         } else {
             ESP_LOGE(can_log, "Failed to encode Output duty command frame");
         }
 
-        bool any_emub = false;
+        bool any_emub         = false;
         uint8_t emub_bytes[8] = {0};
         for (int i = 0; i < 10; ++i) {
             if (board_cfg.channels[i].emub_tx > EMUB_TX_DISABLED && board_cfg.channels[i].emub_tx <= EMUB_TX_CAN_ANALOG_16) {
                 uint32_t scaled = ((uint32_t)voltages_copy[i] * 5 + 49) / 98; // 19.6 mV per count
-                if (scaled > 255) scaled = 255;
+                if (scaled > 255) {
+                    scaled = 255;
+                }
                 emub_bytes[board_cfg.channels[i].emub_tx - 1] = (uint8_t)scaled;
-                any_emub = true;
+                any_emub                                      = true;
             }
         }
 
@@ -522,7 +577,7 @@ void canTransmit(void *arg)
         gps_response_publish_cached();
 
         TickType_t target_period_ticks = pdMS_TO_TICKS((can_tx_hz_snapshot == 50) ? 20 : 40);
-        TickType_t elapsed_ticks = xTaskGetTickCount() - loop_start;
+        TickType_t elapsed_ticks       = xTaskGetTickCount() - loop_start;
         if (elapsed_ticks < target_period_ticks) {
             vTaskDelay(target_period_ticks - elapsed_ticks);
         } else {

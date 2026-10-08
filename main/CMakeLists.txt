@@ -1,5 +1,6 @@
 idf_component_register(SRCS "main.c"
                         "src/can.c"
+                        "src/can_capture.c"
                         "src/inputs.c"
                         "src/config.c"
                         "src/wifi_config.c"
