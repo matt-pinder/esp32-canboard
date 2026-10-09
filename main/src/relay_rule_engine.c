@@ -13,11 +13,12 @@
 #include "freertos/semphr.h"
 
 #define TAG "OUTPUTS"
-#define RULE_CONFIG_VERSION 4U
+#define RULE_CONFIG_VERSION 5U
 #define RULE_CONFIG_PARTITION "rules"
 #define ZERO_CONFIRM_DEFAULT 11U
 #define RULE_COMPACT_MAGIC 0x52554C32U
-#define RULE_COMPACT_VERSION 4U
+#define RULE_COMPACT_VERSION 5U
+#define RULE_COMPACT_VERSION_LEGACY 4U
 #define RULE_SLOT_MAGIC 0x52534C54U
 #define RULE_SLOT_COUNT 2U
 
@@ -45,6 +46,29 @@ typedef struct {
     uint8_t reserved[3];
     relay_source_config_t source;
 } compact_source_t;
+
+/* Version 4 records predate DBC validity metadata. Keep the exact old source
+ * layout so installed configurations remain readable after the upgrade. */
+typedef struct {
+    char name[RELAY_RULE_NAME_LENGTH];
+    relay_source_type_t type;
+    uint8_t local_channel;
+    uint32_t can_id;
+    bool extended;
+    uint8_t start_bit;
+    uint8_t bit_length;
+    bool little_endian;
+    bool is_signed;
+    float factor;
+    float offset;
+    uint8_t zero_confirm_samples;
+} relay_source_config_v4_t;
+
+typedef struct {
+    uint8_t slot;
+    uint8_t reserved[3];
+    relay_source_config_v4_t source;
+} compact_source_v4_t;
 
 typedef struct {
     uint8_t slot;
@@ -335,7 +359,12 @@ static bool source_valid(const relay_source_config_t *source)
         return source->local_channel < 10U;
     if (source->type != RELAY_SOURCE_CAN || source->can_id > (source->extended ? 0x1FFFFFFFU : 0x7FFU) ||
         source->bit_length == 0U || source->bit_length > 64U || source->start_bit > 63U ||
-        !finite_float(source->factor) || !finite_float(source->offset)) return false;
+        !finite_float(source->factor) || !finite_float(source->offset) ||
+        (source->range_enabled &&
+         (!finite_float(source->minimum) || !finite_float(source->maximum) ||
+          source->minimum > source->maximum)) ||
+        (source->invalid_raw_enabled && source->bit_length < 64U &&
+         source->invalid_raw >= (1ULL << source->bit_length))) return false;
     return !source->little_endian || (unsigned)source->start_bit + source->bit_length <= 64U;
 }
 
@@ -449,11 +478,14 @@ static bool decode_config(uint8_t *blob, size_t length, relay_rule_config_t *con
 {
     if (blob == NULL || length < sizeof(compact_header_t)) return false;
     compact_header_t *header = (compact_header_t *)blob;
-    if (header->version != RULE_COMPACT_VERSION ||
+    if ((header->version != RULE_COMPACT_VERSION &&
+         header->version != RULE_COMPACT_VERSION_LEGACY) ||
         header->reserved > RELAY_RULE_MAX_CONDITIONS) return false;
 
+    const size_t source_size = header->version == RULE_COMPACT_VERSION
+        ? sizeof(compact_source_t) : sizeof(compact_source_v4_t);
     const size_t expected = sizeof(*header) +
-        header->source_count * sizeof(compact_source_t) +
+        header->source_count * source_size +
         header->rule_count * sizeof(compact_rule_t) +
         header->reserved * sizeof(compact_condition_t);
     const uint32_t saved_crc = header->crc32;
@@ -473,12 +505,35 @@ static bool decode_config(uint8_t *blob, size_t length, relay_rule_config_t *con
     bool used_rules[RELAY_RULE_MAX_RULES] = {0};
     bool used_conditions[RELAY_RULE_MAX_CONDITIONS] = {0};
     for (unsigned i = 0; i < header->source_count; ++i) {
-        compact_source_t entry;
-        memcpy(&entry, blob + offset, sizeof(entry));
-        offset += sizeof(entry);
-        if (entry.slot >= RELAY_RULE_MAX_SOURCES || used_sources[entry.slot]) return false;
-        used_sources[entry.slot] = true;
-        config->sources[entry.slot] = entry.source;
+        uint8_t slot;
+        relay_source_config_t source = {0};
+        if (header->version == RULE_COMPACT_VERSION) {
+            compact_source_t entry;
+            memcpy(&entry, blob + offset, sizeof(entry));
+            offset += sizeof(entry);
+            slot = entry.slot;
+            source = entry.source;
+        } else {
+            compact_source_v4_t entry;
+            memcpy(&entry, blob + offset, sizeof(entry));
+            offset += sizeof(entry);
+            slot = entry.slot;
+            memcpy(source.name, entry.source.name, sizeof(source.name));
+            source.type = entry.source.type;
+            source.local_channel = entry.source.local_channel;
+            source.can_id = entry.source.can_id;
+            source.extended = entry.source.extended;
+            source.start_bit = entry.source.start_bit;
+            source.bit_length = entry.source.bit_length;
+            source.little_endian = entry.source.little_endian;
+            source.is_signed = entry.source.is_signed;
+            source.factor = entry.source.factor;
+            source.offset = entry.source.offset;
+            source.zero_confirm_samples = entry.source.zero_confirm_samples;
+        }
+        if (slot >= RELAY_RULE_MAX_SOURCES || used_sources[slot]) return false;
+        used_sources[slot] = true;
+        config->sources[slot] = source;
     }
     for (unsigned i = 0; i < header->rule_count; ++i) {
         compact_rule_t entry;
@@ -715,7 +770,8 @@ void relay_rule_engine_snapshot(relay_rule_config_t *config)
     xSemaphoreGive(rule_mutex);
 }
 
-static bool extract(const twai_message_t *message, const relay_source_config_t *source, float *value)
+static bool extract(const twai_message_t *message, const relay_source_config_t *source,
+                    float *value)
 {
     const unsigned bits = message->data_length_code * 8U;
     uint64_t raw = 0U;
@@ -739,7 +795,11 @@ static bool extract(const twai_message_t *message, const relay_source_config_t *
         numeric = (float)signed_raw;
     } else numeric = (float)raw;
     *value = numeric * source->factor + source->offset;
-    return finite_float(*value);
+    if (!finite_float(*value) ||
+        (source->invalid_raw_enabled && raw == source->invalid_raw) ||
+        (source->range_enabled &&
+         (*value < source->minimum || *value > source->maximum))) return false;
+    return true;
 }
 
 static void ingest_value(unsigned index, float value, uint32_t now_ms)

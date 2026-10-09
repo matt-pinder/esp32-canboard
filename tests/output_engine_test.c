@@ -12,7 +12,8 @@
 #define TEST_RULE_COMPACT_MAGIC 0x52554C32U
 #define TEST_RULE_SLOT_MAGIC 0x52534C54U
 #define TEST_OLD_COMPACT_VERSION 2U
-#define TEST_NEW_COMPACT_VERSION 4U
+#define TEST_LEGACY_COMPACT_VERSION 4U
+#define TEST_NEW_COMPACT_VERSION 5U
 #define TEST_SLOT_COUNT 2U
 
 typedef struct {
@@ -34,6 +35,27 @@ typedef struct {
     uint32_t header_crc32;
 } test_slot_header_t;
 
+typedef struct {
+    char name[RELAY_RULE_NAME_LENGTH];
+    relay_source_type_t type;
+    uint8_t local_channel;
+    uint32_t can_id;
+    bool extended;
+    uint8_t start_bit;
+    uint8_t bit_length;
+    bool little_endian;
+    bool is_signed;
+    float factor;
+    float offset;
+    uint8_t zero_confirm_samples;
+} test_source_v4_t;
+
+typedef struct {
+    uint8_t slot;
+    uint8_t reserved[3];
+    test_source_v4_t source;
+} test_compact_source_v4_t;
+
 static uint32_t test_crc32(const void *data, size_t length)
 {
     uint32_t crc = UINT32_MAX;
@@ -44,6 +66,62 @@ static uint32_t test_crc32(const void *data, size_t length)
             crc = (crc & 1U) ? (crc >> 1) ^ 0xEDB88320U : crc >> 1;
     }
     return ~crc;
+}
+
+static void install_v4_record(void)
+{
+    test_partition_reset();
+    uint8_t *storage = test_partition_data();
+    const size_t payload_size = sizeof(test_compact_header_t) +
+                                sizeof(test_compact_source_v4_t);
+    uint8_t payload[sizeof(test_compact_header_t) + sizeof(test_compact_source_v4_t)] = {0};
+    test_compact_header_t *header = (test_compact_header_t *)payload;
+    *header = (test_compact_header_t){
+        .magic = TEST_RULE_COMPACT_MAGIC,
+        .version = TEST_LEGACY_COMPACT_VERSION,
+        .source_count = 1U,
+        .total_size = payload_size,
+        .signal_timeout_ms = 4321U,
+    };
+    test_compact_source_v4_t *entry =
+        (test_compact_source_v4_t *)(payload + sizeof(*header));
+    entry->slot = 20U;
+    strcpy(entry->source.name, "OilTemp.OilTemperature");
+    entry->source.type = RELAY_SOURCE_CAN;
+    entry->source.can_id = 0x588U;
+    entry->source.start_bit = 56U;
+    entry->source.bit_length = 8U;
+    entry->source.little_endian = true;
+    entry->source.factor = 1.0f;
+    entry->source.offset = -60.0f;
+    entry->source.zero_confirm_samples = 11U;
+    header->crc32 = test_crc32(payload, payload_size);
+
+    test_slot_header_t slot = {
+        .magic = TEST_RULE_SLOT_MAGIC,
+        .generation = 3U,
+        .payload_size = payload_size,
+        .payload_crc32 = test_crc32(payload, payload_size),
+    };
+    slot.header_crc32 = test_crc32(&slot, sizeof(slot));
+    memcpy(storage, &slot, sizeof(slot));
+    memcpy(storage + sizeof(slot), payload, payload_size);
+}
+
+static void assert_v4_record_migrates_in_memory(void)
+{
+    install_v4_record();
+    relay_rule_engine_set_publish_rate(25U);
+    relay_rule_engine_init();
+
+    relay_rule_config_t config;
+    relay_rule_engine_snapshot(&config);
+    assert(config.version == 5U);
+    assert(config.signal_timeout_ms == 4321U);
+    assert(strcmp(config.sources[20].name, "OilTemp.OilTemperature") == 0);
+    assert(config.sources[20].can_id == 0x588U);
+    assert(!config.sources[20].range_enabled);
+    assert(!config.sources[20].invalid_raw_enabled);
 }
 
 static void install_old_v2_record(void)
@@ -84,7 +162,7 @@ static void assert_legacy_record_rejected_and_replaced(void)
 
     relay_rule_config_t config;
     relay_rule_engine_snapshot(&config);
-    assert(config.version == 4U);
+    assert(config.version == 5U);
     assert(config.signal_timeout_ms == 1000U);
     for (unsigned i = 0; i < RELAY_RULE_MAX_RULES; ++i) {
         char expected[RELAY_RULE_NAME_LENGTH];
@@ -1036,6 +1114,81 @@ static void test_condition_hysteresis_and_validation(void)
     assert(!relay_rule_engine_validate(&bad, 25U));
 }
 
+static void test_dbc_invalid_values_become_stale_without_replacing_last_value(void)
+{
+    relay_rule_config_t config = fresh_config();
+    config.signal_timeout_ms = 1000U;
+    relay_source_config_t *source = &config.sources[20U];
+    strcpy(source->name, "OilTemp.OilTemperature");
+    source->type = RELAY_SOURCE_CAN;
+    source->can_id = 0x588U;
+    source->start_bit = 56U;
+    source->bit_length = 8U;
+    source->little_endian = true;
+    source->factor = 1.0f;
+    source->offset = -60.0f;
+    source->zero_confirm_samples = 1U;
+    source->range_enabled = true;
+    source->minimum = -10.0f;
+    source->maximum = 195.0f;
+    source->invalid_raw_enabled = true;
+    source->invalid_raw = 1U;
+    configure_condition(&config, 0U, "Oil hot", 20U, RELAY_COMPARE_GE, 100.0f,
+                        0.0f, RELAY_CONDITION_STALE_HOLD_LAST);
+    config.rules[0].enabled = true;
+    config.rules[0].case_count = 1U;
+    config.rules[0].cases[0] = always_case(RELAY_ACTION_ON);
+    config.rules[0].cases[0].tests[0] = condition_test(0U, true);
+    install_config(&config);
+
+    twai_message_t message = {
+        .identifier = 0x588U,
+        .data_length_code = 8U,
+        .data = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 180U},
+    };
+    output_command_t command;
+    relay_rule_engine_ingest_can(&message, 100U); /* 120 C: accepted and hot. */
+    relay_rule_engine_make_command(100U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+
+    message.data[7] = 1U; /* -59 C: explicit DBC invalid raw value. */
+    relay_rule_engine_ingest_can(&message, 500U);
+    relay_rule_engine_make_command(500U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+
+    message.data[7] = 49U; /* -11 C: outside the DBC physical range. */
+    relay_rule_engine_ingest_can(&message, 900U);
+    relay_rule_engine_make_command(1100U, &command);
+    assert_output(&command, 0U, true, true, false, 0U);
+
+    relay_rule_status_t outputs[RELAY_RULE_MAX_RULES];
+    relay_rule_source_status_t sources[RELAY_RULE_MAX_SOURCES];
+    relay_rule_engine_get_status(outputs, sources, 1100U);
+    assert(sources[20U].accepted_valid);
+    assert(sources[20U].value == 120.0f);
+    assert(sources[20U].age_ms == 1000U);
+
+    relay_condition_status_t conditions[RELAY_RULE_MAX_CONDITIONS];
+    relay_rule_engine_get_condition_status(conditions, 1100U);
+    assert(conditions[0].valid);
+    assert(conditions[0].value);
+    assert(!conditions[0].source_current);
+    assert(conditions[0].invalid_reason == RELAY_RULE_INVALID_SOURCE_STALE);
+
+    message.data[7] = 50U; /* -10 C: inclusive lower boundary is valid. */
+    relay_rule_engine_ingest_can(&message, 1200U);
+    relay_rule_engine_make_command(1200U, &command);
+    assert_output(&command, 0U, true, false, false, 0U);
+
+    relay_rule_config_t bad = config;
+    bad.sources[20U].minimum = 20.0f;
+    bad.sources[20U].maximum = 10.0f;
+    assert(!relay_rule_engine_validate(&bad, 25U));
+    bad = config;
+    bad.sources[20U].invalid_raw = 256U;
+    assert(!relay_rule_engine_validate(&bad, 25U));
+}
+
 static void test_maximum_compact_config_fits_existing_partition(void)
 {
     relay_rule_config_t config = fresh_config();
@@ -1095,6 +1248,7 @@ static void test_counter_wrap(void)
 int main(void)
 {
     assert(RELAY_RULE_MAX_RULES == 8U);
+    assert_v4_record_migrates_in_memory();
     assert_legacy_record_rejected_and_replaced();
     test_ordered_off_on_and_timer();
     test_all_eight_binary_outputs();
@@ -1119,6 +1273,7 @@ int main(void)
     test_condition_stale_behaviors();
     test_condition_trigger_timer_on_can_disappearance();
     test_condition_hysteresis_and_validation();
+    test_dbc_invalid_values_become_stale_without_replacing_last_value();
     test_maximum_compact_config_fits_existing_partition();
     test_counter_wrap();
     puts("output_engine_test: PASS");

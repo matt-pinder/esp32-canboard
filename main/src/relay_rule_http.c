@@ -1,6 +1,8 @@
 #include "inc/relay_rule_http.h"
 
+#include <errno.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -9,7 +11,8 @@
 #include "freertos/task.h"
 #include "inc/relay_rule_engine.h"
 
-#define OUTPUT_CONFIG_VERSION 4U
+#define OUTPUT_CONFIG_VERSION 5U
+#define OUTPUT_CONFIG_VERSION_LEGACY 4U
 #define LOCAL_SOURCE_COUNT 20U
 
 static bool number(const cJSON *object, const char *key, double *value)
@@ -72,6 +75,14 @@ static cJSON *can_source_json(const relay_source_config_t *source)
     cJSON_AddNumberToObject(item, "factor", source->factor);
     cJSON_AddNumberToObject(item, "offset", source->offset);
     cJSON_AddNumberToObject(item, "zero_confirm_samples", source->zero_confirm_samples);
+    cJSON_AddBoolToObject(item, "range_enabled", source->range_enabled);
+    cJSON_AddNumberToObject(item, "minimum", source->minimum);
+    cJSON_AddNumberToObject(item, "maximum", source->maximum);
+    cJSON_AddBoolToObject(item, "invalid_raw_enabled", source->invalid_raw_enabled);
+    char invalid_raw[24];
+    snprintf(invalid_raw, sizeof(invalid_raw), "%llu",
+             (unsigned long long)source->invalid_raw);
+    cJSON_AddStringToObject(item, "invalid_raw", invalid_raw);
     return item;
 }
 
@@ -237,6 +248,31 @@ static bool parse_can_source(cJSON *item, relay_source_config_t *source)
     source->offset = (float)value;
     if (!integer(item, "zero_confirm_samples", 0, UINT8_MAX, &value)) return false;
     source->zero_confirm_samples = (uint8_t)value;
+
+    cJSON *range_enabled = cJSON_GetObjectItemCaseSensitive(item, "range_enabled");
+    if (range_enabled != NULL) {
+        if (!cJSON_IsBool(range_enabled)) return false;
+        source->range_enabled = cJSON_IsTrue(range_enabled);
+        if (!number(item, "minimum", &value)) return false;
+        source->minimum = (float)value;
+        if (!number(item, "maximum", &value)) return false;
+        source->maximum = (float)value;
+    }
+
+    cJSON *invalid_raw_enabled =
+        cJSON_GetObjectItemCaseSensitive(item, "invalid_raw_enabled");
+    if (invalid_raw_enabled != NULL) {
+        if (!cJSON_IsBool(invalid_raw_enabled)) return false;
+        source->invalid_raw_enabled = cJSON_IsTrue(invalid_raw_enabled);
+        cJSON *invalid_raw = cJSON_GetObjectItemCaseSensitive(item, "invalid_raw");
+        if (!cJSON_IsString(invalid_raw) || invalid_raw->valuestring == NULL ||
+            invalid_raw->valuestring[0] == '\0' || invalid_raw->valuestring[0] == '-') return false;
+        errno = 0;
+        char *end = NULL;
+        const unsigned long long parsed = strtoull(invalid_raw->valuestring, &end, 0);
+        if (errno != 0 || end == invalid_raw->valuestring || *end != '\0') return false;
+        source->invalid_raw = (uint64_t)parsed;
+    }
     return true;
 }
 
@@ -407,7 +443,8 @@ bool relay_rule_config_json_parse(const cJSON *root, relay_rule_config_t *config
     double value;
     if (root == NULL || config == NULL || !cJSON_IsObject(root)) return false;
     relay_rule_engine_set_defaults(config);
-    if (!integer(root, "version", OUTPUT_CONFIG_VERSION, OUTPUT_CONFIG_VERSION, &value) ||
+    if (!integer(root, "version", OUTPUT_CONFIG_VERSION_LEGACY,
+                 OUTPUT_CONFIG_VERSION, &value) ||
         !integer(root, "signal_timeout_ms", 100, 60000, &value)) return false;
     config->version = OUTPUT_CONFIG_VERSION;
     config->signal_timeout_ms = (uint32_t)value;

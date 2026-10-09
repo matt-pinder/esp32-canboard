@@ -82,6 +82,11 @@ typedef struct {
     float factor;
     float offset;
     uint8_t zero_confirm_samples;
+    bool range_enabled;
+    float minimum;
+    float maximum;
+    bool invalid_raw_enabled;
+    uint64_t invalid_raw;
 } relay_source_config_t;
 
 typedef struct {

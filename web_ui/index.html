@@ -2206,6 +2206,13 @@
         }
         return null;
       }
+      function applyDbcValidity(source, signal) {
+        source.range_enabled = Boolean(signal?.range_enabled);
+        source.minimum = num(signal?.minimum);
+        source.maximum = num(signal?.maximum);
+        source.invalid_raw_enabled = Boolean(signal?.invalid_raw_enabled);
+        source.invalid_raw = String(signal?.invalid_raw ?? "0");
+      }
       function storedCanLabels(source) {
         const name = String(source?.name || "").trim();
         const separator = name.lastIndexOf(".");
@@ -2246,7 +2253,7 @@
           ? (selectedMessage?.signals || [])
               .map(
                 (signal, index) =>
-                  `<option value="${index}" ${dbcSelection.signalIndex === index ? "selected" : ""}>${html(signal.name)}${signal.unit ? ` (${html(signal.unit)})` : ""}</option>`,
+                  `<option value="${index}" ${dbcSelection.signalIndex === index ? "selected" : ""}>${html(signal.name)}${signal.unit ? ` (${html(signal.unit)})` : ""}${signal.range_enabled ? ` · valid ${signal.minimum}…${signal.maximum}` : ""}${signal.invalid_raw_enabled ? ` · raw ${html(signal.invalid_raw)} invalid` : ""}</option>`,
               )
               .join("")
           : storedCanSource
@@ -2685,21 +2692,24 @@
         if (index < 0) {
           index = relayRules.sources.findIndex((source) => source.type === 0);
           if (index < 0) return null;
-          relayRules.sources[index] = {
-            name: `${message.name}.${signal.name}`,
-            type: 1,
-            local_channel: 0,
-            can_id: message.id,
-            extended: message.extended,
-            start_bit: signal.start_bit,
-            bit_length: signal.bit_length,
-            little_endian: signal.little_endian,
-            is_signed: signal.is_signed,
-            factor: signal.factor,
-            offset: signal.offset,
-            zero_confirm_samples: 11,
-          };
         }
+        const existing = relayRules.sources[index];
+        relayRules.sources[index] = {
+          ...existing,
+          name: `${message.name}.${signal.name}`,
+          type: 1,
+          local_channel: 0,
+          can_id: message.id,
+          extended: message.extended,
+          start_bit: signal.start_bit,
+          bit_length: signal.bit_length,
+          little_endian: signal.little_endian,
+          is_signed: signal.is_signed,
+          factor: signal.factor,
+          offset: signal.offset,
+          zero_confirm_samples: num(existing?.zero_confirm_samples, 11),
+        };
+        applyDbcValidity(relayRules.sources[index], signal);
         return index;
       }
       function changeRuleEditor(event) {
@@ -2953,6 +2963,11 @@
             factor: 1,
             offset: 0,
             zero_confirm_samples: 11,
+            range_enabled: false,
+            minimum: 0,
+            maximum: 0,
+            invalid_raw_enabled: false,
+            invalid_raw: "0",
           };
         else if (kind === "remove-rule") {
           relayRules.rules[r] = {
@@ -2986,15 +3001,23 @@
               id = extended ? encoded - 0x80000000 : encoded;
             current =
               id <= (extended ? 0x1fffffff : 0x7ff)
-                ? { id, extended, name: message[2], signals: [] }
+                ? {
+                    dbc_id: encoded,
+                    id,
+                    extended,
+                    name: message[2],
+                    signals: [],
+                  }
                 : null;
             if (current) messages.push(current);
             continue;
           }
           const signal = line.match(
-            /^\s*SG_\s+([^\s:]+)(?:\s+(?:M|m\d+M?))?\s*:\s*(\d+)\|(\d+)@([01])([+-])\s*\(([-+\d.eE]+),([-+\d.eE]+)\)\s*\[[^\]]*\]\s*"([^"]*)"/,
+            /^\s*SG_\s+([^\s:]+)(?:\s+(?:M|m\d+M?))?\s*:\s*(\d+)\|(\d+)@([01])([+-])\s*\(([-+\d.eE]+),([-+\d.eE]+)\)\s*\[([-+\d.eE]+)\|([-+\d.eE]+)\]\s*"([^"]*)"/,
           );
-          if (current && signal)
+          if (current && signal) {
+            const minimum = Number(signal[8]),
+              maximum = Number(signal[9]);
             current.signals.push({
               name: signal[1],
               start_bit: Number(signal[2]),
@@ -3003,8 +3026,36 @@
               is_signed: signal[5] === "-",
               factor: Number(signal[6]),
               offset: Number(signal[7]),
-              unit: signal[8],
+              range_enabled:
+                Number.isFinite(minimum) &&
+                Number.isFinite(maximum) &&
+                (minimum !== 0 || maximum !== 0),
+              minimum,
+              maximum,
+              invalid_raw_enabled: false,
+              invalid_raw: "0",
+              unit: signal[10],
             });
+          }
+        }
+        for (const line of text.split(/\r?\n/)) {
+          const attribute = line.match(
+            /^\s*BA_\s+"GenSigInvalidValue"\s+SG_\s+(\d+)\s+([^\s;]+)\s+([-+]?(?:0x[\da-f]+|\d+))\s*;/i,
+          );
+          if (!attribute) continue;
+          const message = messages.find(
+              (candidate) => candidate.dbc_id === Number(attribute[1]),
+            ),
+            signal = message?.signals.find(
+              (candidate) => candidate.name === attribute[2],
+            );
+          if (!signal) continue;
+          try {
+            const raw = BigInt(attribute[3]);
+            if (raw < 0n) continue;
+            signal.invalid_raw_enabled = true;
+            signal.invalid_raw = raw.toString();
+          } catch (_) {}
         }
         if (!messages.some((message) => message.signals.length))
           throw new Error("No supported BO_/SG_ definitions found.");
@@ -3015,12 +3066,20 @@
           const file = event.target.files[0];
           if (!file) return;
           dbcMessages = parseRuleDbc(await file.text());
+          let refreshed = 0;
+          (relayRules?.sources || []).forEach((source, index) => {
+            if (source.type !== 1) return;
+            const selection = dbcSelectionForSource(source);
+            if (!selection) return;
+            ensureCanSource(selection.messageIndex, selection.signalIndex);
+            ++refreshed;
+          });
           const count = dbcMessages.reduce(
             (total, message) => total + message.signals.length,
             0,
           );
           document.getElementById("rule-dbc-status").textContent =
-            `Selected ${file.name}: ${dbcMessages.length} messages and ${count} fields available to Conditions, CAN tests and Triggered timers.`;
+            `Selected ${file.name}: ${dbcMessages.length} messages and ${count} fields available to Conditions, CAN tests and Triggered timers.${refreshed ? ` Refreshed DBC validity for ${refreshed} configured CAN source${refreshed === 1 ? "" : "s"}; save Outputs to apply it.` : ""}`;
           renderConditionEditor();
           renderRuleEditor();
         } catch (error) {
@@ -3067,6 +3126,11 @@
               factor: 0,
               offset: 0,
               zero_confirm_samples: 11,
+              range_enabled: false,
+              minimum: 0,
+              maximum: 0,
+              invalid_raw_enabled: false,
+              invalid_raw: "0",
             };
           }
           return {
@@ -3082,6 +3146,11 @@
             factor: 0,
             offset: 0,
             zero_confirm_samples: 0,
+            range_enabled: false,
+            minimum: 0,
+            maximum: 0,
+            invalid_raw_enabled: false,
+            invalid_raw: "0",
           };
         });
         (payload.sources || []).forEach((source, index) => {
@@ -3260,6 +3329,11 @@
           factor: source.factor,
           offset: source.offset,
           zero_confirm_samples: source.zero_confirm_samples,
+          range_enabled: Boolean(source.range_enabled),
+          minimum: num(source.minimum),
+          maximum: num(source.maximum),
+          invalid_raw_enabled: Boolean(source.invalid_raw_enabled),
+          invalid_raw: String(source.invalid_raw ?? "0"),
         });
         const compactConditions = configuredConditions.map((condition) => ({
           condition: condition.condition,
@@ -3338,7 +3412,7 @@
           }),
         }));
         return {
-          version: 4,
+          version: 5,
           signal_timeout_ms: relayRules.signal_timeout_ms,
           sources: [...usedCanSources].map((index) =>
             compactSource(relayRules.sources[index]),
