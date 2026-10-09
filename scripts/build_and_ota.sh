@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
-firmware="$project_dir/build/esp32-logger.bin"
+firmware="$project_dir/build/esp32-canboard.bin"
 ota_url="${ESP32_CANBOARD_OTA_URL:-http://192.168.4.1/api/ota}"
 device_base="${ota_url%/api/ota}"
 
@@ -32,7 +32,7 @@ build_is_required() {
     "$project_dir/sdkconfig.defaults" \
     "$project_dir/partitions.csv" \
     "$project_dir/dependencies.lock" \
-    "$project_dir/scripts/minify.sh"; do
+    "$project_dir/scripts/regenerate_viewer.sh"; do
     if build_input_is_newer "$input"; then
       return 0
     fi
@@ -75,11 +75,11 @@ if build_is_required; then
   echo "Build output is missing or stale; rebuilding before OTA."
   activate_idf_if_needed
 
-  web_temp="$(mktemp -d)"
-  trap 'rm -rf "$web_temp"' EXIT
+  "$project_dir/scripts/regenerate_viewer.sh" \
+    "$project_dir/web_ui/index.html" \
+    "$project_dir/main/spiffs/index.min.html.gz" \
+    --apply
 
-  bash "$project_dir/scripts/minify.sh" "$project_dir/web_ui/index.html" "$web_temp/index.min.html"
-  mv "$web_temp/index.min.html.gz" "$project_dir/main/spiffs/index.min.html.gz"
   python "$IDF_PATH/tools/idf.py" -C "$project_dir" build
 else
   echo "Using existing up-to-date build: $firmware"

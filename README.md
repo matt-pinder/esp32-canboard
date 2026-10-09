@@ -65,7 +65,7 @@ The web UI allows you to:
 ## Wi-Fi OTA
 
 The VS Code custom task runs `scripts/build_and_ota.sh`. The script first checks
-`/api/status`, rebuilds only when the existing `build/esp32-logger.bin` is
+`/api/status`, rebuilds only when the existing `build/esp32-canboard.bin` is
 missing or stale, regenerates the embedded web asset as part of that build, and
 then uploads the application to `/api/ota`. Connect to the `ESP32-CanBoard`
 access point before using the default URL.
