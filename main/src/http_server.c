@@ -1582,7 +1582,7 @@ esp_err_t live_values_get_handler(httpd_req_t *req) {
                 i ? "," : "", voltage_v, pressure_kpa);
         } else if (board_cfg.channels[i].type == SENSOR_NTC) {
             const ntc_table_def_t *table = ntc_get_table(board_cfg.channels[i].params.ntc.table_id);
-            int8_t temp_c = getSensorTemperature(
+            int16_t temp_c = getSensorTemperature(
                 voltages_copy[i],
                 board_cfg.channels[i].pullup_ohms,
                 board_cfg.pullup_vref_mv,
@@ -1602,7 +1602,7 @@ esp_err_t live_values_get_handler(httpd_req_t *req) {
                 }
             }
 
-            if (temp_c == (int8_t)-128) {
+            if (temp_c == NTC_TEMP_INVALID) {
                 written = snprintf(json + json_pos, json_max - json_pos,
                     "%s{\"voltage_v\":%.2f,\"value\":\"\"}",
                     i ? "," : "", voltage_v);

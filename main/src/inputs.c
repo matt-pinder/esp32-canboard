@@ -159,8 +159,8 @@ uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, fl
  * @param table Pointer to NTC lookup table (array of ntc_point_t)
  * @param table_size Number of entries in the NTC table
  *
- * @return Temperature in degrees Celsius (int8_t)
- *         -128 if input parameters are invalid or table lookup fails
+ * @return Temperature in degrees Celsius (int16_t)
+ *         NTC_TEMP_INVALID if input parameters are invalid or table lookup fails
  *
  * @note Table must be sorted in descending order of resistance.
  *       Performs linear interpolation between table points.
@@ -168,9 +168,9 @@ uint16_t getSensorPressure(int v_mv, int v_min_mv, int v_max_mv, float p_min, fl
  *       Compensation assumes each NTC channel sees the fixed board load
  *       DIVIDER_TOTAL_OHM to ground.
  */
-int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_point_t *table, size_t table_size) {
+int16_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_point_t *table, size_t table_size) {
     if (v_mv <= 0 || v_mv >= v_ref_mv || r_pullup <= 0 || v_ref_mv <= 0 || table == NULL || table_size < 2)
-        return (int8_t)-128;
+        return NTC_TEMP_INVALID;
 
     float v_ntc = v_mv / 1000.0f;
     float v_ref = v_ref_mv / 1000.0f;
@@ -199,12 +199,12 @@ int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_poin
             int16_t t2 = table[i + 1].temp_c;
 
             float frac = (float)(r_ntc - r2) / (r1 - r2);
-            int8_t temp = (int8_t)(t2 + frac * (t1 - t2));
+            int16_t temp = (int16_t)(t2 + frac * (t1 - t2));
             return temp;
         }
     }
 
-    return (int8_t)-128;
+    return NTC_TEMP_INVALID;
 }
 
 /**

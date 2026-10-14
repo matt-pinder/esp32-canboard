@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 #include "freertos/semphr.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
@@ -26,6 +28,7 @@
 #define DIVIDER_HIGH_OHM 4700                      ///< Series resistor value (4.7k ohm)
 #define DIVIDER_LOW_OHM 10000                      ///< Pull-to-ground resistor value (10k ohm)
 #define DIVIDER_TOTAL_OHM (DIVIDER_HIGH_OHM + DIVIDER_LOW_OHM) ///< Total divider impedance (14.7k ohm)
+#define NTC_TEMP_INVALID INT16_MIN               ///< Sentinel returned when NTC temperature conversion fails
 
 /// Log tag for ADC module
 static const char *adc_log = "adc";
@@ -66,8 +69,8 @@ extern volatile uint16_t filtered_voltages[NUM_ADC_CHANNELS];
 /// @param v_ref_mv Reference voltage (pullup supply) in millivolts
 /// @param table NTC lookup table points array
 /// @param table_size Number of points in lookup table
-/// @return Temperature in °C, or -128 on error
-int8_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_point_t *table, size_t table_size);
+/// @return Temperature in °C, or NTC_TEMP_INVALID on error
+int16_t getSensorTemperature(int v_mv, int r_pullup, int v_ref_mv, const ntc_point_t *table, size_t table_size);
 
 /// @brief Convert voltage reading to pressure using linear scaling
 /// @param v_mv Measured voltage in millivolts
