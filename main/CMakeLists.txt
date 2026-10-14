@@ -33,6 +33,7 @@ idf_component_register(SRCS "main.c"
                              esp_netif
                              esp_partition
                              esp_timer
+                             mbedtls
                              nvs_flash
                              spiffs )
 

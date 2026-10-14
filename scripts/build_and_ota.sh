@@ -3,8 +3,10 @@ set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 firmware="$project_dir/build/esp32-canboard.bin"
+spiffs_image="$project_dir/build/spiffs.bin"
 ota_url="${ESP32_CANBOARD_OTA_URL:-http://192.168.4.1/api/ota}"
 device_base="${ota_url%/api/ota}"
+spiffs_url="${ESP32_CANBOARD_SPIFFS_URL:-$device_base/api/spiffs}"
 
 build_input_is_newer() {
   local input="$1"
@@ -23,7 +25,7 @@ build_tree_is_newer() {
 }
 
 build_is_required() {
-  [[ -f "$firmware" ]] || return 0
+  [[ -f "$firmware" && -f "$spiffs_image" ]] || return 0
 
   local input
   for input in \
@@ -66,10 +68,10 @@ activate_idf_if_needed() {
 }
 
 echo "Checking ESP32 CanBoard at $device_base"
-curl --fail --silent --show-error \
+status_json="$(curl --fail --silent --show-error \
   --connect-timeout 5 \
   --max-time 10 \
-  "$device_base/api/status" >/dev/null
+  "$device_base/api/status")"
 
 if build_is_required; then
   echo "Build output is missing or stale; rebuilding before OTA."
@@ -85,22 +87,71 @@ else
   echo "Using existing up-to-date build: $firmware"
 fi
 
-if [[ ! -f "$firmware" ]]; then
-  echo "Firmware binary was not generated: $firmware" >&2
+if [[ ! -f "$firmware" || ! -f "$spiffs_image" ]]; then
+  echo "OTA artifacts were not generated: $firmware and $spiffs_image" >&2
   exit 1
 fi
 
-echo "Uploading $(basename "$firmware") to $ota_url"
-curl --fail-with-body --show-error --progress-bar \
-  --http1.0 \
-  --no-keepalive \
-  --connect-timeout 5 \
-  --max-time 180 \
-  -H "Content-Type: application/octet-stream" \
-  -H "Connection: close" \
-  -H "Expect:" \
-  --data-binary "@$firmware" \
-  "$ota_url"
+supports_spiffs_ota() {
+  [[ "$1" =~ \"spiffs_ota\"[[:space:]]*:[[:space:]]*true ]]
+}
 
-echo "OTA upload complete. The ESP32 is booting the new application."
+upload_firmware() {
+  echo "Uploading $(basename "$firmware") to $ota_url"
+  curl --fail-with-body --show-error --progress-bar \
+    --http1.0 \
+    --no-keepalive \
+    --connect-timeout 5 \
+    --max-time 180 \
+    -H "Content-Type: application/octet-stream" \
+    -H "Connection: close" \
+    -H "Expect:" \
+    --data-binary "@$firmware" \
+    "$ota_url"
+}
+
+upload_spiffs() {
+  local spiffs_sha
+  spiffs_sha="$(shasum -a 256 "$spiffs_image" | awk '{print $1}')"
+  echo "Uploading $(basename "$spiffs_image") to $spiffs_url"
+  curl --fail-with-body --show-error --progress-bar \
+    --http1.0 \
+    --no-keepalive \
+    --connect-timeout 5 \
+    --max-time 180 \
+    -H "Content-Type: application/octet-stream" \
+    -H "X-Image-SHA256: $spiffs_sha" \
+    -H "Connection: close" \
+    -H "Expect:" \
+    --data-binary "@$spiffs_image" \
+    "$spiffs_url"
+}
+
+wait_for_spiffs_ota() {
+  local attempt response
+  for attempt in {1..30}; do
+    if response="$(curl --fail --silent --show-error \
+        --connect-timeout 1 --max-time 1 "$device_base/api/status" 2>/dev/null)" && \
+       supports_spiffs_ota "$response"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "The updated firmware did not expose SPIFFS OTA within 60 seconds." >&2
+  return 1
+}
+
+if supports_spiffs_ota "$status_json"; then
+  # Update the mounted asset filesystem first, then reboot only once for the app.
+  upload_spiffs
+  upload_firmware
+  echo "Application and SPIFFS OTA complete. The ESP32 is booting the new application."
+else
+  # Legacy firmware can install the new application endpoint through /api/ota.
+  upload_firmware
+  echo "Waiting for the new application to expose /api/spiffs..."
+  wait_for_spiffs_ota
+  upload_spiffs
+  echo "Application and SPIFFS OTA bootstrap complete. No cable flash was required."
+fi
 exit 0

@@ -65,10 +65,11 @@ The web UI allows you to:
 ## Wi-Fi OTA
 
 The VS Code custom task runs `scripts/build_and_ota.sh`. The script first checks
-`/api/status`, rebuilds only when the existing `build/esp32-canboard.bin` is
-missing or stale, regenerates the embedded web asset as part of that build, and
-then uploads the application to `/api/ota`. Connect to the `ESP32-CanBoard`
-access point before using the default URL.
+`/api/status`, rebuilds when either OTA artifact is missing or the sources are
+newer, regenerates the embedded web asset as part of that build, and then
+uploads both `build/esp32-canboard.bin` to `/api/ota` and `build/spiffs.bin` to
+`/api/spiffs`. Connect to the `ESP32-CanBoard` access point before using the
+default URL.
 
 Set `ESP32_CANBOARD_OTA_URL` to override the target, for example:
 
@@ -76,12 +77,23 @@ Set `ESP32_CANBOARD_OTA_URL` to override the target, for example:
 ESP32_CANBOARD_OTA_URL=http://192.168.4.1/api/ota scripts/build_and_ota.sh
 ```
 
+Set `ESP32_CANBOARD_SPIFFS_URL` as well only when the SPIFFS endpoint does not
+share the application OTA host. The SPIFFS image must exactly match the existing
+partition size and is SHA-256 checked in PSRAM before its partition is erased.
+It is then written, read back and remounted. The HTTP API remains available if
+SPIFFS cannot mount, allowing the image upload to be retried OTA.
+
+The first combined OTA run from legacy firmware uploads the new application
+first, waits for `/api/spiffs` to become available after reboot, and then sends
+the web assets. Later runs send SPIFFS first and the application second, so only
+the application update requires a reboot. No partition-table change or cable
+flash is required when the installed firmware already supports `/api/ota`.
+
 OTA requires the dual-slot partition table. After this change, perform one
-normal UART `idf.py flash` to install the updated partition table and OTA-aware
-firmware. Subsequent application updates can use the custom task. The existing
-SPIFFS, `config`, and `rules` partition offsets are unchanged, so that initial
-normal flash preserves stored configuration and Outputs; erasing the flash or
-writing those data offsets explicitly does not.
+normal UART `idf.py flash` only if the installed board does not already have
+that table. The existing SPIFFS, `config`, and `rules` partition offsets are
+unchanged; erasing the flash or writing those data offsets explicitly does not
+preserve their contents.
 
 
 ## CAN Output

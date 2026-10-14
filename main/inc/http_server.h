@@ -9,6 +9,7 @@
 /// - GET /api/diagnostics: Read reset history, retained fault data, heap, and ESP-NOW health
 /// - GET /api/can/capture.canlog: Stream a ten-second raw physical-CAN capture
 /// - POST /api/ota: Stream, validate, select, and boot a firmware update
+/// - POST /api/spiffs: Validate and replace the SPIFFS web-asset partition image
 /// - POST /api/reboot: Reboot the device
 /// - GET /api/ntc_tables: List available NTC lookup tables
 void start_http_server(void);

@@ -2,7 +2,9 @@
 #include "esp_spiffs.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "inc/config.h"
@@ -22,6 +24,7 @@
 #include "esp_wifi.h"
 #include "esp_timer.h"
 #include "cJSON.h"
+#include "psa/crypto.h"
 #include <sys/param.h>
 #include <string.h>
 #include <stdlib.h>
@@ -30,6 +33,7 @@
 #define AGGREGATE_CONFIG_REQUEST_LIMIT (160U * 1024U)
 #define OTA_BUFFER_SIZE 4096U
 #define OTA_RECEIVE_TIMEOUT_LIMIT 5U
+#define SPIFFS_VERIFY_CHUNK_SIZE 4096U
 #define CAN_CAPTURE_FILE_HEADER_SIZE 32U
 #define CAN_CAPTURE_FILE_RECORD_SIZE 20U
 #define CAN_CAPTURE_FILE_TRAILER_SIZE 32U
@@ -44,6 +48,40 @@ static const char *TAG = "HTTPD";
  */
 static httpd_handle_t server = NULL;
 extern board_config_t board_cfg;
+
+static esp_err_t mount_web_spiffs(void)
+{
+    return esp_vfs_spiffs_register(&(esp_vfs_spiffs_conf_t){
+        .base_path = "/spiffs",
+        .partition_label = NULL,
+        .max_files = 5,
+        .format_if_mount_failed = false
+    });
+}
+
+static bool parse_sha256_hex(const char *text, uint8_t digest[32])
+{
+    if (text == NULL || digest == NULL || strlen(text) != 64U) return false;
+    for (size_t i = 0U; i < 32U; ++i) {
+        uint8_t value = 0U;
+        for (size_t nibble = 0U; nibble < 2U; ++nibble) {
+            const char character = text[i * 2U + nibble];
+            uint8_t digit;
+            if (character >= '0' && character <= '9') {
+                digit = (uint8_t)(character - '0');
+            } else if (character >= 'a' && character <= 'f') {
+                digit = (uint8_t)(character - 'a' + 10);
+            } else if (character >= 'A' && character <= 'F') {
+                digit = (uint8_t)(character - 'A' + 10);
+            } else {
+                return false;
+            }
+            value = (uint8_t)((value << 4U) | digit);
+        }
+        digest[i] = value;
+    }
+    return true;
+}
 
 static void write_le16(uint8_t *output, uint16_t value)
 {
@@ -555,9 +593,9 @@ static void delayed_restart_task(void *arg) {
 
 static esp_err_t status_get_handler(httpd_req_t *req) {
     const esp_partition_t *running = esp_ota_get_running_partition();
-    char response[96];
+    char response[128];
     snprintf(response, sizeof(response),
-             "{\"status\":\"ok\",\"running_partition\":\"%s\"}\n",
+             "{\"status\":\"ok\",\"running_partition\":\"%s\",\"spiffs_ota\":true}\n",
              running != NULL ? running->label : "unknown");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -912,6 +950,142 @@ static esp_err_t ota_post_handler(httpd_req_t *req) {
         esp_restart();
     }
     return response_result;
+}
+
+static esp_err_t spiffs_ota_post_handler(httpd_req_t *req)
+{
+    const esp_partition_t *partition = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "spiffs");
+    if (partition == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "SPIFFS partition was not found");
+        return ESP_FAIL;
+    }
+    if (req->content_len <= 0 || (size_t)req->content_len != partition->size) {
+        ESP_LOGW(TAG, "Rejected SPIFFS image size %u; expected %u bytes",
+                 (unsigned)req->content_len, (unsigned)partition->size);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "SPIFFS image size does not match the partition");
+        return ESP_FAIL;
+    }
+
+    const size_t sha_header_length = httpd_req_get_hdr_value_len(req, "X-Image-SHA256");
+    char sha_header[65];
+    uint8_t expected_sha[32];
+    if (sha_header_length != 64U ||
+        httpd_req_get_hdr_value_str(req, "X-Image-SHA256", sha_header,
+                                    sizeof(sha_header)) != ESP_OK ||
+        !parse_sha256_hex(sha_header, expected_sha)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "A valid X-Image-SHA256 header is required");
+        return ESP_FAIL;
+    }
+
+    uint8_t *image = heap_caps_malloc(partition->size,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (image == NULL) {
+        ESP_LOGE(TAG, "Could not allocate %u bytes of PSRAM for SPIFFS OTA",
+                 (unsigned)partition->size);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Not enough PSRAM to stage the SPIFFS image");
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t received_total = 0U;
+    unsigned receive_timeouts = 0U;
+    esp_err_t result = ESP_OK;
+    while (received_total < partition->size) {
+        const size_t remaining = partition->size - received_total;
+        const size_t requested = remaining < OTA_BUFFER_SIZE ? remaining : OTA_BUFFER_SIZE;
+        const int received = httpd_req_recv(
+            req, (char *)(image + received_total), requested);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT &&
+            receive_timeouts++ < OTA_RECEIVE_TIMEOUT_LIMIT) {
+            continue;
+        }
+        if (received <= 0) {
+            result = ESP_ERR_INVALID_RESPONSE;
+            break;
+        }
+        receive_timeouts = 0U;
+        received_total += (size_t)received;
+    }
+
+    if (result == ESP_OK &&
+        (psa_crypto_init() != PSA_SUCCESS ||
+         psa_hash_compare(PSA_ALG_SHA_256, image, partition->size,
+                          expected_sha, sizeof(expected_sha)) != PSA_SUCCESS)) {
+        result = ESP_ERR_INVALID_CRC;
+    }
+    if (result != ESP_OK) {
+        heap_caps_free(image);
+        ESP_LOGE(TAG, "SPIFFS upload validation failed after %u/%u bytes: %s",
+                 (unsigned)received_total, (unsigned)partition->size,
+                 esp_err_to_name(result));
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            result == ESP_ERR_INVALID_CRC
+                                ? "SPIFFS image SHA-256 does not match"
+                                : "SPIFFS image upload was incomplete");
+        return ESP_FAIL;
+    }
+
+    result = esp_vfs_spiffs_unregister(NULL);
+    if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) {
+        heap_caps_free(image);
+        ESP_LOGE(TAG, "Could not unmount SPIFFS before update: %s",
+                 esp_err_to_name(result));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Could not unmount SPIFFS");
+        return ESP_FAIL;
+    }
+
+    result = esp_partition_erase_range(partition, 0U, partition->size);
+    for (size_t offset = 0U; result == ESP_OK && offset < partition->size;
+         offset += SPIFFS_VERIFY_CHUNK_SIZE) {
+        const size_t remaining = partition->size - offset;
+        const size_t chunk_size = remaining < SPIFFS_VERIFY_CHUNK_SIZE
+                                      ? remaining
+                                      : SPIFFS_VERIFY_CHUNK_SIZE;
+        result = esp_partition_write(partition, offset, image + offset, chunk_size);
+    }
+
+    uint8_t verify_buffer[SPIFFS_VERIFY_CHUNK_SIZE];
+    for (size_t offset = 0U; result == ESP_OK && offset < partition->size;
+         offset += sizeof(verify_buffer)) {
+        const size_t remaining = partition->size - offset;
+        const size_t chunk_size = remaining < sizeof(verify_buffer)
+                                      ? remaining
+                                      : sizeof(verify_buffer);
+        result = esp_partition_read(partition, offset, verify_buffer, chunk_size);
+        if (result == ESP_OK &&
+            memcmp(verify_buffer, image + offset, chunk_size) != 0) {
+            result = ESP_ERR_INVALID_CRC;
+        }
+    }
+    heap_caps_free(image);
+
+    const esp_err_t mount_result = mount_web_spiffs();
+    if (mount_result != ESP_OK && mount_result != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Could not remount SPIFFS after update: %s",
+                 esp_err_to_name(mount_result));
+        if (result == ESP_OK) result = mount_result;
+    }
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "SPIFFS partition update failed: %s", esp_err_to_name(result));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "SPIFFS partition update failed; retry the upload");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "SPIFFS image updated and verified: %u bytes",
+             (unsigned)partition->size);
+    char response[80];
+    snprintf(response, sizeof(response),
+             "{\"status\":\"ok\",\"bytes_written\":%u}\n",
+             (unsigned)partition->size);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, response);
 }
 
 /**
@@ -1882,26 +2056,21 @@ esp_err_t ble_dragy_scan_post_handler(httpd_req_t *req) {
 /**
  * @brief Start HTTP server with REST API endpoints and SPIFFS mount
  * Initializes SPIFFS filesystem and starts HTTP server on port 80 (http://192.168.4.1).
- * Registers five URI handlers for configuration management and device control.
+ * Registers URI handlers for configuration, diagnostics, OTA and device control.
  */
 void start_http_server(void) {
     if (server != NULL) {
         return;
     }
 
-    // Initialize SPIFFS
-    esp_err_t ret = esp_vfs_spiffs_register(&(esp_vfs_spiffs_conf_t){
-        .base_path = "/spiffs",
-        .partition_label = NULL,
-        .max_files = 5,
-        .format_if_mount_failed = false
-    });
+    // Start the API even if SPIFFS is damaged so its image can be recovered OTA.
+    esp_err_t ret = mount_web_spiffs();
 
     if (ret == ESP_ERR_INVALID_STATE) {
         ESP_LOGI(TAG, "SPIFFS already mounted");
     } else if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to mount SPIFFS: %s", esp_err_to_name(ret));
-        return;
+        ESP_LOGE(TAG, "Failed to mount SPIFFS; OTA recovery remains available: %s",
+                 esp_err_to_name(ret));
     } else {
         ESP_LOGI(TAG, "SPIFFS mounted successfully");
     }
@@ -1961,6 +2130,14 @@ void start_http_server(void) {
         .user_ctx = NULL
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &ota_uri));
+
+    httpd_uri_t spiffs_ota_uri = {
+        .uri = "/api/spiffs",
+        .method = HTTP_POST,
+        .handler = spiffs_ota_post_handler,
+        .user_ctx = NULL
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &spiffs_ota_uri));
     
     httpd_uri_t config_get_uri = { 
         .uri = "/api/config", 
