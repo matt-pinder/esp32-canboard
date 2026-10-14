@@ -7,6 +7,7 @@
 #include "esp_now.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -14,6 +15,7 @@
 #include "inc/config.h"
 #include "inc/espnow_can_protocol.h"
 #include "inc/gps_response_receiver.h"
+#include "inc/runtime_diagnostics.h"
 
 extern board_config_t board_cfg;
 
@@ -27,6 +29,7 @@ extern board_config_t board_cfg;
 #define ESPNOW_NOTIFY_STOP               BIT2
 #define ESPNOW_FAILURE_BACKOFF_THRESHOLD 3U
 #define ESPNOW_OFFLINE_PROBE_INTERVAL_US 1000000LL
+#define ESPNOW_SEND_CALLBACK_TIMEOUT_US   250000LL
 
 typedef struct {
     espnow_can_frame_t frame;
@@ -41,12 +44,14 @@ typedef struct {
     uint32_t max_batch_size;
     uint32_t queue_drops;
     uint32_t send_failures;
+    uint32_t callback_timeouts;
     uint64_t radio_busy_us;
 } espnow_transport_stats_t;
 
 typedef struct {
     uint8_t consecutive_failures;
     bool send_pending;
+    int64_t pending_since_us;
     int64_t retry_after_us;
 } espnow_peer_runtime_t;
 
@@ -73,6 +78,7 @@ static void record_send_result(uint8_t client_index, bool success) {
     if (client_index < ESPNOW_MAX_CLIENTS) {
         espnow_peer_runtime_t *runtime = &peer_runtime[client_index];
         runtime->send_pending          = false;
+        runtime->pending_since_us      = 0;
         if (success) {
             runtime->consecutive_failures = 0U;
             runtime->retry_after_us       = 0;
@@ -111,13 +117,39 @@ static void espnow_send_callback(const esp_now_send_info_t *tx_info, esp_now_sen
 
 static bool begin_peer_send(uint8_t client_index, int64_t now_us) {
     bool send = false;
+    bool timed_out = false;
+    uint32_t pending_ms = 0U;
+    uint32_t queue_drops = 0U;
+    uint32_t send_failures = 0U;
     portENTER_CRITICAL(&stats_mux);
     espnow_peer_runtime_t *runtime = &peer_runtime[client_index];
+    if (runtime->send_pending && runtime->pending_since_us > 0 &&
+        now_us - runtime->pending_since_us >= ESPNOW_SEND_CALLBACK_TIMEOUT_US) {
+        pending_ms = (uint32_t)((now_us - runtime->pending_since_us) / 1000LL);
+        runtime->send_pending = false;
+        runtime->pending_since_us = 0;
+        if (runtime->consecutive_failures < UINT8_MAX) runtime->consecutive_failures++;
+        runtime->retry_after_us = now_us + ESPNOW_OFFLINE_PROBE_INTERVAL_US;
+        transport_stats.send_failures++;
+        transport_stats.callback_timeouts++;
+        queue_drops = transport_stats.queue_drops;
+        send_failures = transport_stats.send_failures;
+        timed_out = true;
+    }
     if (!runtime->send_pending && now_us >= runtime->retry_after_us) {
         runtime->send_pending = true;
+        runtime->pending_since_us = now_us;
         send                  = true;
     }
     portEXIT_CRITICAL(&stats_mux);
+    if (timed_out) {
+        const uint32_t queue_depth = frame_queue == NULL ? 0U : (uint32_t)uxQueueMessagesWaiting(frame_queue);
+        ESP_LOGW(TAG, "Client %u send callback missing for %lu ms; backing off and retrying",
+                 (unsigned)(client_index + 1U), (unsigned long)pending_ms);
+        runtime_diagnostics_record_espnow_timeout(client_index + 1U, pending_ms,
+                                                  queue_depth, queue_drops,
+                                                  send_failures);
+    }
     return send;
 }
 
@@ -145,7 +177,7 @@ static void log_transport_summary(TickType_t *last_log_tick, espnow_transport_st
     const uint32_t average_times_10 = batches == 0U ? 0U : ((frames * 10U) / batches);
     ESP_LOGI(TAG,
              "Transport 5s: clients=%u queued=%lu batches=%lu packets=%lu avg_batch=%lu.%lu max_batch=%lu queue_drops=%lu send_failures=%lu "
-             "send_api_us=%llu depth=%u",
+             "callback_timeouts=%lu send_api_us=%llu depth=%u",
              (unsigned)active_client_count,
              (unsigned long)(current.queued_frames - last_stats->queued_frames),
              (unsigned long)batches,
@@ -155,6 +187,7 @@ static void log_transport_summary(TickType_t *last_log_tick, espnow_transport_st
              (unsigned long)current.max_batch_size,
              (unsigned long)(current.queue_drops - last_stats->queue_drops),
              (unsigned long)(current.send_failures - last_stats->send_failures),
+             (unsigned long)(current.callback_timeouts - last_stats->callback_timeouts),
              (unsigned long long)(current.radio_busy_us - last_stats->radio_busy_us),
              frame_queue == NULL ? 0U : (unsigned)uxQueueMessagesWaiting(frame_queue));
     *last_stats    = current;
@@ -163,6 +196,11 @@ static void log_transport_summary(TickType_t *last_log_tick, espnow_transport_st
 
 static void batch_transmitter_task(void *arg) {
     (void)arg;
+    const esp_err_t watchdog_err = esp_task_wdt_add(NULL);
+    if (watchdog_err != ESP_OK && watchdog_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Could not subscribe transport task to watchdog: %s",
+                 esp_err_to_name(watchdog_err));
+    }
     TickType_t last_log_tick            = xTaskGetTickCount();
     espnow_transport_stats_t last_stats = {0};
     espnow_queued_frame_t queued_frames[ESPNOW_CAN_MAX_FRAMES];
@@ -170,6 +208,7 @@ static void batch_transmitter_task(void *arg) {
     uint8_t packet[ESPNOW_CAN_MAX_PACKET_SIZE];
 
     while (true) {
+        (void)esp_task_wdt_reset();
         log_transport_summary(&last_log_tick, &last_stats);
         if (!espnow_started || frame_queue == NULL) {
             uint32_t notification = 0U;
@@ -513,4 +552,21 @@ esp_err_t espnow_transport_enqueue_relay_twai(const twai_message_t *message) {
         return ESP_OK;
     }
     return enqueue_twai(message, true);
+}
+
+void espnow_transport_get_status(espnow_transport_status_t *status) {
+    if (status == NULL) return;
+    memset(status, 0, sizeof(*status));
+    portENTER_CRITICAL(&stats_mux);
+    status->started = espnow_started;
+    status->client_count = active_client_count;
+    status->queued_frames = transport_stats.queued_frames;
+    status->batches = transport_stats.batches;
+    status->sent_packets = transport_stats.sent_packets;
+    status->queue_drops = transport_stats.queue_drops;
+    status->send_failures = transport_stats.send_failures;
+    status->callback_timeouts = transport_stats.callback_timeouts;
+    status->radio_busy_us = transport_stats.radio_busy_us;
+    portEXIT_CRITICAL(&stats_mux);
+    status->queue_depth = frame_queue == NULL ? 0U : (uint32_t)uxQueueMessagesWaiting(frame_queue);
 }

@@ -2,6 +2,7 @@
 #include "inc/can.h"
 #include "driver/twai.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -276,6 +277,11 @@ static bool dispatch_to_mk60(const void *frame, void *context) {
 
 void canReceiveDispatch(void *arg) {
     (void)arg;
+    const esp_err_t watchdog_err = esp_task_wdt_add(NULL);
+    if (watchdog_err != ESP_OK && watchdog_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(can_log, "Could not subscribe CAN receive task to watchdog: %s",
+                 esp_err_to_name(watchdog_err));
+    }
     ESP_LOGI(can_log, "CAN receive dispatcher task started");
     ESP_LOGI(can_log,
              "CAN receive configuration: can_tx=%d espnow=%d relay=%d mk60=%d driver=%d",
@@ -292,6 +298,7 @@ void canReceiveDispatch(void *arg) {
     TickType_t last_status_log    = xTaskGetTickCount();
 
     while (true) {
+        (void)esp_task_wdt_reset();
         if ((!config_has_espnow_relay_client(&board_cfg) && !board_cfg.mk60_emulator.enabled && !relay_rule_engine_has_external_sources()
              && !can_capture_is_active())
             || can_driver_mutex == NULL) {

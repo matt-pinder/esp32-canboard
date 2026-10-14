@@ -15,6 +15,45 @@
         gap: 0.45em;
         margin-bottom: 0.8em;
       }
+      .diagnostics-card {
+        margin: 0 0 1em;
+        padding: 0.8em;
+        border: 1px solid #ccd7e0;
+        border-radius: 6px;
+        background: #f7f9fb;
+      }
+      .diagnostics-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75em;
+        flex-wrap: wrap;
+      }
+      .diagnostics-header h3 {
+        margin: 0;
+      }
+      .diagnostics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 0.65em;
+        margin-top: 0.65em;
+      }
+      .diagnostics-panel {
+        padding: 0.65em;
+        border: 1px solid #d9e1e7;
+        border-radius: 4px;
+        background: #fff;
+        white-space: pre-line;
+        line-height: 1.45;
+      }
+      .diagnostics-panel strong {
+        display: block;
+        margin-bottom: 0.25em;
+      }
+      .diagnostics-alert {
+        border-color: #e0a43a;
+        background: #fff9ed;
+      }
       .header-row {
         display: flex;
         align-items: flex-start;
@@ -1001,6 +1040,34 @@
           </div>
         </div>
       </div>
+      <section class="diagnostics-card" aria-labelledby="diagnostics-title">
+        <div class="diagnostics-header">
+          <div>
+            <h3 id="diagnostics-title">Runtime Diagnostics</h3>
+            <span class="hint"
+              >Reset history and ESP-NOW health are retained for remote fault
+              finding.</span
+            >
+          </div>
+          <button id="diagnostics-refresh" class="action-btn" type="button">
+            Refresh
+          </button>
+        </div>
+        <div class="diagnostics-grid">
+          <div id="diagnostics-current" class="diagnostics-panel">
+            <strong>Current boot</strong>Loading…
+          </div>
+          <div id="diagnostics-espnow" class="diagnostics-panel">
+            <strong>ESP-NOW transport</strong>Loading…
+          </div>
+          <div id="diagnostics-previous" class="diagnostics-panel">
+            <strong>Last fault snapshot</strong>Loading…
+          </div>
+          <div id="diagnostics-incident" class="diagnostics-panel">
+            <strong>Last saved incident</strong>Loading…
+          </div>
+        </div>
+      </section>
       <table>
         <colgroup>
           <col style="width: 5%" />
@@ -1591,6 +1658,67 @@
         }
       }
 
+      function formatDuration(milliseconds) {
+        const totalSeconds = Math.max(0, Math.floor(Number(milliseconds) / 1000));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return hours
+          ? `${hours}h ${minutes}m ${seconds}s`
+          : minutes
+            ? `${minutes}m ${seconds}s`
+            : `${seconds}s`;
+      }
+
+      function formatBytes(bytes) {
+        const value = Number(bytes) || 0;
+        return value >= 1024 ? `${(value / 1024).toFixed(1)} KiB` : `${value} B`;
+      }
+
+      async function refreshDiagnostics() {
+        const current = document.getElementById("diagnostics-current");
+        const espnow = document.getElementById("diagnostics-espnow");
+        const previous = document.getElementById("diagnostics-previous");
+        const incident = document.getElementById("diagnostics-incident");
+        try {
+          const response = await fetch("/api/diagnostics", { cache: "no-store" });
+          if (!response.ok) throw new Error(`Diagnostics HTTP ${response.status}`);
+          const data = await response.json();
+          const resetReason = String(data.reset_reason || "unknown").replaceAll("_", " ");
+          const lastFault = data.last_fault
+            ? `\nLast fault: ${String(data.last_fault.reset_reason || "unknown").replaceAll("_", " ")} on boot ${Number(data.last_fault.boot_count) || 0}`
+            : "\nLast fault: none recorded";
+          current.innerHTML = `<strong>Current boot</strong>Boot count: ${Number(data.boot_count) || 0}\nReset reason: ${resetReason}\nFault resets: ${Number(data.fault_reset_count) || 0}${lastFault}\nUptime: ${formatDuration(data.uptime_ms)}\nFree heap: ${formatBytes(data.free_heap_bytes)} (minimum ${formatBytes(data.min_free_heap_bytes)})`;
+          current.classList.toggle(
+            "diagnostics-alert",
+            ["panic", "interrupt_watchdog", "task_watchdog", "other_watchdog", "brownout", "cpu_lockup"].includes(data.reset_reason),
+          );
+
+          const tx = data.espnow || {};
+          espnow.innerHTML = `<strong>ESP-NOW transport</strong>State: ${tx.started ? "active" : "inactive"}; clients: ${Number(tx.clients) || 0}\nPackets sent: ${Number(tx.sent_packets) || 0}; batches: ${Number(tx.batches) || 0}\nQueue: ${Number(tx.queue_depth) || 0}; drops: ${Number(tx.queue_drops) || 0}\nSend failures: ${Number(tx.send_failures) || 0}; missing callbacks: ${Number(tx.callback_timeouts) || 0}`;
+          espnow.classList.toggle(
+            "diagnostics-alert",
+            Number(tx.queue_drops) > 0 || Number(tx.send_failures) > 0 || Number(tx.callback_timeouts) > 0,
+          );
+
+          const prior = data.previous_boot;
+          previous.innerHTML = prior
+            ? `<strong>Last fault snapshot</strong>Last alive: ${formatDuration(prior.uptime_ms)} uptime\nFree heap: ${formatBytes(prior.free_heap_bytes)} (minimum ${formatBytes(prior.min_free_heap_bytes)})\nESP-NOW queue: ${Number(prior.espnow_queue_depth) || 0}; drops: ${Number(prior.espnow_queue_drops) || 0}\nSend failures: ${Number(prior.espnow_send_failures) || 0}; missing callbacks: ${Number(prior.espnow_callback_timeouts) || 0}`
+            : "<strong>Last fault snapshot</strong>No fault snapshot recorded. A hard power loss cannot preserve the RAM snapshot.";
+
+          const saved = data.last_incident;
+          incident.innerHTML = saved
+            ? `<strong>Last saved incident</strong>${saved.type || "Unknown incident"}\nBoot ${Number(saved.boot_count) || 0} at ${formatDuration(saved.uptime_ms)}\nClient: ${Number(saved.client) || 0}; callback wait: ${Number(saved.pending_ms) || 0} ms\nQueue: ${Number(saved.queue_depth) || 0}; drops: ${Number(saved.queue_drops) || 0}; failures: ${Number(saved.send_failures) || 0}`
+            : "<strong>Last saved incident</strong>No ESP-NOW stall has been recorded.";
+          incident.classList.toggle("diagnostics-alert", Boolean(saved));
+        } catch (error) {
+          current.innerHTML = "<strong>Runtime diagnostics</strong>Unavailable.";
+          espnow.innerHTML = "<strong>ESP-NOW transport</strong>Unavailable.";
+          previous.innerHTML = "<strong>Last fault snapshot</strong>Unavailable.";
+          incident.innerHTML = "<strong>Last saved incident</strong>Unavailable.";
+        }
+      }
+
       async function loadConfig() {
         const res = await fetch("/api/config");
         config = await res.json();
@@ -1660,6 +1788,7 @@
           Number(config.gps_response_timeout_ms) || 1000;
         updateTransportControls();
         await refreshLiveValues();
+        await refreshDiagnostics();
       }
 
       async function refreshLiveValues() {
@@ -1973,6 +2102,8 @@
       document.getElementById("can-enabled").onchange = updateTransportControls;
       document.getElementById("espnow-enabled").onchange =
         updateTransportControls;
+      document.getElementById("diagnostics-refresh").onclick =
+        refreshDiagnostics;
       document.getElementById("copy-espnow-sta-mac").onclick = async function () {
         const input = document.getElementById("espnow-sta-mac");
         if (!isValidMacAddress(input.value)) {
@@ -3619,6 +3750,7 @@
       updateTransportControls();
       loadConfig();
       setInterval(refreshLiveValues, 1000);
+      setInterval(refreshDiagnostics, 10000);
       setInterval(() => {
         updateRuleStatusCells();
         updateConditionStatusCells();

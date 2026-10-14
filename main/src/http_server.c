@@ -18,6 +18,7 @@
 #include "inc/wifi_config.h"
 #include "inc/relay_command_protocol.h"
 #include "inc/relay_rule_http.h"
+#include "inc/runtime_diagnostics.h"
 #include "esp_wifi.h"
 #include "esp_timer.h"
 #include "cJSON.h"
@@ -561,6 +562,92 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_sendstr(req, response);
+}
+
+static esp_err_t diagnostics_get_handler(httpd_req_t *req) {
+    notify_client_connected();
+    runtime_diagnostics_status_t diagnostics = {0};
+    espnow_transport_status_t transport = {0};
+    runtime_diagnostics_get_status(&diagnostics);
+    espnow_transport_get_status(&transport);
+
+    char previous[512];
+    if (diagnostics.previous_snapshot_available) {
+        snprintf(previous, sizeof(previous),
+                 "{\"uptime_ms\":%lu,\"free_heap_bytes\":%lu,\"min_free_heap_bytes\":%lu,"
+                 "\"espnow_queue_depth\":%lu,\"espnow_queue_drops\":%lu,"
+                 "\"espnow_send_failures\":%lu,\"espnow_callback_timeouts\":%lu}",
+                 (unsigned long)diagnostics.previous_uptime_ms,
+                 (unsigned long)diagnostics.previous_free_heap_bytes,
+                 (unsigned long)diagnostics.previous_min_free_heap_bytes,
+                 (unsigned long)diagnostics.previous_espnow_queue_depth,
+                 (unsigned long)diagnostics.previous_espnow_queue_drops,
+                 (unsigned long)diagnostics.previous_espnow_send_failures,
+                 (unsigned long)diagnostics.previous_espnow_callback_timeouts);
+    } else {
+        snprintf(previous, sizeof(previous), "null");
+    }
+
+    char incident[512];
+    if (diagnostics.incident_available) {
+        snprintf(incident, sizeof(incident),
+                 "{\"type\":\"%s\",\"boot_count\":%lu,\"uptime_ms\":%lu,"
+                 "\"client\":%u,\"pending_ms\":%lu,\"queue_depth\":%lu,"
+                 "\"queue_drops\":%lu,\"send_failures\":%lu}",
+                 diagnostics.incident,
+                 (unsigned long)diagnostics.incident_boot_count,
+                 (unsigned long)diagnostics.incident_uptime_ms,
+                 (unsigned)diagnostics.incident_client_index,
+                 (unsigned long)diagnostics.incident_pending_ms,
+                 (unsigned long)diagnostics.incident_queue_depth,
+                 (unsigned long)diagnostics.incident_queue_drops,
+                 (unsigned long)diagnostics.incident_send_failures);
+    } else {
+        snprintf(incident, sizeof(incident), "null");
+    }
+
+    char last_fault[192];
+    if (diagnostics.last_fault_available) {
+        snprintf(last_fault, sizeof(last_fault),
+                 "{\"boot_count\":%lu,\"reset_reason\":\"%s\"}",
+                 (unsigned long)diagnostics.last_fault_boot_count,
+                 diagnostics.last_fault_reset_reason_name);
+    } else {
+        snprintf(last_fault, sizeof(last_fault), "null");
+    }
+
+    char response[1800];
+    const int length = snprintf(
+        response, sizeof(response),
+        "{\"boot_count\":%lu,\"fault_reset_count\":%lu,\"reset_reason\":\"%s\","
+        "\"uptime_ms\":%llu,\"free_heap_bytes\":%lu,\"min_free_heap_bytes\":%lu,"
+        "\"last_fault\":%s,\"previous_boot\":%s,\"last_incident\":%s,"
+        "\"espnow\":{\"started\":%s,\"clients\":%u,\"queued_frames\":%lu,"
+        "\"batches\":%lu,\"sent_packets\":%lu,\"queue_depth\":%lu,"
+        "\"queue_drops\":%lu,\"send_failures\":%lu,\"callback_timeouts\":%lu}}\n",
+        (unsigned long)diagnostics.boot_count,
+        (unsigned long)diagnostics.fault_reset_count,
+        diagnostics.current_reset_reason_name,
+        (unsigned long long)(esp_timer_get_time() / 1000ULL),
+        (unsigned long)esp_get_free_heap_size(),
+        (unsigned long)esp_get_minimum_free_heap_size(),
+        last_fault, previous, incident,
+        transport.started ? "true" : "false",
+        (unsigned)transport.client_count,
+        (unsigned long)transport.queued_frames,
+        (unsigned long)transport.batches,
+        (unsigned long)transport.sent_packets,
+        (unsigned long)transport.queue_depth,
+        (unsigned long)transport.queue_drops,
+        (unsigned long)transport.send_failures,
+        (unsigned long)transport.callback_timeouts);
+    if (length < 0 || (size_t)length >= sizeof(response)) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, response, (ssize_t)length);
 }
 
 static void encode_capture_record(uint8_t output[CAN_CAPTURE_FILE_RECORD_SIZE],
@@ -1822,7 +1909,7 @@ void start_http_server(void) {
     // Start HTTP server
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 15;
+    config.max_uri_handlers = 16;
     config.stack_size = 12288;
     // Allow larger responses, such as the configuration UI, to traverse a
     // slower infrastructure WiFi path without hitting the 5-second default.
@@ -1850,6 +1937,14 @@ void start_http_server(void) {
         .user_ctx = NULL
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &status_uri));
+
+    httpd_uri_t diagnostics_uri = {
+        .uri = "/api/diagnostics",
+        .method = HTTP_GET,
+        .handler = diagnostics_get_handler,
+        .user_ctx = NULL
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &diagnostics_uri));
 
     httpd_uri_t can_capture_uri = {
         .uri = "/api/can/capture.canlog",

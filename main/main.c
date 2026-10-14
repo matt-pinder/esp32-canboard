@@ -25,6 +25,7 @@
 #include "inc/espnow_transport.h"
 #include "inc/mk60_emulator.h"
 #include "inc/relay_rule_engine.h"
+#include "inc/runtime_diagnostics.h"
 
 #include "inc/wifi_config.h"
 #include "inc/config.h"
@@ -72,6 +73,9 @@ void app_main(void)
         }
     } else {
         ESP_LOGI(log_tag, "Config loaded and CRC valid");
+    }
+    if (runtime_diagnostics_init() != ESP_OK) {
+        ESP_LOGW(log_tag, "Persistent runtime diagnostics are not active");
     }
 
     if (mk60_emulator_start(&board_cfg.mk60_emulator) != ESP_OK) {

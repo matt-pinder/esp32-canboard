@@ -13,6 +13,7 @@ idf_component_register(SRCS "main.c"
                         "src/gps_time_codec.c"
                         "src/gps_response_receiver.c"
                         "src/relay_rule_engine.c"
+                        "src/runtime_diagnostics.c"
                         "src/relay_rule_http.c"
                         "src/mk60_emulator.c"
                         "src/mk60_emulator_protocol.c"
@@ -28,6 +29,7 @@ idf_component_register(SRCS "main.c"
                              esp_http_server
                              esp_wifi
                              esp_event
+                             esp_hw_support
                              esp_netif
                              esp_partition
                              esp_timer
