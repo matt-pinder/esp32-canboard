@@ -10,3 +10,4 @@ sdkconfig.old
 managed_components/*
 main/inc/secrets.h
 repo.zip
+main/spiffs/index.min.html.gz
